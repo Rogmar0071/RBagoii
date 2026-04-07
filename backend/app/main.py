@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -58,6 +59,28 @@ def _require_auth(authorization: str | None = Header(default=None)) -> None:
     token = authorization.removeprefix("Bearer ").strip()
     if token != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid API key")
+
+
+# ---------------------------------------------------------------------------
+# Input validation helpers
+# ---------------------------------------------------------------------------
+
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9_\-\.]+$")
+
+
+def _validate_session_id(session_id: str) -> str:
+    """Raise HTTP 400 if session_id is not a valid UUID (prevents path traversal)."""
+    if not _UUID_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session id")
+    return session_id
+
+
+def _validate_filename(filename: str) -> str:
+    """Raise HTTP 400 if filename contains unsafe characters or patterns."""
+    if not _SAFE_FILENAME_RE.match(filename) or filename.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return filename
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +162,7 @@ def _run_extraction(session_id: str) -> None:
 
         _write_status(session_id, {"status": "done", "progress": 100})
 
-    except Exception as exc:  # noqa: BLE001
+    except (RuntimeError, subprocess.TimeoutExpired, OSError) as exc:
         logger.exception("Extraction job failed for session %s", session_id)
         _write_status(session_id, {"status": "failed", "error": str(exc)})
 
@@ -153,7 +176,7 @@ def _run_extraction(session_id: str) -> None:
 async def create_session(
     video: UploadFile,
     meta: str = Form(default=""),
-    background_tasks: BackgroundTasks = BackgroundTasks(),  # noqa: B008
+    background_tasks: BackgroundTasks = None,  # injected by FastAPI  # noqa: B006
 ) -> JSONResponse:
     """
     Accept a multipart upload (video MP4 + optional meta JSON string).
@@ -195,12 +218,14 @@ async def create_session(
 @app.get("/v1/sessions/{session_id}", dependencies=[Depends(_require_auth)])
 def get_session(session_id: str) -> JSONResponse:
     """Return the current status.json for the session."""
+    _validate_session_id(session_id)
     return JSONResponse(content=_read_status(session_id))
 
 
 @app.get("/v1/sessions/{session_id}/blueprint", dependencies=[Depends(_require_auth)])
 def get_blueprint(session_id: str) -> FileResponse:
     """Return the blueprint.json file if extraction has completed."""
+    _validate_session_id(session_id)
     bp_path = _session_dir(session_id) / "blueprint.json"
     if not bp_path.exists():
         raise HTTPException(status_code=404, detail="Blueprint not yet available")
@@ -210,6 +235,7 @@ def get_blueprint(session_id: str) -> FileResponse:
 @app.get("/v1/sessions/{session_id}/preview/index", dependencies=[Depends(_require_auth)])
 def get_preview_index(session_id: str) -> JSONResponse:
     """Return a JSON listing of available preview PNG filenames and base URL."""
+    _validate_session_id(session_id)
     sdir = _session_dir(session_id)
     if not sdir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
@@ -236,9 +262,8 @@ def get_preview_index(session_id: str) -> JSONResponse:
 )
 def get_preview_file(session_id: str, filename: str) -> FileResponse:
     """Serve an individual PNG preview frame."""
-    # Validate filename — only allow simple basenames (no path traversal).
-    if "/" in filename or "\\" in filename or filename.startswith("."):
-        raise HTTPException(status_code=400, detail="Invalid filename")
+    _validate_session_id(session_id)
+    _validate_filename(filename)
     png_path = _session_dir(session_id) / "preview" / filename
     if not png_path.exists() or not png_path.is_file():
         raise HTTPException(status_code=404, detail="Preview file not found")

@@ -167,8 +167,9 @@ class TestStatus:
         import backend.app.main as m
 
         m.DATA_DIR = tmp_path
+        # A valid UUID that doesn't exist should return 404.
         response = client.get(
-            "/v1/sessions/does-not-exist",
+            "/v1/sessions/00000000-0000-0000-0000-000000000000",
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert response.status_code == 404
@@ -215,3 +216,16 @@ class TestBlueprintAndPreview:
         )
         # FastAPI routes will either not match or return 400/404.
         assert response.status_code in (400, 404, 422)
+
+    def test_invalid_session_id_returns_400(self, client: TestClient, tmp_path) -> None:
+        import backend.app.main as m
+
+        m.DATA_DIR = tmp_path
+        for bad_id in ("../etc", "not-a-uuid", "../../../../etc/passwd"):
+            response = client.get(
+                f"/v1/sessions/{bad_id}",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+            assert response.status_code in (400, 404, 422), (
+                f"Expected 400/404/422 for session_id={bad_id!r}, got {response.status_code}"
+            )
