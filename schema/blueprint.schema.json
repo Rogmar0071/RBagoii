@@ -1,0 +1,236 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Rogmar0071/ui-blueprint/schema/blueprint.schema.json",
+  "title": "UIBlueprint",
+  "description": "Schema v1 — structured representation of a 10-second Android screen-recording clip, suitable for near-human-indistinguishable replay and optional automation script compilation.",
+  "type": "object",
+  "required": ["version", "meta", "assets", "elements_catalog", "chunks"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version string, e.g. '1.0'.",
+      "pattern": "^\\d+\\.\\d+$"
+    },
+    "meta": {
+      "type": "object",
+      "description": "Recording and device metadata.",
+      "required": ["width_px", "height_px", "fps", "duration_ms"],
+      "additionalProperties": false,
+      "properties": {
+        "width_px":    { "type": "integer", "minimum": 1, "description": "Frame width in pixels." },
+        "height_px":   { "type": "integer", "minimum": 1, "description": "Frame height in pixels." },
+        "fps":         { "type": "number",  "minimum": 1, "description": "Frames per second of the source video." },
+        "duration_ms": { "type": "number",  "minimum": 0, "description": "Total clip duration in milliseconds." },
+        "device":      { "type": "string",  "description": "Device model string (optional)." },
+        "os_version":  { "type": "string",  "description": "Android OS version string (optional)." },
+        "source_file": { "type": "string",  "description": "Original source filename (optional)." },
+        "created_at":  { "type": "string",  "format": "date-time", "description": "ISO-8601 creation timestamp (optional)." }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "description": "Catalog of extracted image/icon crops referenced by elements.",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind"],
+        "additionalProperties": false,
+        "properties": {
+          "id":       { "type": "string", "description": "Unique asset identifier (e.g. 'asset_0001')." },
+          "kind":     { "type": "string", "enum": ["icon", "image", "screenshot_crop", "unknown"], "description": "Asset category." },
+          "path":     { "type": "string", "description": "Relative path to asset file in the asset-crops directory." },
+          "phash":    { "type": "string", "description": "Perceptual hash of the asset for deduplication." },
+          "bbox":     { "$ref": "#/definitions/bbox", "description": "Pixel bounding box in the source frame from which this asset was cropped." },
+          "frame_ms": { "type": "number", "description": "Timestamp (ms) of the source frame." }
+        }
+      }
+    },
+    "elements_catalog": {
+      "type": "array",
+      "description": "Stable element definitions, assigned consistent IDs across the clip lifetime.",
+      "items": { "$ref": "#/definitions/element_def" }
+    },
+    "chunks": {
+      "type": "array",
+      "description": "Ordered list of timeline chunks covering the full clip duration.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/chunk" }
+    }
+  },
+  "definitions": {
+    "bbox": {
+      "type": "object",
+      "description": "Axis-aligned bounding box.",
+      "required": ["x", "y", "w", "h"],
+      "additionalProperties": false,
+      "properties": {
+        "x": { "type": "number", "description": "Left edge (pixels from left)." },
+        "y": { "type": "number", "description": "Top edge (pixels from top)." },
+        "w": { "type": "number", "minimum": 0, "description": "Width in pixels." },
+        "h": { "type": "number", "minimum": 0, "description": "Height in pixels." }
+      }
+    },
+    "color_rgba": {
+      "type": "object",
+      "description": "RGBA color (each channel 0–255).",
+      "required": ["r", "g", "b"],
+      "additionalProperties": false,
+      "properties": {
+        "r": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "g": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "b": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "a": { "type": "integer", "minimum": 0, "maximum": 255, "default": 255 }
+      }
+    },
+    "element_def": {
+      "type": "object",
+      "description": "Canonical definition of a tracked UI element.",
+      "required": ["id", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "id":        { "type": "string",  "description": "Stable element ID (e.g. 'el_0001')." },
+        "type":      { "type": "string",  "enum": ["text", "button", "icon", "list_item", "container", "scroll_view", "input_field", "keyboard", "cursor", "overlay", "unknown"], "description": "Inferred element type." },
+        "first_ms":  { "type": "number",  "description": "Timestamp (ms) when element first appeared." },
+        "last_ms":   { "type": "number",  "description": "Timestamp (ms) when element last appeared." },
+        "style": {
+          "type": "object",
+          "description": "Visual style properties.",
+          "additionalProperties": false,
+          "properties": {
+            "bg_color":       { "$ref": "#/definitions/color_rgba" },
+            "fg_color":       { "$ref": "#/definitions/color_rgba" },
+            "corner_radius":  { "type": "number", "minimum": 0 },
+            "shadow_radius":  { "type": "number", "minimum": 0 },
+            "border_width":   { "type": "number", "minimum": 0 },
+            "border_color":   { "$ref": "#/definitions/color_rgba" }
+          }
+        },
+        "content": {
+          "type": "object",
+          "description": "Element content: text or image reference.",
+          "additionalProperties": false,
+          "properties": {
+            "text":          { "type": "string",  "description": "OCR-extracted text content." },
+            "font_size_est": { "type": "number",  "minimum": 1, "description": "Estimated font size in sp." },
+            "font_weight":   { "type": "string",  "enum": ["thin", "light", "regular", "medium", "bold", "black"], "description": "Estimated font weight." },
+            "asset_id":      { "type": "string",  "description": "Reference to an asset in the assets array." }
+          }
+        },
+        "semantics": {
+          "type": "object",
+          "description": "Inferred interactive semantics.",
+          "additionalProperties": false,
+          "properties": {
+            "clickable":   { "type": "boolean" },
+            "scrollable":  { "type": "boolean" },
+            "selected":    { "type": "boolean" },
+            "focusable":   { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "scene_node": {
+      "type": "object",
+      "description": "Instance of an element in a specific scene (references element_def by ID).",
+      "required": ["element_id", "bbox"],
+      "additionalProperties": false,
+      "properties": {
+        "element_id":  { "type": "string",  "description": "Reference to elements_catalog[].id." },
+        "bbox":        { "$ref": "#/definitions/bbox" },
+        "z":           { "type": "integer", "description": "Z-order (higher = on top)." },
+        "opacity":     { "type": "number",  "minimum": 0, "maximum": 1, "default": 1 },
+        "transform": {
+          "type": "object",
+          "description": "2D affine transform deltas applied on top of bbox.",
+          "additionalProperties": false,
+          "properties": {
+            "translate_x": { "type": "number" },
+            "translate_y": { "type": "number" },
+            "scale_x":     { "type": "number", "default": 1 },
+            "scale_y":     { "type": "number", "default": 1 },
+            "rotate_deg":  { "type": "number", "default": 0 }
+          }
+        }
+      }
+    },
+    "track": {
+      "type": "object",
+      "description": "Parametric motion/appearance track for a single element property over a chunk.",
+      "required": ["element_id", "property", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "element_id":      { "type": "string",  "description": "Element being tracked." },
+        "property":        { "type": "string",  "enum": ["translate_x", "translate_y", "opacity", "scale_x", "scale_y", "rotate_deg", "width", "height", "content_offset_y", "content_offset_x"], "description": "Animated property name." },
+        "model":           { "type": "string",  "enum": ["bezier", "spring", "linear", "step", "sampled"], "description": "Fitted animation model type." },
+        "params":          { "type": "object",  "description": "Model-specific parameters (e.g. bezier control points, spring constants).", "additionalProperties": true },
+        "keyframes": {
+          "type": "array",
+          "description": "Sparse keyframes used for 'sampled' model or as fallback.",
+          "items": {
+            "type": "object",
+            "required": ["t_ms", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "t_ms":  { "type": "number", "description": "Time offset from chunk t0_ms (ms)." },
+              "value": { "type": "number" }
+            }
+          }
+        },
+        "residual_error":  { "type": "number", "minimum": 0, "description": "Mean absolute error between fitted model and sampled data." }
+      }
+    },
+    "event": {
+      "type": "object",
+      "description": "Inferred user or system interaction event.",
+      "required": ["t_ms", "kind"],
+      "additionalProperties": false,
+      "properties": {
+        "t_ms":       { "type": "number",  "description": "Event timestamp in absolute ms from clip start." },
+        "kind":       { "type": "string",  "enum": ["tap", "long_press", "swipe", "drag", "scroll", "type", "back", "app_switch", "system_dialog", "unknown"], "description": "Event type." },
+        "target": {
+          "type": "object",
+          "description": "Inferred target of the event.",
+          "additionalProperties": false,
+          "properties": {
+            "element_id": { "type": "string",  "description": "Targeted element ID (if known)." },
+            "x":          { "type": "number",  "description": "Touch/click X coordinate." },
+            "y":          { "type": "number",  "description": "Touch/click Y coordinate." }
+          }
+        },
+        "data": {
+          "type": "object",
+          "description": "Event-specific payload.",
+          "additionalProperties": true
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "Inference confidence [0,1]." }
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "description": "A time-bounded segment of the clip (~1000 ms by default). Contains a full keyframe scene at t0, per-element tracks, and inferred events.",
+      "required": ["t0_ms", "t1_ms", "key_scene", "tracks", "events"],
+      "additionalProperties": false,
+      "properties": {
+        "t0_ms":     { "type": "number", "minimum": 0, "description": "Chunk start time (ms from clip start)." },
+        "t1_ms":     { "type": "number", "minimum": 0, "description": "Chunk end time (ms from clip start)." },
+        "key_scene": {
+          "type": "array",
+          "description": "Full scene graph snapshot at t0_ms.",
+          "items": { "$ref": "#/definitions/scene_node" }
+        },
+        "tracks":    { "type": "array", "items": { "$ref": "#/definitions/track" } },
+        "events":    { "type": "array", "items": { "$ref": "#/definitions/event" } },
+        "quality": {
+          "type": "object",
+          "description": "Per-chunk quality/confidence scores.",
+          "additionalProperties": false,
+          "properties": {
+            "detection_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+            "tracking_confidence":  { "type": "number", "minimum": 0, "maximum": 1 },
+            "ocr_confidence":       { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    }
+  }
+}
