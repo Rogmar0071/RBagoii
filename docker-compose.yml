@@ -1,0 +1,18 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: ui-blueprint-backend:latest
+    ports:
+      - "8000:8000"
+    environment:
+      # Set a strong random token here or export it from a .env file.
+      - API_KEY=${API_KEY:-change-me}
+      - DATA_DIR=/data
+    volumes:
+      - ui_blueprint_data:/data
+    restart: unless-stopped
+
+volumes:
+  ui_blueprint_data:

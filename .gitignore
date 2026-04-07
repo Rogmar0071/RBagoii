@@ -34,3 +34,15 @@ htmlcov/
 # Temporary outputs
 preview_frames/
 *.bp.json
+
+# Backend data directory
+data/
+backend/data/
+
+# Android
+android/local.properties
+android/.gradle/
+android/app/build/
+android/build/
+android/*.apk
+android/**/*.apk
