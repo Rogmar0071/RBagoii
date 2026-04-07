@@ -13,12 +13,9 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.uiblueprint.android.databinding.ActivityMainBinding
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
@@ -64,13 +61,13 @@ class MainActivity : AppCompatActivity() {
     // Receives CAPTURE_DONE broadcast from CaptureService.
     private val captureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            val clipPath = intent.getStringExtra(CaptureService.EXTRA_CLIP_PATH) ?: return
             val error = intent.getStringExtra(CaptureService.EXTRA_ERROR)
             if (error != null) {
                 Toast.makeText(this@MainActivity, "Capture failed: $error", Toast.LENGTH_LONG).show()
                 resetUi()
                 return
             }
+            val clipPath = intent.getStringExtra(CaptureService.EXTRA_CLIP_PATH) ?: return
             onCaptureDone(File(clipPath))
         }
     }
@@ -132,13 +129,9 @@ class MainActivity : AppCompatActivity() {
         binding.tvStatus.text = getString(R.string.status_uploading)
         val meta = buildMeta()
         val sessionId = UploadWorker.enqueue(applicationContext, clip.absolutePath, meta)
-        sessions.add(0, SessionItem(sessionId, "uploading", clip.name))
+        sessions.add(0, SessionItem(sessionId, STATUS_ENQUEUED, clip.name))
         renderSessionList()
-
-        // Poll worker status every 2 s for up to 60 s.
-        lifecycleScope.launch {
-            pollWorkerStatus(sessionId)
-        }
+        observeWorkerStatus(sessionId)
         resetUi()
     }
 
@@ -151,19 +144,27 @@ class MainActivity : AppCompatActivity() {
         }.toString()
     }
 
-    private suspend fun pollWorkerStatus(sessionId: String) {
-        repeat(POLL_MAX_ITERATIONS) {
-            delay(POLL_INTERVAL_MS)
-            val state = withContext(Dispatchers.IO) {
-                UploadWorker.getState(applicationContext, sessionId)
+    private fun observeWorkerStatus(sessionId: String) {
+        // Each call observes a distinct LiveData keyed by the unique sessionId tag.
+        // All observers are automatically removed when the Activity is destroyed.
+        WorkManager.getInstance(this)
+            .getWorkInfosByTagLiveData(sessionId)
+            .observe(this) { workInfos ->
+                val info = workInfos?.firstOrNull() ?: return@observe
+                val status = when (info.state) {
+                    WorkInfo.State.ENQUEUED -> STATUS_ENQUEUED
+                    WorkInfo.State.RUNNING -> STATUS_UPLOADING
+                    WorkInfo.State.SUCCEEDED -> STATUS_COMPLETED
+                    WorkInfo.State.FAILED -> STATUS_FAILED
+                    WorkInfo.State.BLOCKED -> STATUS_BLOCKED
+                    WorkInfo.State.CANCELLED -> STATUS_CANCELLED
+                }
+                val idx = sessions.indexOfFirst { it.id == sessionId }
+                if (idx >= 0) {
+                    sessions[idx] = sessions[idx].copy(status = status)
+                    renderSessionList()
+                }
             }
-            val idx = sessions.indexOfFirst { it.id == sessionId }
-            if (idx >= 0) {
-                sessions[idx] = sessions[idx].copy(status = state)
-                runOnUiThread { renderSessionList() }
-            }
-            if (state in listOf("succeeded", "failed", "cancelled")) return
-        }
     }
 
     private fun resetUi() {
@@ -187,7 +188,11 @@ class MainActivity : AppCompatActivity() {
     data class SessionItem(val id: String, val status: String, val label: String)
 
     companion object {
-        private const val POLL_INTERVAL_MS = 2_000L
-        private const val POLL_MAX_ITERATIONS = 30 // ~60 s total
+        const val STATUS_ENQUEUED = "enqueued"
+        const val STATUS_UPLOADING = "uploading"
+        const val STATUS_COMPLETED = "completed"
+        const val STATUS_FAILED = "failed"
+        const val STATUS_BLOCKED = "blocked"
+        const val STATUS_CANCELLED = "cancelled"
     }
 }

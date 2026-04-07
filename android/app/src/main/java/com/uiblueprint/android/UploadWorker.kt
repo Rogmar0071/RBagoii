@@ -89,7 +89,11 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
             )
         } catch (e: Exception) {
             Log.e(TAG, "Upload exception", e)
-            Result.retry()
+            Result.failure(
+                Data.Builder()
+                    .putString("error", e.message ?: "Network error")
+                    .build(),
+            )
         }
     }
 

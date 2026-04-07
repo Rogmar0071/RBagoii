@@ -37,6 +37,7 @@ class CaptureService : Service() {
     private var mediaRecorder: MediaRecorder? = null
     private var outputFile: File? = null
     private val handler = Handler(Looper.getMainLooper())
+    private var isFinished = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -122,6 +123,8 @@ class CaptureService : Service() {
     }
 
     private fun finishRecording() {
+        if (isFinished) return
+        isFinished = true
         try {
             mediaRecorder?.stop()
         } catch (_: Exception) {
