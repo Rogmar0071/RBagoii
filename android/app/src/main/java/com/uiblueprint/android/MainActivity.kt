@@ -150,7 +150,7 @@ class MainActivity : AppCompatActivity() {
             captureResultStore.clearRecordingStarted()
             captureResultStore.clearLastResult()
             showIdleUi()
-            Toast.makeText(this, "Capture failed: $ERROR_START_FAILED", Toast.LENGTH_LONG).show()
+            showCaptureError(ERROR_START_FAILED)
         }
     }
 
@@ -203,13 +203,13 @@ class MainActivity : AppCompatActivity() {
         val normalizedEvent = recordingCompletionHelper.normalize(event)
         val error = normalizedEvent.error
         if (error != null) {
-            Toast.makeText(this, "Capture failed: $error", Toast.LENGTH_LONG).show()
+            showCaptureError(error)
             return
         }
 
         val clipPath = normalizedEvent.clipPath
         if (clipPath == null) {
-            Toast.makeText(this, "Capture failed: ${CaptureDoneEvent.ERROR_NO_OUTPUT}", Toast.LENGTH_LONG).show()
+            showCaptureError(CaptureDoneEvent.ERROR_NO_OUTPUT)
             return
         }
         onCaptureDone(File(clipPath))
@@ -220,7 +220,7 @@ class MainActivity : AppCompatActivity() {
         captureResultStore.clearRecordingStarted()
         captureResultStore.clearLastResult()
         showIdleUi()
-        Toast.makeText(this, "Capture failed: ${CaptureDoneEvent.ERROR_TIMEOUT}", Toast.LENGTH_LONG).show()
+        showCaptureError(CaptureDoneEvent.ERROR_TIMEOUT)
     }
 
     private fun recoverPendingCaptureState() {
@@ -261,6 +261,15 @@ class MainActivity : AppCompatActivity() {
     private fun showRecordingUi() {
         binding.btnRecord.isEnabled = false
         binding.tvStatus.text = getString(R.string.status_recording)
+    }
+
+    private fun showCaptureError(message: String) {
+        val displayMessage = if (message.startsWith("Capture failed", ignoreCase = true)) {
+            message
+        } else {
+            "Capture failed: $message"
+        }
+        Toast.makeText(this, displayMessage, Toast.LENGTH_LONG).show()
     }
 
     // -------------------------------------------------------------------------

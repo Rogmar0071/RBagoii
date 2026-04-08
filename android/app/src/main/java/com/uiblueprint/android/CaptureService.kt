@@ -63,7 +63,7 @@ class CaptureService : Service() {
             intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
         } else {
             @Suppress("DEPRECATION")
-                intent.getParcelableExtra(EXTRA_RESULT_DATA)
+            intent.getParcelableExtra(EXTRA_RESULT_DATA)
         }
 
         if (resultCode != Activity.RESULT_OK) {
