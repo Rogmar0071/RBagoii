@@ -141,7 +141,7 @@ async def derive_domain_profiles(body: dict[str, Any]) -> JSONResponse:
         return _error(
             400,
             "invalid_request",
-            f"media.{missing[0]} is required.",
+            f"Required media fields missing: {', '.join(f'media.{field}' for field in missing)}.",
             {"missing_fields": missing},
         )
 
