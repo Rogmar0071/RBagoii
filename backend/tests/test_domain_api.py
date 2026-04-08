@@ -355,6 +355,7 @@ class TestCompile:
         assert bp["id"]
         assert bp["domain_profile_id"] == pid
         assert bp["schema_version"] == SCHEMA_VERSION
+        assert bp["schema_version_used"] == SCHEMA_VERSION
         assert bp["source"]["media_id"] == _MEDIA["media_id"]
         assert 0.0 <= bp["completeness"]["score"] <= 1.0
         assert len(bp["entities"]) >= 1

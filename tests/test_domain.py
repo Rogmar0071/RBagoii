@@ -129,6 +129,7 @@ class TestBlueprintIRStructure:
         assert bp.id
         assert bp.domain_profile_id == confirmed_profile.id
         assert bp.schema_version
+        assert bp.schema_version_used == confirmed_profile.schema_version
         assert bp.source.media_id == sample_media["media_id"]
         assert 0.0 <= bp.completeness.score <= 1.0
 
@@ -176,6 +177,7 @@ class TestBlueprintIRStructure:
         bp2 = BlueprintIR.from_dict(d)
         assert bp2.id == bp.id
         assert bp2.domain_profile_id == bp.domain_profile_id
+        assert bp2.schema_version_used == bp.schema_version_used
         assert len(bp2.entities) == len(bp.entities)
         assert len(bp2.relations) == len(bp.relations)
 
@@ -203,6 +205,7 @@ class TestSchemaVersionInSubObjects:
         bp = compileBlueprintFromMedia(sample_media, confirmed_profile)
         d = bp.to_dict()
         assert d["schema_version"] == SCHEMA_VERSION
+        assert d["schema_version_used"] == SCHEMA_VERSION
         assert d["source"]["schema_version"] == SCHEMA_VERSION
         assert d["completeness"]["schema_version"] == SCHEMA_VERSION
         for ent in d["entities"]:

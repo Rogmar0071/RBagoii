@@ -419,6 +419,7 @@ class BlueprintIR:
     schema_version: str = SCHEMA_VERSION
     id: str = field(default_factory=_uuid4)
     domain_profile_id: str = ""
+    schema_version_used: str | None = None
     source: BlueprintSource = field(default_factory=BlueprintSource)
     completeness: Completeness = field(default_factory=Completeness)
     entities: list[BlueprintEntity] = field(default_factory=list)
@@ -431,6 +432,7 @@ class BlueprintIR:
             "schema_version": self.schema_version,
             "id": self.id,
             "domain_profile_id": self.domain_profile_id,
+            "schema_version_used": self.schema_version_used,
             "source": self.source.to_dict(),
             "completeness": self.completeness.to_dict(),
             "entities": [e.to_dict() for e in self.entities],
@@ -445,6 +447,7 @@ class BlueprintIR:
             schema_version=data.get("schema_version", SCHEMA_VERSION),
             id=data.get("id", _uuid4()),
             domain_profile_id=data.get("domain_profile_id", ""),
+            schema_version_used=data.get("schema_version_used"),
             source=BlueprintSource.from_dict(data.get("source", {})),
             completeness=Completeness.from_dict(data.get("completeness", {})),
             entities=[BlueprintEntity.from_dict(e) for e in data.get("entities", [])],

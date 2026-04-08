@@ -14,6 +14,7 @@ from typing import Any
 
 from ui_blueprint.domain.ir import (
     DOMAIN_STATUS_CONFIRMED,
+    SCHEMA_VERSION,
     BlueprintConstraint,
     BlueprintEntity,
     BlueprintIR,
@@ -262,7 +263,8 @@ def compileBlueprintFromMedia(
 
     return BlueprintIR(
         domain_profile_id=confirmed_domain_profile.id,
-        schema_version=confirmed_domain_profile.schema_version,
+        schema_version=SCHEMA_VERSION,
+        schema_version_used=confirmed_domain_profile.schema_version,
         source=source,
         completeness=Completeness(score=score, missing_info=missing),
         entities=entities,
