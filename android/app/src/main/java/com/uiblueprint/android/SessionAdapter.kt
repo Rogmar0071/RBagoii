@@ -1,6 +1,7 @@
 package com.uiblueprint.android
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
 import com.uiblueprint.android.databinding.ItemSessionBinding
@@ -8,11 +9,13 @@ import com.uiblueprint.android.databinding.ItemSessionBinding
 /**
  * RecyclerView adapter for the in-memory session list shown on [MainActivity].
  *
- * Saved items are clickable; failed items are visually dimmed and non-interactive.
+ * Saved items are clickable (opens in-app player) and show an "Analyze" button.
+ * Failed items are visually dimmed and non-interactive.
  */
 class SessionAdapter(
     private val sessions: List<MainActivity.SessionItem>,
     private val onSavedItemClick: (MainActivity.SessionItem) -> Unit,
+    private val onAnalyzeClick: (MainActivity.SessionItem) -> Unit,
 ) : RecyclerView.Adapter<SessionAdapter.ViewHolder>() {
 
     inner class ViewHolder(private val binding: ItemSessionBinding) :
@@ -26,8 +29,13 @@ class SessionAdapter(
             binding.root.isEnabled = isSaved
             binding.root.alpha = if (isSaved) 1.0f else 0.4f
             binding.root.setOnClickListener(null)
+            binding.btnAnalyze.visibility = View.GONE
+            binding.btnAnalyze.setOnClickListener(null)
+
             if (isSaved) {
                 binding.root.setOnClickListener { onSavedItemClick(item) }
+                binding.btnAnalyze.visibility = View.VISIBLE
+                binding.btnAnalyze.setOnClickListener { onAnalyzeClick(item) }
             }
         }
     }

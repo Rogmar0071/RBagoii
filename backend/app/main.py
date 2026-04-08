@@ -44,9 +44,12 @@ logger = logging.getLogger("uvicorn.error")
 app = FastAPI(title="UI Blueprint Backend", version="1.0.0")
 
 # Domain Profile + Blueprint Compiler routes (no auth required — public API).
+# Clip analysis route (OpenAI-powered; requires OPENAI_API_KEY env var).
+from backend.app.analyze_routes import router as _analyze_router  # noqa: E402
 from backend.app.domain_routes import router as _domain_router  # noqa: E402
 
 app.include_router(_domain_router)
+app.include_router(_analyze_router)
 
 
 # ---------------------------------------------------------------------------

@@ -106,7 +106,11 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        sessionAdapter = SessionAdapter(sessions) { item -> openVideoPlayer(item) }
+        sessionAdapter = SessionAdapter(
+            sessions,
+            onSavedItemClick = { item -> openVideoPlayer(item) },
+            onAnalyzeClick = { item -> openAnalysis(item) },
+        )
         binding.rvSessions.layoutManager = LinearLayoutManager(this)
         binding.rvSessions.adapter = sessionAdapter
 
@@ -318,6 +322,19 @@ class MainActivity : AppCompatActivity() {
         }
         val intent = Intent(this, VideoPlayerActivity::class.java).apply {
             putExtra(VideoPlayerActivity.EXTRA_URI_STRING, uriString)
+        }
+        startActivity(intent)
+    }
+
+    private fun openAnalysis(item: SessionItem) {
+        val uriString = item.uri
+        if (uriString.isNullOrBlank()) {
+            Toast.makeText(this, getString(R.string.error_video_open), Toast.LENGTH_SHORT).show()
+            return
+        }
+        val intent = Intent(this, AnalysisActivity::class.java).apply {
+            putExtra(AnalysisActivity.EXTRA_VIDEO_URI, uriString)
+            putExtra(AnalysisActivity.EXTRA_VIDEO_LABEL, item.label)
         }
         startActivity(intent)
     }

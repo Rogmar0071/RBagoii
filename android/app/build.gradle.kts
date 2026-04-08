@@ -35,6 +35,11 @@ android {
             "BACKEND_API_KEY",
             "\"${localProps.getProperty("BACKEND_API_KEY", "")}\"",
         )
+        buildConfigField(
+            "String",
+            "ANALYSIS_BASE_URL",
+            "\"${localProps.getProperty("ANALYSIS_BASE_URL", localProps.getProperty("BACKEND_BASE_URL", "http://10.0.2.2:8000"))}\"",
+        )
     }
 
     buildFeatures {
