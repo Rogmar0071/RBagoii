@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Notification for foreground service (Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required for internal audio capture via AudioPlaybackCaptureConfiguration (API 29+) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
         android:allowBackup="true"
