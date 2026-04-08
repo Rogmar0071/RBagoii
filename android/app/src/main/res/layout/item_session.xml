@@ -25,4 +25,16 @@
         android:fontFamily="monospace"
         android:textSize="12sp" />
 
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnAnalyze"
+        style="@style/Widget.Material3.Button.TextButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="4dp"
+        android:minWidth="0dp"
+        android:paddingHorizontal="8dp"
+        android:text="@string/btn_analyze"
+        android:textSize="11sp"
+        android:visibility="gone" />
+
 </LinearLayout>

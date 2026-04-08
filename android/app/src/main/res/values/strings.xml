@@ -2,13 +2,24 @@
 <resources>
     <string name="app_name">UI Blueprint</string>
     <string name="btn_record">Record 20 s</string>
+    <string name="btn_analyze">Analyze</string>
     <string name="status_idle">Ready</string>
     <string name="status_requesting_permission">Requesting permission…</string>
     <string name="status_recording">Recording… (video only)</string>
     <string name="status_recording_with_audio">Recording… (video + audio)</string>
     <string name="status_uploading">Uploading…</string>
     <string name="label_sessions">Sessions</string>
+    <string name="label_analysis">Analysis</string>
+    <string name="label_summary">Summary:</string>
+    <string name="label_conclusions">Conclusions:</string>
+    <string name="label_key_events">Key Events:</string>
+    <string name="label_confidence">Confidence:</string>
+    <string name="label_diagnostics">Diagnostics:</string>
+    <string name="hint_requirements">Describe what to analyze (e.g. "Identify safety hazards")</string>
     <string name="error_video_open">Could not open video</string>
+    <string name="error_requirements_empty">Please enter analysis requirements</string>
+    <string name="error_analysis_network">Network error: %1$s</string>
+    <string name="error_analysis_server">Server error %1$d: %2$s</string>
     <string name="msg_audio_requires_api29">Internal audio capture requires Android 10+. Recording video only.</string>
     <string name="msg_audio_permission_denied">Audio permission denied — recording video only.</string>
     <string name="notif_recording_title">Recording screen…</string>

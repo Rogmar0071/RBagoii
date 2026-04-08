@@ -10,6 +10,8 @@ services:
       # Set a strong random token here or export it from a .env file.
       - API_KEY=${API_KEY:-change-me}
       - DATA_DIR=/data
+      # Required for the /v1/analyze endpoint.
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
     volumes:
       - ui_blueprint_data:/data
     restart: unless-stopped

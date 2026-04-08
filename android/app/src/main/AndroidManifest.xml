@@ -34,6 +34,11 @@
             android:name=".VideoPlayerActivity"
             android:exported="false" />
 
+        <activity
+            android:name=".AnalysisActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Foreground service that runs MediaProjection + MediaRecorder -->
         <service
             android:name=".CaptureService"

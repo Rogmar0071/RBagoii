@@ -2,7 +2,8 @@
 
 FastAPI service that receives Android screen-recording uploads, runs the
 `ui_blueprint` extractor + preview generator in a background thread, and
-exposes the results over HTTP.
+exposes the results over HTTP.  Also exposes a clip-analysis endpoint that
+uses OpenAI to return structured insights about a recorded clip.
 
 ---
 
@@ -15,8 +16,59 @@ exposes the results over HTTP.
 | `GET`  | `/v1/sessions/{id}/blueprint` | Download blueprint JSON |
 | `GET`  | `/v1/sessions/{id}/preview/index` | List preview PNG filenames |
 | `GET`  | `/v1/sessions/{id}/preview/{file}` | Download a preview PNG |
+| `POST` | `/v1/analyze` | Analyze a clip with OpenAI (see below) |
 
-All endpoints require `Authorization: Bearer <API_KEY>`.
+All `/v1/sessions` endpoints require `Authorization: Bearer <API_KEY>`.  
+`/v1/analyze` does **not** require auth beyond `OPENAI_API_KEY` being set in the environment.
+
+---
+
+## POST /v1/analyze
+
+Accepts a multipart upload, extracts frames + optionally transcribes audio, then
+calls the OpenAI Responses API and returns structured conclusions.
+**The video is never stored permanently** — it is processed inside a temporary
+directory that is deleted immediately after the response is sent.
+
+### Request
+
+```
+Content-Type: multipart/form-data
+
+video        – MP4 file
+requirements – string (e.g. "Identify any safety hazards")
+```
+
+### Response JSON
+
+```json
+{
+  "summary": "The clip shows a conveyor belt operating normally...",
+  "conclusions": [
+    "Belt speed appears consistent.",
+    "No visible obstructions detected."
+  ],
+  "key_events": [
+    {"t_sec": 2.0, "event": "Object enters frame from left"},
+    {"t_sec": 7.0, "event": "Belt briefly slows"}
+  ],
+  "confidence": 0.82,
+  "diagnostics": {
+    "frames_used": 12,
+    "transcript_used": false,
+    "audio_present": false
+  }
+}
+```
+
+### Sample curl
+
+```bash
+curl -X POST http://localhost:8000/v1/analyze \
+  -F "video=@/path/to/recording.mp4" \
+  -F "requirements=Identify any safety hazards visible in the recording"
+# → {"summary":"...","conclusions":[...],"key_events":[...],"confidence":0.82,"diagnostics":{...}}
+```
 
 ---
 
@@ -27,7 +79,7 @@ All endpoints require `Authorization: Bearer <API_KEY>`.
 pip install ".[video]"
 pip install -r backend/requirements.txt
 
-API_KEY=dev-secret uvicorn backend.app.main:app --reload
+API_KEY=dev-secret OPENAI_API_KEY=sk-... uvicorn backend.app.main:app --reload
 ```
 
 ---
@@ -36,7 +88,7 @@ API_KEY=dev-secret uvicorn backend.app.main:app --reload
 
 ```bash
 # From repo root
-API_KEY=my-secret docker compose up --build
+API_KEY=my-secret OPENAI_API_KEY=sk-... docker compose up --build
 ```
 
 Upload a clip:
@@ -51,7 +103,23 @@ curl -X POST http://localhost:8000/v1/sessions \
 # Poll status
 curl http://localhost:8000/v1/sessions/<uuid> \
   -H "Authorization: Bearer my-secret"
+
+# Analyze a clip
+curl -X POST http://localhost:8000/v1/analyze \
+  -F "video=@/path/to/recording.mp4" \
+  -F "requirements=Describe the main activity in the recording"
 ```
+
+---
+
+## Configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `API_KEY` | *(empty — no auth)* | Bearer token required by `/v1/sessions` endpoints |
+| `DATA_DIR` | `./data` | Root directory for session files |
+| `OPENAI_API_KEY` | *(required for /v1/analyze)* | OpenAI API key |
+| `BACKEND_DISABLE_JOBS` | `0` | Set to `1` to skip background jobs (tests) |
 
 ---
 
@@ -143,6 +211,7 @@ To serve over HTTPS, install Nginx + Certbot, configure a proxy_pass to `localho
 
 | Variable | Default | Description |
 |---|---|---|
-| `API_KEY` | *(empty — no auth)* | Bearer token required by all endpoints |
+| `API_KEY` | *(empty — no auth)* | Bearer token required by `/v1/sessions` endpoints |
 | `DATA_DIR` | `./data` | Root directory for session files |
+| `OPENAI_API_KEY` | *(required for /v1/analyze)* | OpenAI API key |
 | `BACKEND_DISABLE_JOBS` | `0` | Set to `1` to skip background jobs (tests) |
