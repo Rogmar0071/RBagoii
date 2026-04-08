@@ -354,7 +354,11 @@ class TestCompile:
         status_code, data = _compile(client, pid)
         assert status_code == 400
         assert data["error"]["code"] == "domain_not_confirmed"
-        assert "confirmed" in data["error"]["message"].lower()
+        assert (
+            data["error"]["message"]
+            == "Compilation requires a confirmed domain profile. "
+            "Derive a domain profile, confirm it, then compile."
+        )
 
     def test_compile_happy_path(self, client: TestClient) -> None:
         """derive -> confirm -> compile produces a valid BlueprintIR."""

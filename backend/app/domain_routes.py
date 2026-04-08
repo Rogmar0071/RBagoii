@@ -374,7 +374,12 @@ async def compile_blueprint(body: dict[str, Any]) -> JSONResponse:
         blueprint = compileBlueprintFromMedia(
             media=media, confirmed_domain_profile=profile
         )
-    except BlueprintCompileError as exc:
-        return _error(400, "domain_not_confirmed", str(exc))
+    except BlueprintCompileError:
+        return _error(
+            400,
+            "domain_not_confirmed",
+            "Compilation requires a confirmed domain profile. "
+            "Derive a domain profile, confirm it, then compile.",
+        )
 
     return _ok({"blueprint": blueprint.to_dict()})
