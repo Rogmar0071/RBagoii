@@ -327,7 +327,10 @@ class ScreenRecorder(
         trackAddLatch.countDown()
         // Wait for the other encoder(s) to add their track, with a safety timeout so we never
         // deadlock if the other encoder fails before emitting INFO_OUTPUT_FORMAT_CHANGED.
-        trackAddLatch.await(LATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        val allAdded = trackAddLatch.await(LATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!allAdded) {
+            Log.w(TAG, "Timed out waiting for all encoder tracks to be added; starting muxer with available tracks")
+        }
         synchronized(muxerLock) {
             if (muxerStarted.compareAndSet(false, true)) {
                 muxer.start()
@@ -381,10 +384,12 @@ class ScreenRecorder(
     }
 
     private fun releaseEncoders() {
-        runCatching { videoEncoder?.stop(); videoEncoder?.release() }
-        runCatching { audioEncoder?.stop(); audioEncoder?.release() }
-        runCatching { audioRecord?.release() }
-        runCatching { virtualDisplay?.release() }
+        runCatching { videoEncoder?.stop() }.onFailure { Log.w(TAG, "videoEncoder stop failed", it) }
+        runCatching { videoEncoder?.release() }.onFailure { Log.w(TAG, "videoEncoder release failed", it) }
+        runCatching { audioEncoder?.stop() }.onFailure { Log.w(TAG, "audioEncoder stop failed", it) }
+        runCatching { audioEncoder?.release() }.onFailure { Log.w(TAG, "audioEncoder release failed", it) }
+        runCatching { audioRecord?.release() }.onFailure { Log.w(TAG, "audioRecord release failed", it) }
+        runCatching { virtualDisplay?.release() }.onFailure { Log.w(TAG, "virtualDisplay release failed", it) }
     }
 
     companion object {
