@@ -4,8 +4,14 @@
     <string name="btn_record">Record 20 s</string>
     <string name="status_idle">Ready</string>
     <string name="status_requesting_permission">Requesting permission…</string>
-    <string name="status_recording">Recording…</string>
+    <string name="status_recording">Recording… (video only)</string>
+    <string name="status_recording_with_audio">Recording… (video + audio)</string>
     <string name="status_uploading">Uploading…</string>
     <string name="label_sessions">Sessions</string>
     <string name="error_video_open">Could not open video</string>
+    <string name="msg_audio_requires_api29">Internal audio capture requires Android 10+. Recording video only.</string>
+    <string name="msg_audio_permission_denied">Audio permission denied — recording video only.</string>
+    <string name="notif_recording_title">Recording screen…</string>
+    <string name="notif_recording_with_audio">Recording a 20-second clip with audio</string>
+    <string name="notif_recording_video_only">Recording a 20-second clip (video only)</string>
 </resources>

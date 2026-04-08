@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
 import android.os.Handler
 import android.os.Build
@@ -25,10 +26,11 @@ import java.util.UUID
  *
  * Shows a "Record 20 s" button.  When tapped:
  * 1. Requests MediaProjection permission.
- * 2. Starts CaptureService (foreground, mediaProjection type).
- * 3. CaptureService records 20 s and broadcasts CAPTURE_DONE.
- * 4. MainActivity inserts the clip into the device Gallery via MediaStore.
- * 5. A RecyclerView session list shows [saved] or [failed] status; tapping a saved item plays it.
+ * 2. Optionally requests RECORD_AUDIO (API >= 29) for internal audio capture.
+ * 3. Starts CaptureService (foreground, mediaProjection type).
+ * 4. CaptureService records 20 s and broadcasts CAPTURE_DONE.
+ * 5. MainActivity inserts the clip into the device Gallery via MediaStore.
+ * 6. A RecyclerView session list shows [saved] or [failed] status; tapping a saved item plays it.
  *
  * Backend upload is disabled by default; see [MediaStoreVideoSaver] for local storage.
  */
@@ -47,6 +49,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Whether RECORD_AUDIO was granted when the most recent record attempt began.
+    private var audioPermissionGranted = false
+
     // MediaProjection permission launcher.
     private val projectionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -64,6 +69,17 @@ class MainActivity : AppCompatActivity() {
     ) {
         // Permission result handled silently; foreground service notification will still show
         // on older Android versions even without the permission.
+        requestAudioThenScreenCapture()
+    }
+
+    // RECORD_AUDIO permission launcher — required for internal audio capture (API >= 29).
+    private val audioPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        audioPermissionGranted = granted
+        if (!granted) {
+            Toast.makeText(this, getString(R.string.msg_audio_permission_denied), Toast.LENGTH_LONG).show()
+        }
         requestScreenCapture()
     }
 
@@ -125,7 +141,33 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         } else {
+            requestAudioThenScreenCapture()
+        }
+    }
+
+    /**
+     * On API >= 29, requests RECORD_AUDIO if not already granted (required for internal audio
+     * capture).  On older APIs shows a toast explaining the limitation, then goes straight to
+     * screen-capture consent.
+     */
+    private fun requestAudioThenScreenCapture() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            // Internal audio capture is not available; proceed video-only.
+            audioPermissionGranted = false
+            Toast.makeText(this, getString(R.string.msg_audio_requires_api29), Toast.LENGTH_LONG).show()
             requestScreenCapture()
+            return
+        }
+
+        val alreadyGranted = ContextCompat.checkSelfPermission(
+            this, android.Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (alreadyGranted) {
+            audioPermissionGranted = true
+            requestScreenCapture()
+        } else {
+            audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -137,11 +179,12 @@ class MainActivity : AppCompatActivity() {
     private fun startCapture(resultCode: Int, data: Intent) {
         captureResultStore.clearLastResult()
         captureResultStore.markRecordingStarted(SystemClock.elapsedRealtime())
-        showRecordingUi()
+        showRecordingUi(audioPermissionGranted)
         scheduleRecordingWatchdog(RECORDING_TIMEOUT_MS)
         val intent = Intent(this, CaptureService::class.java).apply {
             putExtra(CaptureService.EXTRA_RESULT_CODE, resultCode)
             putExtra(CaptureService.EXTRA_RESULT_DATA, data)
+            putExtra(CaptureService.EXTRA_AUDIO_ENABLED, audioPermissionGranted)
         }
         try {
             startForegroundService(intent)
@@ -245,9 +288,13 @@ class MainActivity : AppCompatActivity() {
         binding.tvStatus.text = getString(R.string.status_requesting_permission)
     }
 
-    private fun showRecordingUi() {
+    private fun showRecordingUi(withAudio: Boolean = false) {
         binding.btnRecord.isEnabled = false
-        binding.tvStatus.text = getString(R.string.status_recording)
+        binding.tvStatus.text = if (withAudio) {
+            getString(R.string.status_recording_with_audio)
+        } else {
+            getString(R.string.status_recording)
+        }
     }
 
     private fun showCaptureError(message: String) {
