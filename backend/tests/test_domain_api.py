@@ -190,6 +190,20 @@ class TestDerive:
         body = resp.json()
         assert body["error"]["code"] == "invalid_request"
 
+    def test_derive_missing_multiple_required_fields_lists_all_in_message(
+        self, client: TestClient
+    ) -> None:
+        resp = client.post("/api/domains/derive", json={"media": {}, "options": {}})
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "invalid_request"
+        assert "media.media_id" in body["error"]["message"]
+        assert "media.media_type" in body["error"]["message"]
+        assert body["error"]["details"]["missing_fields"] == [
+            "media_id",
+            "media_type",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Get endpoint
