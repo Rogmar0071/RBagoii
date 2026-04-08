@@ -2,7 +2,8 @@
 backend.app.domain_routes
 =========================
 FastAPI router implementing the AI-derived Domain Profile and Blueprint
-Compiler API (steering contract v1.1.1).
+Compiler API for steering contract v1.1.1, while successful payloads keep
+schema_version v1.1.0 per the compatibility invariant.
 
 Endpoints
 ---------

@@ -3,7 +3,7 @@ tests.test_domain
 =================
 Unit tests for the AI-derived Domain Profile and Blueprint Compiler.
 
-Covers steering contract v1.1.0 required test cases:
+Covers steering contract v1.1.1 required test cases:
 1. compileBlueprintFromMedia rejects None domain
 2. compileBlueprintFromMedia rejects non-confirmed domain (draft/archived)
 3. BlueprintIR relations/constraints reference only existing entity ids
