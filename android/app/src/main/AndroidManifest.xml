@@ -30,8 +30,7 @@
 
         <activity
             android:name=".VideoPlayerActivity"
-            android:exported="false"
-            android:screenOrientation="landscape" />
+            android:exported="false" />
 
         <!-- Foreground service that runs MediaProjection + MediaRecorder -->
         <service
