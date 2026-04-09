@@ -7,11 +7,14 @@ schema_version v1.1.0 per the compatibility invariant.
 
 Endpoints
 ---------
-POST   /api/domains/derive                       derive draft domain profile candidates
-GET    /api/domains/{domain_profile_id}          fetch a domain profile
-PATCH  /api/domains/{domain_profile_id}          edit a draft profile (409 if not draft)
-POST   /api/domains/{domain_profile_id}/confirm  confirm a draft profile (409 if not draft)
-POST   /api/blueprints/compile                   compile blueprint (requires confirmed domain)
+POST   /api/domains/derive                       derive draft domain profile candidates  [auth]
+GET    /api/domains/{domain_profile_id}          fetch a domain profile                  [public]
+PATCH  /api/domains/{domain_profile_id}          edit a draft profile (409 if not draft) [auth]
+POST   /api/domains/{domain_profile_id}/confirm  confirm a draft profile (409 if not draft) [auth]
+POST   /api/blueprints/compile                   compile blueprint (requires confirmed domain) [auth]
+
+All mutating endpoints require ``Authorization: Bearer <API_KEY>``.
+GET is intentionally public so clients can inspect profiles without a key.
 
 Error shape (all error responses)::
 
@@ -23,11 +26,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from backend.app.auth import require_auth
 from ui_blueprint.domain.compiler import BlueprintCompileError, compileBlueprintFromMedia
-from ui_blueprint.domain.derivation import StubDomainDerivationProvider
+from ui_blueprint.domain.derivation import DomainDerivationProvider, StubDomainDerivationProvider
 from ui_blueprint.domain.ir import (
     DOMAIN_STATUS_CONFIRMED,
     DOMAIN_STATUS_DRAFT,
@@ -37,6 +41,7 @@ from ui_blueprint.domain.ir import (
     ProfileExporter,
     ProfileValidator,
 )
+from ui_blueprint.domain.openai_provider import OpenAIProviderError, build_provider_from_env
 from ui_blueprint.domain.store import DomainProfileStore, InMemoryDomainProfileStore
 
 router = APIRouter(prefix="/api")
@@ -60,10 +65,32 @@ def set_store(store: DomainProfileStore) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Provider selection
 # ---------------------------------------------------------------------------
 
-_provider = StubDomainDerivationProvider()
+# Lazily initialised on first call; tests can override via set_provider().
+_provider: DomainDerivationProvider | None = None
+
+
+def get_provider() -> DomainDerivationProvider:
+    """
+    Return the active derivation provider.
+
+    Uses OpenAIDomainDerivationProvider when OPENAI_API_KEY is set;
+    falls back to StubDomainDerivationProvider otherwise.  Cached after
+    the first call; tests can call set_provider() to override.
+    """
+    global _provider
+    if _provider is None:
+        openai_p = build_provider_from_env()
+        _provider = openai_p if openai_p is not None else StubDomainDerivationProvider()
+    return _provider
+
+
+def set_provider(provider: DomainDerivationProvider | None) -> None:
+    """Replace the active provider (for testing). Pass None to force lazy re-init from env."""
+    global _provider
+    _provider = provider
 
 
 def _now_rfc3339() -> str:
@@ -110,7 +137,7 @@ def _get_profile_or_error(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/domains/derive", status_code=200)
+@router.post("/domains/derive", status_code=200, dependencies=[Depends(require_auth)])
 async def derive_domain_profiles(body: dict[str, Any]) -> JSONResponse:
     """
     Derive one or more draft DomainProfile candidates from media input.
@@ -157,7 +184,15 @@ async def derive_domain_profiles(body: dict[str, Any]) -> JSONResponse:
         "metadata": media.get("metadata", {}),
     }
 
-    candidates = _provider.derive(media_input, max_candidates=max_candidates)
+    try:
+        candidates = get_provider().derive(media_input, max_candidates=max_candidates)
+    except OpenAIProviderError as exc:
+        return _error(
+            502,
+            "ai_provider_error",
+            "Domain derivation failed.",
+            {"provider": "openai", "hint": exc.hint},
+        )
 
     store = get_store()
     for profile in candidates:
@@ -206,7 +241,7 @@ def get_domain_profile(domain_profile_id: str) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/domains/{domain_profile_id}", status_code=200)
+@router.patch("/domains/{domain_profile_id}", status_code=200, dependencies=[Depends(require_auth)])
 async def patch_domain_profile(
     domain_profile_id: str, body: dict[str, Any]
 ) -> JSONResponse:
@@ -271,7 +306,7 @@ async def patch_domain_profile(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/domains/{domain_profile_id}/confirm", status_code=200)
+@router.post("/domains/{domain_profile_id}/confirm", status_code=200, dependencies=[Depends(require_auth)])
 async def confirm_domain_profile(
     domain_profile_id: str, body: dict[str, Any]
 ) -> JSONResponse:
@@ -335,7 +370,7 @@ async def confirm_domain_profile(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/blueprints/compile", status_code=200)
+@router.post("/blueprints/compile", status_code=200, dependencies=[Depends(require_auth)])
 async def compile_blueprint(body: dict[str, Any]) -> JSONResponse:
     """
     Compile a BlueprintIR from media + a confirmed DomainProfile.

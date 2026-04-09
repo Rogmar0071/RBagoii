@@ -229,3 +229,141 @@ class TestBlueprintAndPreview:
             assert response.status_code in (400, 404, 422), (
                 f"Expected 400/404/422 for session_id={bad_id!r}, got {response.status_code}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Root health check
+# ---------------------------------------------------------------------------
+
+
+class TestRoot:
+    def test_root_returns_200(self, client: TestClient) -> None:
+        """GET / must return 200 with no auth (used by Render health checks)."""
+        response = client.get("/")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["service"] == "ui-blueprint-backend"
+
+
+# ---------------------------------------------------------------------------
+# /api/chat endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestChat:
+    """Tests for POST /api/chat — auth enforcement + stub/OpenAI behaviour."""
+
+    def test_chat_requires_auth_when_api_key_set(self, client: TestClient) -> None:
+        """401 when Authorization header is missing and API_KEY is configured."""
+        # The autouse _set_api_key fixture already sets API_KEY=TOKEN.
+        response = client.post("/api/chat", json={"message": "hello"})
+        assert response.status_code == 401
+
+    def test_chat_wrong_token_returns_403(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/chat",
+            json={"message": "hello"},
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert response.status_code == 403
+
+    def test_chat_missing_message_returns_400(self, client: TestClient) -> None:
+        response = client.post(
+            "/api/chat",
+            json={"context": {}},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_request"
+
+    def test_chat_stub_reply_when_no_openai_key(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When OPENAI_API_KEY is absent a deterministic stub reply is returned."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        response = client.post(
+            "/api/chat",
+            json={"message": "What is ui-blueprint?"},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["schema_version"]
+        assert "Stub" in body["reply"]
+        assert "tools_available" in body
+        assert "domains.derive" in body["tools_available"]
+
+    def test_chat_schema_version_present(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All successful chat responses include top-level schema_version."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        from ui_blueprint.domain.ir import SCHEMA_VERSION
+
+        response = client.post(
+            "/api/chat",
+            json={"message": "hello"},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["schema_version"] == SCHEMA_VERSION
+
+    def test_chat_openai_success(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When OPENAI_API_KEY is set and OpenAI responds, reply is returned."""
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Here is how ui-blueprint works."}}]
+        }
+
+        with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
+            mock_ctx = MagicMock()
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.post.return_value = mock_response
+
+            response = client.post(
+                "/api/chat",
+                json={"message": "How does this work?"},
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["reply"] == "Here is how ui-blueprint works."
+        assert "tools_available" in body
+
+    def test_chat_openai_timeout_returns_502(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When OpenAI times out, /api/chat returns 502 ai_provider_error."""
+        import httpx
+        from unittest.mock import MagicMock, patch
+
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
+
+        with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
+            mock_ctx = MagicMock()
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.post.side_effect = httpx.TimeoutException("timed out")
+
+            response = client.post(
+                "/api/chat",
+                json={"message": "hello"},
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+
+        assert response.status_code == 502
+        body = response.json()
+        assert body["error"]["code"] == "ai_provider_error"
+        assert body["error"]["details"]["hint"] == "timeout"
+

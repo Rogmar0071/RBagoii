@@ -8,10 +8,17 @@ the resulting blueprint JSON and preview PNG frames.
 Environment variables
 ---------------------
 API_KEY          Required bearer token for all mutating endpoints.
+                 NOTE: this is the service access token, not the OpenAI key.
 DATA_DIR         Root directory for session data (default: ./data).
 BACKEND_DISABLE_JOBS
                  If set to "1", background extraction jobs are skipped
                  (useful in unit tests to avoid heavy processing).
+OPENAI_API_KEY   (Optional) Server-side OpenAI credential — enables AI-backed
+                 domain derivation and /api/chat.  Never returned to clients.
+OPENAI_MODEL_DOMAIN  (Optional) Model for domain derivation (default: gpt-4.1-mini).
+OPENAI_MODEL_CHAT    (Optional) Model for /api/chat (default: gpt-4.1-mini).
+OPENAI_BASE_URL      (Optional) OpenAI base URL (default: https://api.openai.com).
+OPENAI_TIMEOUT_SECONDS (Optional) Request timeout in seconds (default: 30).
 """
 
 from __future__ import annotations
@@ -45,8 +52,21 @@ app = FastAPI(title="UI Blueprint Backend", version="1.0.0")
 
 # Domain Profile + Blueprint Compiler routes (no auth required — public API).
 from backend.app.domain_routes import router as _domain_router  # noqa: E402
+from backend.app.chat_routes import router as _chat_router  # noqa: E402
 
 app.include_router(_domain_router)
+app.include_router(_chat_router)
+
+
+# ---------------------------------------------------------------------------
+# Health / root
+# ---------------------------------------------------------------------------
+
+
+@app.get("/")
+def root() -> dict:
+    """Service health check — no auth required (used by Render and load-balancers)."""
+    return {"ok": True, "service": "ui-blueprint-backend", "version": "1.0.0"}
 
 
 # ---------------------------------------------------------------------------

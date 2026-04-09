@@ -229,24 +229,30 @@ the Python level.
 pip install -r backend/requirements.txt
 API_KEY=secret uvicorn backend.app.main:app --reload
 
-# Derive candidates from a mock media input
+# Derive candidates (Authorization header required when API_KEY is set)
 curl -s -X POST http://localhost:8000/api/domains/derive \
+  -H "Authorization: Bearer secret" \
   -H "Content-Type: application/json" \
   -d '{"media":{"media_id":"demo-001","media_type":"video"},"options":{"hint":"warehouse pallet barcodes","max_candidates":3}}' \
   | python3 -m json.tool
 
 # Confirm the first candidate (replace <id> with a domain_profile_id from above)
 curl -s -X POST http://localhost:8000/api/domains/<id>/confirm \
+  -H "Authorization: Bearer secret" \
   -H "Content-Type: application/json" \
   -d '{"confirmed_by":"demo-user","note":"looks good"}' \
   | python3 -m json.tool
 
 # Compile the blueprint
 curl -s -X POST http://localhost:8000/api/blueprints/compile \
+  -H "Authorization: Bearer secret" \
   -H "Content-Type: application/json" \
   -d '{"media":{"media_id":"demo-001","media_type":"video"},"domain_profile_id":"<id>"}' \
   | python3 -m json.tool
 ```
+
+> **Note:** `GET /api/domains/{id}` is intentionally public (no auth required) so
+> clients can inspect profiles without a bearer token.
 
 ### Extending with a real AI provider
 
@@ -260,6 +266,68 @@ class MyLLMProvider(DomainDerivationProvider):
 ```
 
 Then wire it into `backend/app/domain_routes.py` via `_provider = MyLLMProvider()`.
+
+---
+
+## OpenAI configuration
+
+Setting `OPENAI_API_KEY` on the server enables two AI features:
+
+1. **AI domain derivation** — `POST /api/domains/derive` uses GPT instead of the keyword stub.
+2. **AI chat** — `POST /api/chat` responds via GPT instead of returning a stub message.
+
+### Two separate secrets — do not confuse them
+
+| Variable | Purpose | Sent to clients? |
+|---|---|---|
+| `API_KEY` | Service bearer token — protects all mutating endpoints | **No** — stays on server |
+| `OPENAI_API_KEY` | Server-side OpenAI credential — used for AI calls | **Never** — stays on server |
+
+Clients only ever need `API_KEY` (passed as `Authorization: Bearer <API_KEY>`).
+`OPENAI_API_KEY` is read on the server and never appears in any response or log.
+
+### Environment variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `OPENAI_API_KEY` | *(unset — stub mode)* | OpenAI API key |
+| `OPENAI_MODEL_DOMAIN` | `gpt-4.1-mini` | Model used by `/api/domains/derive` |
+| `OPENAI_MODEL_CHAT` | `gpt-4.1-mini` | Model used by `/api/chat` |
+| `OPENAI_BASE_URL` | `https://api.openai.com` | Base URL (supports custom proxies) |
+| `OPENAI_TIMEOUT_SECONDS` | `30` | Per-request timeout |
+
+### Render deployment
+
+In the Render **Environment** tab for your web service add:
+
+```
+API_KEY          = <generate with: openssl rand -hex 32>
+OPENAI_API_KEY   = sk-...
+```
+
+Leave `OPENAI_MODEL_DOMAIN`, `OPENAI_MODEL_CHAT`, and `OPENAI_BASE_URL` unset to
+use the defaults.
+
+### /api/chat usage
+
+```bash
+# Stub reply (OPENAI_API_KEY not configured)
+curl -s -X POST http://localhost:8000/api/chat \
+  -H "Authorization: Bearer secret" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How do I derive a domain profile?"}' \
+  | python3 -m json.tool
+
+# Response shape:
+# {
+#   "schema_version": "v1.1.0",
+#   "reply": "[Stub] You said: ...",
+#   "tools_available": ["domains.derive", "domains.confirm", ...]
+# }
+```
+
+`tools_available` lists the pipeline actions the assistant can describe (no automatic
+tool execution yet — information only).
 
 ---
 

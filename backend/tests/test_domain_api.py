@@ -12,11 +12,14 @@ Steering contract v1.1.1 required test cases:
 - confirm returns 409 for non-draft profiles (non-idempotent)
 - all error responses use {"error": {"code", "message"}} shape
 - all success responses include top-level schema_version
+- without OPENAI_API_KEY derive uses StubDomainDerivationProvider
+- with OPENAI_API_KEY but unreachable OpenAI, derive returns 502 ai_provider_error
 """
 
 from __future__ import annotations
 
 import os
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,14 +29,17 @@ os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data")
 
 import backend.app.domain_routes as _dr  # noqa: E402
 from backend.app.main import app  # noqa: E402
+from ui_blueprint.domain.derivation import StubDomainDerivationProvider  # noqa: E402
 from ui_blueprint.domain.ir import SCHEMA_VERSION  # noqa: E402
+from ui_blueprint.domain.openai_provider import OpenAIProviderError  # noqa: E402
 from ui_blueprint.domain.store import InMemoryDomainProfileStore  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _fresh_store() -> None:
-    """Reset the in-memory store before every test."""
+    """Reset the in-memory store and provider cache before every test."""
     _dr.set_store(InMemoryDomainProfileStore())
+    _dr.set_provider(StubDomainDerivationProvider())
 
 
 @pytest.fixture()
@@ -403,3 +409,150 @@ class TestCompile:
         for rel in bp["relations"]:
             assert rel["source_entity_id"] in entity_ids
             assert rel["target_entity_id"] in entity_ids
+
+
+# ---------------------------------------------------------------------------
+# Auth enforcement (mutating endpoints protected when API_KEY is set)
+# ---------------------------------------------------------------------------
+
+
+class TestAuth:
+    """Protected endpoints must reject unauthenticated requests when API_KEY is set."""
+
+    def test_derive_requires_auth_when_api_key_set(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "domain-test-secret")
+        resp = client.post(
+            "/api/domains/derive",
+            json={"media": _MEDIA, "options": _OPTIONS_MECH},
+        )
+        assert resp.status_code == 401
+
+    def test_derive_wrong_token_returns_403(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "domain-test-secret")
+        resp = client.post(
+            "/api/domains/derive",
+            json={"media": _MEDIA, "options": _OPTIONS_MECH},
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        assert resp.status_code == 403
+
+    def test_derive_correct_token_succeeds(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "domain-test-secret")
+        resp = client.post(
+            "/api/domains/derive",
+            json={"media": _MEDIA, "options": _OPTIONS_MECH},
+            headers={"Authorization": "Bearer domain-test-secret"},
+        )
+        assert resp.status_code == 200
+
+    def test_get_domain_is_public(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GET /api/domains/{id} must remain public even when API_KEY is set."""
+        monkeypatch.setenv("API_KEY", "domain-test-secret")
+        resp = client.get("/api/domains/00000000-0000-0000-0000-000000000000")
+        # 404 (not found) is fine — what matters is we don't get 401.
+        assert resp.status_code == 404
+
+    def test_compile_requires_auth_when_api_key_set(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("API_KEY", "domain-test-secret")
+        resp = client.post(
+            "/api/blueprints/compile",
+            json={"media": _MEDIA, "domain_profile_id": "00000000-0000-0000-0000-000000000000"},
+        )
+        assert resp.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# OpenAI provider integration
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIProvider:
+    """Tests for provider selection and error handling when OPENAI_API_KEY is set."""
+
+    def test_derive_uses_stub_when_openai_key_absent(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without OPENAI_API_KEY the stub provider is used and returns candidates."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # _fresh_store autouse fixture already set StubDomainDerivationProvider
+        resp = client.post(
+            "/api/domains/derive",
+            json={"media": _MEDIA, "options": _OPTIONS_MECH},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["candidates"]
+        assert data["candidates"][0]["status"] == "draft"
+
+    def test_derive_openai_timeout_returns_502(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When OpenAI times out, derive returns 502 with code ai_provider_error."""
+        import httpx
+
+        from ui_blueprint.domain.openai_provider import OpenAIDomainDerivationProvider
+
+        # Use a real provider instance with a fake key; mock the HTTP layer.
+        provider = OpenAIDomainDerivationProvider(api_key="fake-key-for-test")
+        _dr.set_provider(provider)
+
+        with patch(
+            "ui_blueprint.domain.openai_provider.httpx.Client"
+        ) as mock_client_cls:
+            mock_ctx = MagicMock()
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.post.side_effect = httpx.TimeoutException("timed out")
+
+            resp = client.post(
+                "/api/domains/derive",
+                json={"media": _MEDIA, "options": _OPTIONS_MECH},
+            )
+
+        assert resp.status_code == 502
+        data = resp.json()
+        assert data["error"]["code"] == "ai_provider_error"
+        assert data["error"]["details"]["hint"] == "timeout"
+        assert data["error"]["details"]["provider"] == "openai"
+
+    def test_derive_openai_bad_response_returns_502(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When OpenAI returns unparseable JSON, derive returns 502."""
+        from ui_blueprint.domain.openai_provider import OpenAIDomainDerivationProvider
+
+        provider = OpenAIDomainDerivationProvider(api_key="fake-key-for-test")
+        _dr.set_provider(provider)
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"choices": [{"message": {"content": "not-json{"}}]}
+
+        with patch(
+            "ui_blueprint.domain.openai_provider.httpx.Client"
+        ) as mock_client_cls:
+            mock_ctx = MagicMock()
+            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
+            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
+            mock_ctx.post.return_value = mock_response
+
+            resp = client.post(
+                "/api/domains/derive",
+                json={"media": _MEDIA, "options": _OPTIONS_MECH},
+            )
+
+        assert resp.status_code == 502
+        data = resp.json()
+        assert data["error"]["code"] == "ai_provider_error"
+        assert data["error"]["details"]["hint"] == "invalid_response"
+
