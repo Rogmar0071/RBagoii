@@ -471,7 +471,7 @@ class MainActivity : AppCompatActivity() {
             val tv = TextView(this).apply {
                 text = "📁 ${item.label}  [${item.status}]"
                 textSize = 12f
-                fontFamily = "monospace"
+                typeface = android.graphics.Typeface.MONOSPACE
                 setPadding(0, 4, 0, 4)
                 isClickable = true
                 isFocusable = true

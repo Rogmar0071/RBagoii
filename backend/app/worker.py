@@ -327,7 +327,7 @@ def run_blueprint(job_id: str) -> None:
                 with open(os.path.join(preview_dir, fname), "rb") as fh:
                     png_bytes = fh.read()
                 key = storage.upload_bytes(folder_id, f"preview/{fname}", png_bytes, "image/png")
-                _create_artifact(folder_id, "blueprint_md", key)
+                _create_artifact(folder_id, "preview_png", key)
 
         _update_job(job_id, status="succeeded", progress=100)
 
