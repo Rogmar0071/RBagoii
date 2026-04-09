@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Debug-only overlay: point to the debug network security config so
+         cleartext HTTP traffic to the emulator host (10.0.2.2) is allowed.
+         This file is merged on top of the main AndroidManifest.xml only for
+         debug builds and has no effect on release builds. -->
+    <application
+        android:networkSecurityConfig="@xml/network_security_config" />
+
+</manifest>
