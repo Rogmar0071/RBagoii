@@ -3,16 +3,12 @@ package com.uiblueprint.android
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import com.uiblueprint.android.databinding.ActivityChatBinding
-import okhttp3.Call
-import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
-import java.util.concurrent.TimeUnit
+import java.util.concurrent.Executors
 
 /**
  * Simple chat screen that sends messages to the backend /api/chat endpoint
@@ -20,18 +16,14 @@ import java.util.concurrent.TimeUnit
  *
  * Authorization: Bearer <BACKEND_API_KEY> is added when the key is non-empty.
  * The key is never logged.
+ *
+ * Uses [BackendClient] for a shared OkHttpClient with sane timeouts and automatic
+ * retry/backoff to handle Render free-plan cold-start latency (502/timeout).
  */
 class ChatActivity : AppCompatActivity() {
 
-    companion object {
-        private val client = OkHttpClient.Builder()
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(60, TimeUnit.SECONDS)
-            .build()
-    }
-
     private lateinit var binding: ActivityChatBinding
+    private val executor = Executors.newSingleThreadExecutor { Thread(it, "ChatActivity-worker") }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,6 +31,11 @@ class ChatActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.btnSend.setOnClickListener { onSendClicked() }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        executor.shutdownNow()
     }
 
     private fun onSendClicked() {
@@ -69,33 +66,38 @@ class ChatActivity : AppCompatActivity() {
             .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
             .build()
 
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
+        executor.execute {
+            try {
+                val response = BackendClient.executeWithRetry(request) { attempt, total ->
+                    runOnUiThread {
+                        appendLine(getString(R.string.status_chat_retrying, attempt, total))
+                    }
+                }
+                response.use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        when {
+                            resp.code == 401 || resp.code == 403 ->
+                                appendLine("Unauthorized: check BACKEND_API_KEY")
+                            !resp.isSuccessful ->
+                                appendLine("Error: HTTP ${resp.code}")
+                            else -> {
+                                val reply = runCatching {
+                                    JSONObject(body).getString("reply")
+                                }.getOrElse { "Error: unexpected response format" }
+                                appendLine("AI: $reply")
+                            }
+                        }
+                        binding.btnSend.isEnabled = true
+                    }
+                }
+            } catch (e: IOException) {
                 runOnUiThread {
                     appendLine("Error: ${e.message ?: "Network error"}")
                     binding.btnSend.isEnabled = true
                 }
             }
-
-            override fun onResponse(call: Call, response: Response) {
-                val body = response.body?.string() ?: ""
-                runOnUiThread {
-                    when {
-                        response.code == 401 || response.code == 403 ->
-                            appendLine("Unauthorized: check BACKEND_API_KEY")
-                        !response.isSuccessful ->
-                            appendLine("Error: HTTP ${response.code}")
-                        else -> {
-                            val reply = runCatching {
-                                JSONObject(body).getString("reply")
-                            }.getOrElse { "Error: unexpected response format" }
-                            appendLine("AI: $reply")
-                        }
-                    }
-                    binding.btnSend.isEnabled = true
-                }
-            }
-        })
+        }
     }
 
     private fun appendLine(line: String) {
