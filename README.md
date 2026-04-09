@@ -355,6 +355,16 @@ To re-enable backend upload for development:
 1. Add `BACKEND_BASE_URL` and `BACKEND_API_KEY` to `android/local.properties`.
 2. Replace the `onCaptureDone` call in `MainActivity.kt` with `UploadWorker.enqueue(...)`.
 
+### CI-built APKs (GitHub Actions)
+
+APKs produced by GitHub Actions do **not** include `android/local.properties` (it is gitignored and not generated in CI). Gradle therefore uses its built-in fallback default:
+
+```
+BACKEND_BASE_URL = https://ui-blueprint-backend.onrender.com
+```
+
+To override this for a local build, add your own `android/local.properties` as described in the section above.
+
 ### Build and run on a device
 
 ```bash

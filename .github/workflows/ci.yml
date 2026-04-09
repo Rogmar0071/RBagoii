@@ -88,12 +88,6 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Create local.properties
-        working-directory: android
-        run: |
-          echo "BACKEND_BASE_URL=http://10.0.2.2:8000" > local.properties
-          echo "BACKEND_API_KEY=ci-placeholder" >> local.properties
-
       - name: Grant Gradle execute permission
         working-directory: android
         run: chmod +x gradlew
