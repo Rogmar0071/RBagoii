@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">UI Blueprint</string>
-    <string name="btn_record">Record 10 s</string>
+    <string name="btn_record">Record 20 s</string>
     <string name="status_idle">Ready</string>
     <string name="status_requesting_permission">Requesting permission…</string>
     <string name="status_recording">Recording…</string>

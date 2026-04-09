@@ -122,6 +122,14 @@ class CaptureService : Service() {
                     }
                 }, handler)
 
+                // Start the encoder BEFORE creating the VirtualDisplay so it is already
+                // consuming from the surface when the first frame arrives.  If the display
+                // is created first the compositor may fill the only available buffer slot
+                // before start() is called, causing all subsequent frames to be dropped
+                // (resulting in a single-frame / snapshot recording).
+                mediaRecorder!!.start()
+                recordingStartedAtMs = SystemClock.elapsedRealtime()
+
                 virtualDisplay = mp.createVirtualDisplay(
                     "UIBlueprintCapture",
                     width, height, dpi,
@@ -129,9 +137,6 @@ class CaptureService : Service() {
                     mediaRecorder!!.surface, null, handler,
                 )
             }
-
-            mediaRecorder!!.start()
-            recordingStartedAtMs = SystemClock.elapsedRealtime()
 
             // Stop after CLIP_DURATION_MS.
             handler.postDelayed(finishRecordingRunnable, CLIP_DURATION_MS.toLong())
@@ -146,19 +151,41 @@ class CaptureService : Service() {
         if (isFinished) return
         isFinished = true
         handler.removeCallbacks(finishRecordingRunnable)
-        try {
-            mediaRecorder?.stop()
-        } catch (_: Exception) {
-        }
-        mediaRecorder?.release()
-        mediaRecorder = null
-        virtualDisplay?.release()
-        virtualDisplay = null
-        mediaProjection?.stop()
-        mediaProjection = null
 
         val durationMs = recordingStartedAtMs
             ?.let { (SystemClock.elapsedRealtime() - it).toInt().coerceAtLeast(0) }
+
+        var stopFailed = false
+        try {
+            mediaRecorder?.stop()
+        } catch (e: Exception) {
+            Log.e(TAG, "MediaRecorder.stop() failed; recording is likely corrupt", e)
+            stopFailed = true
+        } finally {
+            mediaRecorder?.release()
+            mediaRecorder = null
+            virtualDisplay?.release()
+            virtualDisplay = null
+            mediaProjection?.stop()
+            mediaProjection = null
+        }
+
+        if (stopFailed) {
+            // Best-effort delete the corrupt temp file so it is never saved to MediaStore.
+            try {
+                outputFile?.delete()
+            } catch (_: Exception) {
+            }
+            signalCaptureCompleted(
+                CaptureDoneEvent(
+                    error = ERROR_FINALIZE_FAILED,
+                    recordingDurationMs = durationMs,
+                ),
+            )
+            stopSelf()
+            return
+        }
+
         val clip = outputFile
         if (clip != null && clip.exists() && clip.length() > 0) {
             signalCaptureCompleted(
@@ -212,7 +239,7 @@ class CaptureService : Service() {
     private fun buildNotification(): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Recording screen…")
-            .setContentText("Recording a 10-second clip")
+            .setContentText("Recording a 20-second clip")
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .build()
@@ -230,7 +257,7 @@ class CaptureService : Service() {
 
         private const val CHANNEL_ID = "capture_channel"
         private const val NOTIF_ID = 1001
-        private const val CLIP_DURATION_MS = 10_000
+        private const val CLIP_DURATION_MS = 20_000
         private const val VIDEO_BITRATE = 4_000_000
         private const val VIDEO_FPS = 30
         private const val ERROR_CAPTURE_REQUEST_LOST = "Screen capture could not be started."

@@ -23,10 +23,10 @@ import java.util.UUID
 /**
  * Main screen.
  *
- * Shows a "Record 10 s" button.  When tapped:
+ * Shows a "Record 20 s" button.  When tapped:
  * 1. Requests MediaProjection permission.
  * 2. Starts CaptureService (foreground, mediaProjection type).
- * 3. CaptureService records 10 s and broadcasts CAPTURE_DONE.
+ * 3. CaptureService records 20 s and broadcasts CAPTURE_DONE.
  * 4. MainActivity inserts the clip into the device Gallery via MediaStore.
  * 5. A simple session list (in-memory) shows [saved] or [failed] status.
  *
@@ -271,7 +271,7 @@ class MainActivity : AppCompatActivity() {
     data class SessionItem(val id: String, val status: String, val label: String, val uri: String? = null)
 
     companion object {
-        private const val RECORDING_TIMEOUT_MS = 15_000L
+        private const val RECORDING_TIMEOUT_MS = 30_000L
         private const val ERROR_PREFIX = "Capture failed"
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
