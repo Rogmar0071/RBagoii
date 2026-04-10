@@ -32,6 +32,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Per-folder/project detail screen.
@@ -57,6 +58,9 @@ class FolderDetailActivity : AppCompatActivity() {
 
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "FolderDetail-worker") }
     private val clipUploadExecutor = Executors.newSingleThreadExecutor { Thread(it, "ClipUpload-worker") }
+
+    /** Guards against overlapping concurrent folder-load network requests. */
+    private val isFolderLoading = AtomicBoolean(false)
 
     private val watchdogHandler = Handler(Looper.getMainLooper())
     private val pollHandler = Handler(Looper.getMainLooper())
@@ -514,6 +518,9 @@ class FolderDetailActivity : AppCompatActivity() {
     // -------------------------------------------------------------------------
 
     private fun loadFolder() {
+        // Skip if a load is already in progress to avoid overlapping requests.
+        if (!isFolderLoading.compareAndSet(false, true)) return
+
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
 
@@ -529,6 +536,7 @@ class FolderDetailActivity : AppCompatActivity() {
                 response.use { resp ->
                     val bodyStr = resp.body?.string() ?: ""
                     runOnUiThread {
+                        isFolderLoading.set(false)
                         if (resp.isSuccessful) {
                             renderFolder(JSONObject(bodyStr))
                         } else {
@@ -540,6 +548,7 @@ class FolderDetailActivity : AppCompatActivity() {
                 }
             } catch (e: IOException) {
                 runOnUiThread {
+                    isFolderLoading.set(false)
                     binding.tvFolderStatus.text = getString(R.string.folder_load_error)
                 }
             }
@@ -585,16 +594,18 @@ class FolderDetailActivity : AppCompatActivity() {
         // Manage Analyze button state and polling based on active analyze jobs.
         val hasActiveJob = hasActiveAnalyzeJob(jobs)
         if (hasActiveJob) {
-            // Determine the most descriptive label from the latest analyze job status.
-            val latestStatus = run {
-                for (i in 0 until (jobs?.length() ?: 0)) {
-                    val job = jobs!!.getJSONObject(i)
+            // Since hasActiveJob is true, jobs is non-null here.
+            // Find the status of the first analyze job (jobs are typically ordered
+            // chronologically, so this reflects the most recently enqueued one).
+            val firstAnalyzeStatus = run {
+                for (i in 0 until jobs.length()) {
+                    val job = jobs.getJSONObject(i)
                     if (job.optString("type") == "analyze") return@run job.optString("status")
                 }
                 "queued"
             }
             binding.btnAnalyze.isEnabled = false
-            binding.btnAnalyze.text = if (latestStatus == "running") {
+            binding.btnAnalyze.text = if (firstAnalyzeStatus == "running") {
                 getString(R.string.btn_analyze_running)
             } else {
                 getString(R.string.btn_analyze_queued)
