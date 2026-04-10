@@ -6,6 +6,7 @@ import com.uiblueprint.android.databinding.ActivityChatBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -33,9 +34,49 @@ class ChatActivity : AppCompatActivity() {
         binding.btnSend.setOnClickListener { onSendClicked() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        loadMessages()
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         executor.shutdownNow()
+    }
+
+    private fun loadMessages() {
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat")
+            .get()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        when {
+                            resp.code == 401 || resp.code == 403 ->
+                                binding.tvChatLog.text = "Unauthorized: check BACKEND_API_KEY"
+                            !resp.isSuccessful ->
+                                appendLine("Error: HTTP ${resp.code}")
+                            else -> {
+                                val messages = runCatching {
+                                    JSONObject(body).getJSONArray("messages")
+                                }.getOrNull()
+                                renderMessages(messages)
+                            }
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                // Best-effort: keep whatever is currently shown.
+            }
+        }
     }
 
     private fun onSendClicked() {
@@ -44,7 +85,6 @@ class ChatActivity : AppCompatActivity() {
 
         binding.etMessage.setText("")
         binding.btnSend.isEnabled = false
-        appendLine("You: $message")
 
         val bodyJson = JSONObject().apply {
             put("message", message)
@@ -83,9 +123,12 @@ class ChatActivity : AppCompatActivity() {
                                 appendLine("Error: HTTP ${resp.code}")
                             else -> {
                                 val reply = runCatching {
-                                    JSONObject(body).getString("reply")
+                                    JSONObject(body)
+                                        .getJSONObject("assistant_message")
+                                        .getString("content")
                                 }.getOrElse { "Error: unexpected response format" }
                                 appendLine("AI: $reply")
+                                loadMessages()
                             }
                         }
                         binding.btnSend.isEnabled = true
@@ -103,5 +146,24 @@ class ChatActivity : AppCompatActivity() {
     private fun appendLine(line: String) {
         val current = binding.tvChatLog.text
         binding.tvChatLog.text = if (current.isNullOrEmpty()) line else "$current\n$line"
+    }
+
+    private fun renderMessages(messages: JSONArray?) {
+        if (messages == null || messages.length() == 0) {
+            binding.tvChatLog.text = ""
+            return
+        }
+
+        val lines = buildString {
+            for (i in 0 until messages.length()) {
+                val msg = messages.getJSONObject(i)
+                val prefix = if (msg.optString("role") == "user") "You" else "AI"
+                append(prefix)
+                append(": ")
+                append(msg.optString("content"))
+                if (i < messages.length() - 1) append('\n')
+            }
+        }
+        binding.tvChatLog.text = lines
     }
 }

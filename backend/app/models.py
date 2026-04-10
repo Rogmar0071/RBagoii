@@ -5,6 +5,7 @@ SQLModel data models for folder-based clip bundles.
 
 Tables
 ------
+- global_chat_messages : persisted global chat history for /api/chat
 - folders          : top-level container for a recorded/picked clip and all derived data
 - folder_messages  : per-folder chat history
 - jobs             : background processing jobs (analyze / blueprint)
@@ -23,6 +24,31 @@ from sqlmodel import Column, Field, SQLModel
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# global_chat_messages
+# ---------------------------------------------------------------------------
+
+
+class GlobalChatMessage(SQLModel, table=True):
+    __tablename__ = "global_chat_messages"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # user / assistant / system
+    role: str
+    content: str = Field(sa_column=Column(sa.Text))
+    session_id: Optional[str] = Field(default=None, index=True)
+    domain_profile_id: Optional[str] = Field(default=None, index=True)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
 
 
 # ---------------------------------------------------------------------------
