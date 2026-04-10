@@ -283,6 +283,7 @@ class TestFolderChat:
         )
         assert resp.status_code == 201
         body = resp.json()
+        assert body["schema_version"]
         assert "user_message" in body
         assert "assistant_message" in body
         assert body["user_message"]["role"] == "user"
@@ -310,7 +311,9 @@ class TestFolderChat:
 
         resp = client.get(f"/v1/folders/{fid}/messages", headers=_auth())
         assert resp.status_code == 200
-        messages = resp.json()["messages"]
+        body = resp.json()
+        assert body["schema_version"]
+        messages = body["messages"]
         # 2 messages: user + assistant
         assert len(messages) == 2
 
@@ -441,7 +444,9 @@ class TestListMessages:
         folder = _create_folder(client)
         resp = client.get(f"/v1/folders/{folder['id']}/messages", headers=_auth())
         assert resp.status_code == 200
-        assert resp.json()["messages"] == []
+        body = resp.json()
+        assert body["schema_version"]
+        assert body["messages"] == []
 
     def test_list_requires_auth(self, client: TestClient) -> None:
         resp = client.get(f"/v1/folders/{uuid.uuid4()}/messages")

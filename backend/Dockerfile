@@ -17,7 +17,10 @@ RUN pip install --no-cache-dir ".[video]"
 COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
 
-# Copy backend application code.
+# Copy backend application code and migration files.
+COPY backend/alembic.ini ./backend/alembic.ini
+COPY backend/alembic/ ./backend/alembic/
+COPY backend/entrypoint.sh ./backend/entrypoint.sh
 COPY backend/app/ ./backend/app/
 
 # Persistent data directory (mount a volume here in production).
@@ -28,4 +31,4 @@ ENV API_KEY=""
 
 EXPOSE 8000
 
-CMD uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+ENTRYPOINT ["bash", "backend/entrypoint.sh"]

@@ -31,6 +31,22 @@ def _set_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(m, "API_KEY", TOKEN)
 
 
+@pytest.fixture(autouse=True)
+def _configure_sqlite(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    db_path = tmp_path / "test.db"
+    db_url = f"sqlite:///{db_path}"
+
+    import backend.app.database as db_module
+
+    db_module.reset_engine(db_url)
+    db_module.init_db()
+    monkeypatch.setenv("DATABASE_URL", db_url)
+
+    yield
+
+    db_module.reset_engine()
+
+
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=True)
@@ -292,6 +308,8 @@ class TestChat:
         assert body["schema_version"]
         assert "Stub" in body["reply"]
         assert "tools_available" in body
+        assert body["user_message"]["role"] == "user"
+        assert body["assistant_message"]["role"] == "assistant"
         assert "domains.derive" in body["tools_available"]
 
     def test_chat_schema_version_present(
@@ -340,6 +358,7 @@ class TestChat:
         body = response.json()
         assert body["reply"] == "Here is how ui-blueprint works."
         assert "tools_available" in body
+        assert body["assistant_message"]["content"] == "Here is how ui-blueprint works."
 
     def test_chat_openai_timeout_returns_502(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -368,3 +387,28 @@ class TestChat:
         assert body["error"]["code"] == "ai_provider_error"
         assert body["error"]["details"]["hint"] == "timeout"
 
+    def test_chat_history_returns_persisted_messages(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        post_resp = client.post(
+            "/api/chat",
+            json={"message": "Persist this", "context": {"session_id": "sess-1"}},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert post_resp.status_code == 200
+
+        history_resp = client.get("/api/chat", headers={"Authorization": f"Bearer {TOKEN}"})
+        assert history_resp.status_code == 200
+        body = history_resp.json()
+        assert body["schema_version"]
+        assert body["tools_available"]
+        assert len(body["messages"]) == 2
+        assert body["messages"][0]["role"] == "user"
+        assert body["messages"][0]["context"]["session_id"] == "sess-1"
+        assert body["messages"][1]["role"] == "assistant"
+
+    def test_chat_history_requires_auth(self, client: TestClient) -> None:
+        response = client.get("/api/chat")
+        assert response.status_code == 401

@@ -28,6 +28,7 @@ exposes the results over HTTP.
 | `PATCH` | `/api/domains/{id}` | Edit a draft profile (409 if not draft) |
 | `POST` | `/api/domains/{id}/confirm` | Confirm a draft profile (409 if not draft) |
 | `POST` | `/api/blueprints/compile` | Compile blueprint (requires confirmed domain) |
+| `GET` | `/api/chat` | List persisted global chat history |
 | `POST` | `/api/chat` | Send a message to the UI Blueprint AI assistant |
 | `POST` | `/v1/folders` | Create a folder (title optional) |
 | `GET`  | `/v1/folders` | List all folders (ordered by created_at desc) |
@@ -65,6 +66,10 @@ API_KEY=dev-secret uvicorn backend.app.main:app --reload
 API_KEY=my-secret docker compose up --build
 ```
 
+The backend container entrypoint runs `alembic -c backend/alembic.ini upgrade head`
+before starting Uvicorn. On platforms like Render, the image can be started as-is,
+or you can explicitly run `bash backend/entrypoint.sh`.
+
 Upload a clip:
 
 ```bash
@@ -95,11 +100,15 @@ curl -X POST http://localhost:8000/api/domains/derive \
 Chat with the AI assistant:
 
 ```bash
+curl http://localhost:8000/api/chat \
+  -H "Authorization: Bearer my-secret"
+# → {"schema_version":"v1.1.0","messages":[...],"tools_available":[...]}
+
 curl -X POST http://localhost:8000/api/chat \
   -H "Authorization: Bearer my-secret" \
   -H "Content-Type: application/json" \
   -d '{"message": "How do I compile a blueprint?"}'
-# → {"schema_version":"v1.1.0","reply":"...","tools_available":[...]}
+# → {"schema_version":"v1.1.0","reply":"...","tools_available":[...],"user_message":{...},"assistant_message":{...}}
 ```
 
 ---

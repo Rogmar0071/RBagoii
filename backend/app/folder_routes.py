@@ -32,16 +32,59 @@ import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.app.auth import require_auth
+from ui_blueprint.domain.ir import SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/folders", tags=["folders"])
+
+
+class FolderChatMessageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    folder_id: str
+    role: Literal["user", "assistant", "system"]
+    content: str
+    created_at: str | None = None
+
+
+class FolderChatListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = SCHEMA_VERSION
+    messages: list[FolderChatMessageResponse]
+
+
+class FolderChatPostRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("message is required and must not be empty.")
+        return text
+
+
+class FolderChatPostResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = SCHEMA_VERSION
+    user_message: FolderChatMessageResponse
+    assistant_message: FolderChatMessageResponse
+    tools_available: list[str]
+    enqueued_job: dict[str, Any] | None = None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -124,6 +167,13 @@ def _message_dict(msg) -> dict[str, Any]:
         "content": msg.content,
         "created_at": _dt(msg.created_at),
     }
+
+
+def _json_response(model: BaseModel, status_code: int = 200) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content=model.model_dump(mode="json", exclude_none=True),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -436,7 +486,9 @@ def _call_openai_responses_api(
 
 
 @router.post("/{folder_id}/messages", status_code=201, dependencies=[Depends(require_auth)])
-def post_message(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) -> JSONResponse:
+def post_message(
+    folder_id: str, body: dict[str, Any], db=Depends(_db_session)
+) -> JSONResponse:
     """
     Send a user message to the folder's chat.
 
@@ -466,9 +518,17 @@ def post_message(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) 
     fid = _parse_uuid(folder_id, "folder_id")
     folder = _folder_or_404(db, fid)
 
-    content: str = str(body.get("message", "")).strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="message is required and must not be empty.")
+    try:
+        request = FolderChatPostRequest.model_validate(body or {})
+    except ValidationError as exc:
+        if any(error["loc"] == ("message",) for error in exc.errors()):
+            raise HTTPException(
+                status_code=400,
+                detail="message is required and must not be empty.",
+            ) from None
+        raise HTTPException(status_code=422, detail=exc.errors()) from None
+
+    content = request.message
 
     # Require OpenAI API key — no stub fallback.
     openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -542,15 +602,15 @@ def post_message(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) 
     db.commit()
     db.refresh(assistant_msg)
 
-    result: dict[str, Any] = {
-        "user_message": _message_dict(user_msg),
-        "assistant_message": _message_dict(assistant_msg),
-        "tools_available": _FOLDER_TOOLS_AVAILABLE,
-    }
-    if enqueued_job:
-        result["enqueued_job"] = _job_dict(enqueued_job)
-
-    return JSONResponse(content=result, status_code=201)
+    return _json_response(
+        FolderChatPostResponse(
+            user_message=FolderChatMessageResponse(**_message_dict(user_msg)),
+            assistant_message=FolderChatMessageResponse(**_message_dict(assistant_msg)),
+            tools_available=_FOLDER_TOOLS_AVAILABLE,
+            enqueued_job=_job_dict(enqueued_job) if enqueued_job else None,
+        ),
+        status_code=201,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -573,7 +633,11 @@ def list_messages(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
         .where(FolderMessage.folder_id == fid)
         .order_by(FolderMessage.created_at.asc())
     ).all()
-    return JSONResponse(content={"messages": [_message_dict(m) for m in messages]})
+    return _json_response(
+        FolderChatListResponse(
+            messages=[FolderChatMessageResponse(**_message_dict(message)) for message in messages]
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
