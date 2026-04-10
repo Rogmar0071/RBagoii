@@ -4,6 +4,9 @@ cd backend
 echo "Running Alembic migrations..."
 if ! python -m alembic --version > /dev/null 2>&1; then
     echo "ERROR: alembic is not installed. Add alembic>=1.13 to backend/requirements.txt." >&2
+    echo "  python path: $(command -v python)" >&2
+    python -V >&2
+    python -m pip show alembic >&2 || true
     exit 1
 fi
 python -m alembic -c alembic.ini upgrade head
