@@ -63,6 +63,7 @@ class FolderDetailActivity : AppCompatActivity() {
 
     private var lastClipPath: String? = null
     private var lastRecordingDurationMs: Int? = null
+    private var lastGalleryUri: Uri? = null
 
     // MediaProjection permission launcher.
     private val projectionLauncher = registerForActivityResult(
@@ -333,6 +334,8 @@ class FolderDetailActivity : AppCompatActivity() {
                 }
 
                 runOnUiThread {
+                    lastGalleryUri = uri
+                    binding.btnAnalyze.isEnabled = true
                     setActionStatus(null)
                     binding.tvFolderStatus.text = getString(R.string.label_folder_status, "queued")
                     Toast.makeText(this, getString(R.string.status_upload_succeeded), Toast.LENGTH_SHORT).show()
@@ -439,11 +442,12 @@ class FolderDetailActivity : AppCompatActivity() {
 
     private fun onAnalyzeClicked() {
         val clipPath = lastClipPath
-        if (clipPath == null) {
-            Toast.makeText(this, getString(R.string.status_no_clip), Toast.LENGTH_SHORT).show()
-            return
+        val galleryUri = lastGalleryUri
+        when {
+            clipPath != null -> uploadClipFromFile(File(clipPath), lastRecordingDurationMs)
+            galleryUri != null -> uploadClipFromUri(galleryUri)
+            else -> Toast.makeText(this, getString(R.string.status_no_clip), Toast.LENGTH_SHORT).show()
         }
-        uploadClipFromFile(File(clipPath), lastRecordingDurationMs)
     }
 
     // -------------------------------------------------------------------------
