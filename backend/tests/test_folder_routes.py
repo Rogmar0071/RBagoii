@@ -591,6 +591,167 @@ class TestJobs:
         resp = client.post(f"/v1/folders/{uuid.uuid4()}/jobs", json={"type": "analyze"})
         assert resp.status_code == 401
 
+    def test_analyze_enqueue_is_idempotent(self, client: TestClient) -> None:
+        """Second analyze enqueue returns the existing job instead of creating a new one."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        resp1 = client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+        assert resp1.status_code == 202
+        job1_id = resp1.json()["job"]["id"]
+
+        resp2 = client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+        assert resp2.status_code == 202
+        job2_id = resp2.json()["job"]["id"]
+
+        # Same job returned — no duplicate created.
+        assert job1_id == job2_id
+
+        # Confirm only one analyze job exists in the DB.
+        list_resp = client.get(f"/v1/folders/{fid}/jobs", headers=_auth())
+        analyze_jobs = [j for j in list_resp.json()["jobs"] if j["type"] == "analyze"]
+        assert len(analyze_jobs) == 1
+
+    def test_analyze_deduped_event_logged(self, client: TestClient) -> None:
+        """A jobs.deduped ops event is recorded when a duplicate analyze is suppressed."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+        client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+
+        ops_resp = client.get(f"/v1/folders/{fid}/ops", headers=_auth())
+        events = ops_resp.json()["events"]
+        deduped = [e for e in events if e["event_type"] == "jobs.deduped"]
+        assert len(deduped) == 1
+
+    def test_blueprint_enqueue_not_deduplicated(self, client: TestClient) -> None:
+        """Blueprint jobs are not subject to deduplication (only analyze is)."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+
+        resp1 = client.post(f"/v1/folders/{fid}/jobs", json={"type": "blueprint"}, headers=_auth())
+        resp2 = client.post(f"/v1/folders/{fid}/jobs", json={"type": "blueprint"}, headers=_auth())
+        assert resp1.json()["job"]["id"] != resp2.json()["job"]["id"]
+
+
+# ---------------------------------------------------------------------------
+# Stalled-job watchdog
+# ---------------------------------------------------------------------------
+
+
+class TestWatchdog:
+    """Verify that running jobs exceeding MAX_JOB_RUNTIME_SECONDS are marked failed."""
+
+    def _seed_running_job(self, client: TestClient, fid: str):
+        """Create a job and directly set its status to 'running' in the DB."""
+        import uuid as _uuid
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        # Create via API (status=queued), then update DB directly.
+        resp = client.post(f"/v1/folders/{fid}/jobs", json={"type": "analyze"}, headers=_auth())
+        assert resp.status_code == 202
+        job_id = resp.json()["job"]["id"]
+
+        with Session(db_module.get_engine()) as session:
+            job = session.get(Job, _uuid.UUID(job_id))
+            job.status = "running"
+            session.add(job)
+            session.commit()
+
+        return job_id
+
+    def test_stalled_job_marked_failed_on_get_folder(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GET /v1/folders/{id} marks a running job as failed if it exceeds max runtime."""
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job_id = self._seed_running_job(client, fid)
+
+        # Wind back the job's updated_at to simulate stall.
+        with Session(db_module.get_engine()) as session:
+            job = session.get(Job, _uuid.UUID(job_id))
+            job.updated_at = datetime.now(timezone.utc) - timedelta(seconds=9999)
+            session.add(job)
+            session.commit()
+
+        # Override max runtime to 1 second so ANY running job is stalled.
+        monkeypatch.setenv("MAX_JOB_RUNTIME_SECONDS", "1")
+        import backend.app.folder_routes as fr
+        monkeypatch.setattr(fr, "_MAX_JOB_RUNTIME_SECONDS", 1)
+
+        resp = client.get(f"/v1/folders/{fid}", headers=_auth())
+        assert resp.status_code == 200
+        data = resp.json()
+        failed_jobs = [j for j in data["jobs"] if j["id"] == job_id and j["status"] == "failed"]
+        assert len(failed_jobs) == 1
+        assert failed_jobs[0]["error"] is not None
+
+    def test_stalled_job_ops_event_logged(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Watchdog records a jobs.stalled ops event."""
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Job
+
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job_id = self._seed_running_job(client, fid)
+
+        with Session(db_module.get_engine()) as session:
+            job = session.get(Job, _uuid.UUID(job_id))
+            job.updated_at = datetime.now(timezone.utc) - timedelta(seconds=9999)
+            session.add(job)
+            session.commit()
+
+        monkeypatch.setenv("MAX_JOB_RUNTIME_SECONDS", "1")
+        import backend.app.folder_routes as fr
+        monkeypatch.setattr(fr, "_MAX_JOB_RUNTIME_SECONDS", 1)
+
+        # Trigger watchdog.
+        client.get(f"/v1/folders/{fid}", headers=_auth())
+
+        ops_resp = client.get(f"/v1/folders/{fid}/ops", headers=_auth())
+        events = ops_resp.json()["events"]
+        stalled = [e for e in events if e["event_type"] == "jobs.stalled"]
+        assert len(stalled) == 1
+
+    def test_non_stalled_job_unaffected(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recently-updated running job is NOT marked failed."""
+        folder = _create_folder(client)
+        fid = folder["id"]
+        job_id = self._seed_running_job(client, fid)
+
+        # Use a very large max runtime so the job is NOT stalled.
+        monkeypatch.setenv("MAX_JOB_RUNTIME_SECONDS", "999999")
+        import backend.app.folder_routes as fr
+        monkeypatch.setattr(fr, "_MAX_JOB_RUNTIME_SECONDS", 999999)
+
+        resp = client.get(f"/v1/folders/{fid}", headers=_auth())
+        jobs = resp.json()["jobs"]
+        job = next(j for j in jobs if j["id"] == job_id)
+        assert job["status"] == "running"
+
 
 # ---------------------------------------------------------------------------
 # GET /v1/folders/{id}/artifacts/{artifact_id}  — no R2 configured

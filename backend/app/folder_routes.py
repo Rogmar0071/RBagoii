@@ -32,7 +32,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -236,6 +236,12 @@ def get_folder(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
 
     fid = _parse_uuid(folder_id, "folder_id")
     folder = _folder_or_404(db, fid)
+
+    # Expire stalled jobs before building the response so callers always see
+    # up-to-date status.
+    _mark_stalled_jobs(db, fid)
+    # Re-fetch folder in case watchdog updated its status.
+    db.refresh(folder)
 
     jobs = db.exec(
         select(Job).where(Job.folder_id == fid).order_by(Job.created_at.desc())
@@ -738,6 +744,83 @@ def list_messages(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Stalled-job watchdog
+# ---------------------------------------------------------------------------
+
+_STALLED_JOB_TYPES = {"analyze", "blueprint"}
+
+# Maximum seconds a job may remain in "running" state before being declared
+# stalled.  Configurable via MAX_JOB_RUNTIME_SECONDS env var (default 900 = 15 min).
+_MAX_JOB_RUNTIME_SECONDS = int(os.environ.get("MAX_JOB_RUNTIME_SECONDS", "900"))
+
+
+def _mark_stalled_jobs(db, folder_id: uuid.UUID) -> None:
+    """
+    Inspect running jobs for *folder_id* and fail any that have exceeded
+    ``MAX_JOB_RUNTIME_SECONDS`` since their ``updated_at`` timestamp.
+
+    Called lazily on every folder/job read so that stale jobs are surfaced
+    even when the worker is restarted and never writes a failure record.
+    """
+    from sqlmodel import select
+
+    from backend.app.models import Job
+
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_MAX_JOB_RUNTIME_SECONDS)
+
+    stalled = db.exec(
+        select(Job)
+        .where(Job.folder_id == folder_id)
+        .where(Job.status == "running")
+        .where(Job.type.in_(list(_STALLED_JOB_TYPES)))
+        .where(Job.updated_at < cutoff)
+    ).all()
+
+    for job in stalled:
+        now = datetime.now(timezone.utc)
+        job.status = "failed"
+        job.updated_at = now
+        job.error = (
+            f"Job exceeded maximum runtime of {_MAX_JOB_RUNTIME_SECONDS}s "
+            f"(worker likely restarted). Marked stalled at {now.isoformat()}."
+        )
+        db.add(job)
+        log_event(
+            source="backend",
+            level="warning",
+            event_type="jobs.stalled",
+            message=(
+                f"Job {job.id} ({job.type}) marked stalled after "
+                f"{_MAX_JOB_RUNTIME_SECONDS}s"
+            ),
+            folder_id=str(folder_id),
+            job_id=str(job.id),
+            details_json={
+                "error_type": "stalled",
+                "max_runtime_seconds": _MAX_JOB_RUNTIME_SECONDS,
+            },
+        )
+
+    if stalled:
+        db.commit()
+        # Sync folder status if no other running jobs remain.
+        from backend.app.models import Folder
+
+        still_running = db.exec(
+            select(Job)
+            .where(Job.folder_id == folder_id)
+            .where(Job.status == "running")
+        ).first()
+        if still_running is None:
+            folder = db.get(Folder, folder_id)
+            if folder is not None and folder.status == "running":
+                folder.status = "failed"
+                folder.updated_at = datetime.now(timezone.utc)
+                db.add(folder)
+                db.commit()
+
+
+# ---------------------------------------------------------------------------
 # POST /v1/folders/{folder_id}/jobs  — enqueue job
 # ---------------------------------------------------------------------------
 
@@ -750,7 +833,13 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
     Request body::
 
         {"type": "analyze"}   or   {"type": "blueprint"}
+
+    Idempotency: if an ``analyze`` job for this folder is already ``queued``
+    or ``running``, the existing job is returned (HTTP 202) without creating a
+    duplicate.  A ``jobs.deduped`` ops event is recorded.
     """
+    from sqlmodel import select
+
     from backend.app import worker
     from backend.app.models import Job
 
@@ -763,6 +852,32 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
             status_code=400,
             detail="type must be 'analyze' or 'blueprint'",
         )
+
+    # Run watchdog before the dedupe check so stalled jobs are cleared first.
+    _mark_stalled_jobs(db, fid)
+
+    # Idempotency: deduplicate active analyze jobs.
+    if job_type == "analyze":
+        existing = db.exec(
+            select(Job)
+            .where(Job.folder_id == fid)
+            .where(Job.type == "analyze")
+            .where(Job.status.in_(["queued", "running"]))
+            .order_by(Job.created_at.asc())
+        ).first()
+        if existing is not None:
+            log_event(
+                source="backend",
+                level="info",
+                event_type="jobs.deduped",
+                message=(
+                    f"Duplicate analyze job suppressed for folder {fid}; "
+                    f"returning existing job {existing.id} (status={existing.status})"
+                ),
+                folder_id=str(fid),
+                job_id=str(existing.id),
+            )
+            return JSONResponse(content={"job": _job_dict(existing)}, status_code=202)
 
     job = Job(folder_id=fid, type=job_type)
     db.add(job)
@@ -805,6 +920,8 @@ def list_jobs(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
     fid = _parse_uuid(folder_id, "folder_id")
     _folder_or_404(db, fid)
 
+    _mark_stalled_jobs(db, fid)
+
     jobs = db.exec(
         select(Job).where(Job.folder_id == fid).order_by(Job.created_at.desc())
     ).all()
@@ -825,6 +942,8 @@ def get_job(folder_id: str, job_id: str, db=Depends(_db_session)) -> JSONRespons
     jid = _parse_uuid(job_id, "job_id")
 
     _folder_or_404(db, fid)
+
+    _mark_stalled_jobs(db, fid)
 
     job = db.get(Job, jid)
     if job is None or job.folder_id != fid:
