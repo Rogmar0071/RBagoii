@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.app.auth import require_auth
+from backend.app.ops_log import log_event
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -194,6 +195,14 @@ def create_folder(body: dict[str, Any] = None, db=Depends(_db_session)) -> JSONR
     db.add(folder)
     db.commit()
     db.refresh(folder)
+    log_event(
+        source="backend",
+        level="info",
+        event_type="folders.create",
+        message=f"Folder created: {folder.id}",
+        folder_id=str(folder.id),
+        details_json={"title": title},
+    )
     return JSONResponse(content=_folder_dict(folder), status_code=201)
 
 
@@ -264,6 +273,13 @@ def delete_folder(folder_id: str, db=Depends(_db_session)) -> None:
 
     db.delete(folder)
     db.commit()
+    log_event(
+        source="backend",
+        level="info",
+        event_type="folders.delete",
+        message=f"Folder deleted: {fid}",
+        folder_id=str(fid),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +322,14 @@ def patch_folder(
     db.add(folder)
     db.commit()
     db.refresh(folder)
+    log_event(
+        source="backend",
+        level="info",
+        event_type="folders.rename",
+        message=f"Folder renamed: {folder.id}",
+        folder_id=str(folder.id),
+        details_json={"title": raw_title},
+    )
     return JSONResponse(content=_folder_dict(folder))
 
 
@@ -331,6 +355,15 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
     clip_bytes = await clip.read()
     filename = clip.filename or "clip.mp4"
 
+    log_event(
+        source="backend",
+        level="info",
+        event_type="clip.upload.started",
+        message=f"Clip upload started for folder {fid}",
+        folder_id=str(fid),
+        details_json={"filename": filename},
+    )
+
     # --- Storage (R2) -------------------------------------------------------
     clip_key: str | None = None
     if storage.storage_available():
@@ -340,6 +373,15 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
             )
         except Exception as exc:
             logger.error("R2 upload failed: %s", exc)
+            log_event(
+                source="storage",
+                level="error",
+                event_type="storage.put_object.failed",
+                message=f"R2 upload failed for folder {fid}: {exc}",
+                folder_id=str(fid),
+                error_type=type(exc).__name__,
+                error_detail=str(exc)[:2000],
+            )
             raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}") from exc
 
         # Persist clip artifact.
@@ -370,6 +412,17 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
         db.add(job)
         db.commit()
         db.refresh(job)
+
+    log_event(
+        source="backend",
+        level="info",
+        event_type="clip.upload.succeeded",
+        message=f"Clip upload succeeded for folder {fid}, job {job.id} enqueued",
+        folder_id=str(fid),
+        job_id=str(job.id),
+        rq_job_id=rq_id,
+        details_json={"clip_object_key": clip_key},
+    )
 
     return JSONResponse(
         content={
@@ -724,6 +777,16 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
         db.commit()
         db.refresh(job)
 
+    log_event(
+        source="backend",
+        level="info",
+        event_type="jobs.enqueue",
+        message=f"Job enqueued: {job_type} for folder {fid}",
+        folder_id=str(fid),
+        job_id=str(job.id),
+        rq_job_id=rq_id,
+        details_json={"job_type": job_type},
+    )
     return JSONResponse(content={"job": _job_dict(job)}, status_code=202)
 
 

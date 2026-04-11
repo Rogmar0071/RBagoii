@@ -10,13 +10,14 @@ Tables
 - folder_messages  : per-folder chat history
 - jobs             : background processing jobs (analyze / blueprint)
 - artifacts        : object-storage references for files produced by jobs
+- ops_events       : server-side operations log (backend + worker activity)
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import sqlalchemy as sa
 from sqlmodel import Column, Field, SQLModel
@@ -169,4 +170,64 @@ class Artifact(SQLModel, table=True):
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# ops_events
+# ---------------------------------------------------------------------------
+
+
+class OpsEvent(SQLModel, table=True):
+    __tablename__ = "ops_events"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, index=True),
+    )
+    # backend / worker / storage / rq / db / auth
+    source: str = Field(sa_column=Column(sa.Text, index=True))
+    # debug / info / warning / error
+    level: str = Field(sa_column=Column(sa.Text, index=True))
+    # e.g. "folders.create", "clip.upload.started", "jobs.enqueue"
+    event_type: str = Field(sa_column=Column(sa.Text, index=True))
+    message: str = Field(sa_column=Column(sa.Text))
+    folder_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True, index=True),
+    )
+    job_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True, index=True),
+    )
+    artifact_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True, index=True),
+    )
+    rq_job_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True, index=True),
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True, index=True),
+    )
+    http_method: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    http_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    http_status: Optional[int] = Field(default=None, sa_column=Column(sa.Integer, nullable=True))
+    duration_ms: Optional[int] = Field(default=None, sa_column=Column(sa.Integer, nullable=True))
+    error_type: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    error_detail: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    details_json: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        # Truncate error_detail to 2000 chars.
+        if data.get("error_detail") and len(data["error_detail"]) > 2000:
+            data["error_detail"] = data["error_detail"][:2000]
         super().__init__(**data)

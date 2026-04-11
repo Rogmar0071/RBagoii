@@ -55,6 +55,12 @@ _CHAT_SYSTEM_PROMPT = (
     "Be concise and practical."
 )
 
+_OPS_CONTEXT_HEADER = (
+    "\n\n--- Recent system activity (last {n} ops events) ---\n"
+    "{snippet}\n"
+    "--- End of system activity ---"
+)
+
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -229,14 +235,20 @@ def _persist_message(
     return _message_to_response(message)
 
 
-def _call_openai_chat(message: str, api_key: str, history: list[Any] | None = None) -> str:
+def _call_openai_chat(
+    message: str,
+    api_key: str,
+    history: list[Any] | None = None,
+    system_prompt: str | None = None,
+) -> str:
     """Call OpenAI Chat Completions and return the assistant reply text."""
     model = os.environ.get("OPENAI_MODEL_CHAT", _DEFAULT_MODEL_CHAT)
     base_url = os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL)
     timeout = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT))
     url = _build_completions_url(base_url)
 
-    prompt_messages: list[dict[str, str]] = [{"role": "system", "content": _CHAT_SYSTEM_PROMPT}]
+    effective_prompt = system_prompt if system_prompt is not None else _CHAT_SYSTEM_PROMPT
+    prompt_messages: list[dict[str, str]] = [{"role": "system", "content": effective_prompt}]
     for item in history or []:
         if item.role in ("user", "assistant", "system"):
             prompt_messages.append({"role": item.role, "content": item.content})
@@ -262,6 +274,23 @@ def _call_openai_chat(message: str, api_key: str, history: list[Any] | None = No
     response.raise_for_status()
     data = response.json()
     return data["choices"][0]["message"]["content"].strip()
+
+
+def _build_chat_system_prompt(db) -> str:
+    """Build the global chat system prompt with a bounded ops context window."""
+    if db is None:
+        return _CHAT_SYSTEM_PROMPT
+    try:
+        from backend.app.ops_routes import build_ops_context_snippet
+
+        snippet = build_ops_context_snippet(db)
+        if not snippet:
+            return _CHAT_SYSTEM_PROMPT
+        n = snippet.count("\n") + 1
+        ops_section = _OPS_CONTEXT_HEADER.format(n=n, snippet=snippet)
+        return _CHAT_SYSTEM_PROMPT + ops_section
+    except Exception:
+        return _CHAT_SYSTEM_PROMPT
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +364,15 @@ async def chat(body: dict[str, Any]) -> JSONResponse:
         if not openai_api_key:
             reply = _stub_reply(message)
         else:
+            # Build system prompt with a bounded ops context window injected.
+            system_prompt = _build_chat_system_prompt(db)
             try:
-                reply = _call_openai_chat(message, openai_api_key, history[:-1] if history else [])
+                reply = _call_openai_chat(
+                    message,
+                    openai_api_key,
+                    history[:-1] if history else [],
+                    system_prompt=system_prompt,
+                )
             except httpx.TimeoutException:
                 return _error(
                     502,

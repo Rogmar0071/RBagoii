@@ -34,6 +34,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from backend.app.ops_log import log_event as _log_event
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -183,11 +185,27 @@ def run_analyze(job_id: str) -> None:
     job = _get_job(job_id)
     if job is None:
         logger.error("run_analyze: job %s not found", job_id)
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="worker.abandoned",
+            message=f"run_analyze: job {job_id} not found in DB",
+            job_id=job_id,
+        )
         return
 
     folder_id = str(job.folder_id)
     _update_job(job_id, status="running", progress=5)
     _update_folder_status(folder_id, "running")
+    _log_event(
+        source="worker",
+        level="info",
+        event_type="jobs.start",
+        message=f"Job analyze started: {job_id}",
+        folder_id=folder_id,
+        job_id=job_id,
+        rq_job_id=job.rq_job_id,
+    )
 
     try:
         from backend.app import storage
@@ -202,6 +220,14 @@ def run_analyze(job_id: str) -> None:
             raise RuntimeError(f"Clip not found in storage: {folder.clip_object_key}")
 
         _update_job(job_id, progress=15)
+        _log_event(
+            source="worker",
+            level="info",
+            event_type="jobs.progress",
+            message=f"Job analyze progress 15%: {job_id}",
+            folder_id=folder_id,
+            job_id=job_id,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             clip_path = os.path.join(tmpdir, "clip.mp4")
@@ -223,6 +249,14 @@ def run_analyze(job_id: str) -> None:
                 raise RuntimeError(f"Extraction failed: {result.stderr.strip()}")
 
             _update_job(job_id, progress=70)
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="jobs.progress",
+                message="Job analyze progress 70%: extraction complete",
+                folder_id=folder_id,
+                job_id=job_id,
+            )
 
             # Upload analysis.json as analysis_json artifact.
             with open(analysis_path, "rb") as fh:
@@ -232,6 +266,15 @@ def run_analyze(job_id: str) -> None:
                 folder_id, "analysis.json", analysis_bytes, "application/json"
             )
             _create_artifact(folder_id, "analysis_json", analysis_key)
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="artifacts.created",
+                message=f"Artifact analysis_json created for folder {folder_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+                details_json={"object_key": analysis_key},
+            )
 
             _update_job(job_id, progress=90)
 
@@ -244,14 +287,41 @@ def run_analyze(job_id: str) -> None:
                     folder_id, "analysis.md", md_bytes, "text/markdown"
                 )
                 _create_artifact(folder_id, "analysis_md", md_key)
+                _log_event(
+                    source="worker",
+                    level="info",
+                    event_type="artifacts.created",
+                    message=f"Artifact analysis_md created for folder {folder_id}",
+                    folder_id=folder_id,
+                    job_id=job_id,
+                    details_json={"object_key": md_key},
+                )
 
         _update_job(job_id, status="succeeded", progress=100)
         _update_folder_status(folder_id, "done")
+        _log_event(
+            source="worker",
+            level="info",
+            event_type="jobs.succeeded",
+            message=f"Job analyze succeeded: {job_id}",
+            folder_id=folder_id,
+            job_id=job_id,
+        )
 
     except Exception as exc:
         logger.exception("run_analyze failed for job %s", job_id)
         _update_job(job_id, status="failed", error=str(exc))
         _update_folder_status(folder_id, "failed")
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="jobs.failed",
+            message=f"Job analyze failed: {job_id}: {exc}",
+            folder_id=folder_id,
+            job_id=job_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc)[:2000],
+        )
 
 
 def run_blueprint(job_id: str) -> None:
@@ -266,10 +336,26 @@ def run_blueprint(job_id: str) -> None:
     job = _get_job(job_id)
     if job is None:
         logger.error("run_blueprint: job %s not found", job_id)
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="worker.abandoned",
+            message=f"run_blueprint: job {job_id} not found in DB",
+            job_id=job_id,
+        )
         return
 
     folder_id = str(job.folder_id)
     _update_job(job_id, status="running", progress=10)
+    _log_event(
+        source="worker",
+        level="info",
+        event_type="jobs.start",
+        message=f"Job blueprint started: {job_id}",
+        folder_id=folder_id,
+        job_id=job_id,
+        rq_job_id=job.rq_job_id,
+    )
 
     try:
         import json
@@ -297,6 +383,14 @@ def run_blueprint(job_id: str) -> None:
             raise RuntimeError(f"Analysis JSON not found in storage: {artifact.object_key}")
 
         _update_job(job_id, progress=30)
+        _log_event(
+            source="worker",
+            level="info",
+            event_type="jobs.progress",
+            message="Job blueprint progress 30%: analysis loaded",
+            folder_id=folder_id,
+            job_id=job_id,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             analysis_path = os.path.join(tmpdir, "analysis.json")
@@ -325,6 +419,14 @@ def run_blueprint(job_id: str) -> None:
                 raise RuntimeError(f"Preview failed: {result.stderr.strip()}")
 
             _update_job(job_id, progress=70)
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="jobs.progress",
+                message="Job blueprint progress 70%: preview generated",
+                folder_id=folder_id,
+                job_id=job_id,
+            )
 
             # Upload preview PNGs as preview_png artifacts.
             for fname in sorted(os.listdir(preview_dir)):
@@ -334,6 +436,15 @@ def run_blueprint(job_id: str) -> None:
                     png_bytes = fh.read()
                 key = storage.upload_bytes(folder_id, f"preview/{fname}", png_bytes, "image/png")
                 _create_artifact(folder_id, "preview_png", key)
+                _log_event(
+                    source="worker",
+                    level="info",
+                    event_type="artifacts.created",
+                    message=f"Artifact preview_png created for folder {folder_id}",
+                    folder_id=folder_id,
+                    job_id=job_id,
+                    details_json={"object_key": key},
+                )
 
             _update_job(job_id, progress=85)
 
@@ -342,6 +453,15 @@ def run_blueprint(job_id: str) -> None:
                 folder_id, "blueprint.json", analysis_bytes, "application/json"
             )
             _create_artifact(folder_id, "blueprint_json", bp_key)
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="artifacts.created",
+                message=f"Artifact blueprint_json created for folder {folder_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+                details_json={"object_key": bp_key},
+            )
 
             # Generate and upload a Markdown summary (blueprint_md artifact).
             analysis_data = json.loads(analysis_bytes)
@@ -350,12 +470,39 @@ def run_blueprint(job_id: str) -> None:
                 folder_id, "blueprint.md", bp_md_bytes, "text/markdown"
             )
             _create_artifact(folder_id, "blueprint_md", md_key)
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="artifacts.created",
+                message=f"Artifact blueprint_md created for folder {folder_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+                details_json={"object_key": md_key},
+            )
 
         _update_job(job_id, status="succeeded", progress=100)
+        _log_event(
+            source="worker",
+            level="info",
+            event_type="jobs.succeeded",
+            message=f"Job blueprint succeeded: {job_id}",
+            folder_id=folder_id,
+            job_id=job_id,
+        )
 
     except Exception as exc:
         logger.exception("run_blueprint failed for job %s", job_id)
         _update_job(job_id, status="failed", error=str(exc))
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="jobs.failed",
+            message=f"Job blueprint failed: {job_id}: {exc}",
+            folder_id=folder_id,
+            job_id=job_id,
+            error_type=type(exc).__name__,
+            error_detail=str(exc)[:2000],
+        )
 
 
 def _analysis_to_blueprint_md(data: dict) -> str:
