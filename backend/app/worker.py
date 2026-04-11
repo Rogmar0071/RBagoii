@@ -173,6 +173,9 @@ def _update_folder_status(folder_id: str, status: str) -> None:
 # Job functions
 # ---------------------------------------------------------------------------
 
+# Maximum seconds allowed for the extractor subprocess in run_analyze.
+_EXTRACTOR_TIMEOUT_SECONDS = 300
+
 
 def run_analyze(job_id: str) -> None:
     """
@@ -244,10 +247,11 @@ def run_analyze(job_id: str) -> None:
                 [sys.executable, "-m", "ui_blueprint", "extract", clip_path, "-o", analysis_path],
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=_EXTRACTOR_TIMEOUT_SECONDS,
             )
             if result.returncode != 0:
-                stderr_tail = (result.stderr or "").strip()[-1000:]
+                # Capture last 1000 characters of stderr for diagnostics.
+                stderr_tail = (result.stderr or "")[-1000:].strip()
                 logger.error(
                     "run_analyze: extraction failed for job %s (rc=%d); stderr tail: %s",
                     job_id,
@@ -333,7 +337,7 @@ def run_analyze(job_id: str) -> None:
             job_id=job_id,
             error_type="timeout",
             error_detail=(
-                f"Extractor subprocess exceeded 300s timeout. "
+                f"Extractor subprocess exceeded {_EXTRACTOR_TIMEOUT_SECONDS}s timeout. "
                 f"Original error: {str(exc)[:1900]}"
             ),
         )

@@ -772,7 +772,7 @@ def _mark_stalled_jobs(db, folder_id: uuid.UUID) -> None:
         select(Job)
         .where(Job.folder_id == folder_id)
         .where(Job.status == "running")
-        .where(Job.type.in_(_STALLED_JOB_TYPES))
+        .where(Job.type.in_(list(_STALLED_JOB_TYPES)))
         .where(Job.updated_at < cutoff)
     ).all()
 
@@ -804,12 +804,10 @@ def _mark_stalled_jobs(db, folder_id: uuid.UUID) -> None:
     if stalled:
         db.commit()
         # Sync folder status if no other running jobs remain.
-        from sqlmodel import select as _select
-
         from backend.app.models import Folder
 
         still_running = db.exec(
-            _select(Job)
+            select(Job)
             .where(Job.folder_id == folder_id)
             .where(Job.status == "running")
         ).first()
