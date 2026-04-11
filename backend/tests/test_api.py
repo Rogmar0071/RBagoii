@@ -405,10 +405,100 @@ class TestChat:
         assert body["schema_version"]
         assert body["tools_available"]
         assert len(body["messages"]) == 2
-        assert body["messages"][0]["role"] == "user"
-        assert body["messages"][0]["context"]["session_id"] == "sess-1"
-        assert body["messages"][1]["role"] == "assistant"
+        # Messages are returned newest-first.
+        assert body["messages"][0]["role"] == "assistant"
+        assert body["messages"][1]["role"] == "user"
+        assert body["messages"][1]["context"]["session_id"] == "sess-1"
 
     def test_chat_history_requires_auth(self, client: TestClient) -> None:
         response = client.get("/api/chat")
         assert response.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Migration tests
+# ---------------------------------------------------------------------------
+
+
+class TestMigrations:
+    """Verify that running alembic upgrade head produces the expected schema."""
+
+    def test_migration_0003_adds_superseded_by_id(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Migration 0003 must add superseded_by_id to global_chat_messages."""
+        import sqlalchemy as sa
+        from alembic import command
+        from alembic.config import Config
+
+        db_path = tmp_path / "migration_test.db"
+        db_url = f"sqlite:///{db_path}"
+
+        # Create global_chat_messages without superseded_by_id, then stamp at
+        # 0002 so Alembic treats it as "already migrated up to 0002" and only
+        # runs 0003 on the next upgrade head call.
+        engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
+        with engine.begin() as conn:
+            conn.execute(sa.text(
+                "CREATE TABLE global_chat_messages ("
+                "  id TEXT PRIMARY KEY,"
+                "  role TEXT NOT NULL,"
+                "  content TEXT NOT NULL,"
+                "  session_id TEXT,"
+                "  domain_profile_id TEXT,"
+                "  created_at TEXT"
+                ")"
+            ))
+        engine.dispose()
+
+        # env.py reads DATABASE_URL from the environment; point it at our
+        # isolated test DB so Alembic connects to the right file.
+        monkeypatch.setenv("DATABASE_URL", db_url)
+
+        alembic_cfg = Config("backend/alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+
+        # Stamp at 0002: Alembic believes migrations 0001+0002 already ran.
+        command.stamp(alembic_cfg, "0002")
+
+        # Run only migration 0003.
+        command.upgrade(alembic_cfg, "head")
+
+        # Verify the column was added.
+        engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
+        with engine.connect() as conn:
+            inspector = sa.inspect(conn)
+            columns = {col["name"] for col in inspector.get_columns("global_chat_messages")}
+        engine.dispose()
+
+        assert "superseded_by_id" in columns, (
+            "Migration 0003 did not add superseded_by_id to global_chat_messages"
+        )
+
+    def test_migration_0003_greenfield_skips_missing_table(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On a greenfield DB (no global_chat_messages), migration 0003 is a no-op."""
+        import sqlalchemy as sa
+        from alembic import command
+        from alembic.config import Config
+
+        db_path = tmp_path / "greenfield_test.db"
+        db_url = f"sqlite:///{db_path}"
+
+        # Create an empty SQLite DB (no tables at all).
+        engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
+        engine.dispose()
+
+        monkeypatch.setenv("DATABASE_URL", db_url)
+
+        alembic_cfg = Config("backend/alembic.ini")
+        alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+
+        # Stamp at 0002 to simulate greenfield deployment that already ran
+        # migrations 0001+0002 but init_db() hasn't run yet.
+        command.stamp(alembic_cfg, "0002")
+
+        # upgrade head should complete without error even though the table
+        # is absent (migration 0003 guards with inspector.get_table_names()).
+        command.upgrade(alembic_cfg, "head")
