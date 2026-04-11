@@ -795,7 +795,7 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
             "segment_id": segment_id,
             "t0_ms": seg["t0_ms"],
             "t1_ms": seg["t1_ms"],
-            "notes": f"Segment {cursor + processed} of {total}",
+            "notes": f"Segment {cursor + processed + 1} of {total}",
         }
         baseline_bytes = _json.dumps(baseline_data, indent=2).encode("utf-8")
 

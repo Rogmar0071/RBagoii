@@ -1108,9 +1108,14 @@ class TestOptionalAnalyzeJob:
         folder_id, job_id = _make_folder_and_job()
         manifest_bytes = _make_manifest_bytes_for_folder(folder_id, n_segments=2)
         opts = {
-            "additional_analysis": {"enabled": True, "keyframes": True, "ocr": False,
-                                    "transcript": False, "events": False,
-                                    "segment_summaries": False}
+            "additional_analysis": {
+                "enabled": True,
+                "keyframes": True,
+                "ocr": False,
+                "transcript": False,
+                "events": False,
+                "segment_summaries": False,
+            }
         }
 
         _set_job_checkpoint(
