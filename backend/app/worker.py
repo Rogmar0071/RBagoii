@@ -239,6 +239,7 @@ def run_analyze(job_id: str) -> None:
             _update_job(job_id, progress=20)
 
             # Run extractor — output saved as analysis.json.
+            logger.info("run_analyze: extraction starting for job %s", job_id)
             result = subprocess.run(
                 [sys.executable, "-m", "ui_blueprint", "extract", clip_path, "-o", analysis_path],
                 capture_output=True,
@@ -246,7 +247,18 @@ def run_analyze(job_id: str) -> None:
                 timeout=300,
             )
             if result.returncode != 0:
-                raise RuntimeError(f"Extraction failed: {result.stderr.strip()}")
+                stderr_tail = (result.stderr or "").strip()[-1000:]
+                logger.error(
+                    "run_analyze: extraction failed for job %s (rc=%d); stderr tail: %s",
+                    job_id,
+                    result.returncode,
+                    stderr_tail,
+                )
+                raise RuntimeError(
+                    f"Extraction failed (rc={result.returncode}). "
+                    f"stderr: {stderr_tail}"
+                )
+            logger.info("run_analyze: extraction finished for job %s", job_id)
 
             _update_job(job_id, progress=70)
             _log_event(
@@ -306,6 +318,24 @@ def run_analyze(job_id: str) -> None:
             message=f"Job analyze succeeded: {job_id}",
             folder_id=folder_id,
             job_id=job_id,
+        )
+
+    except subprocess.TimeoutExpired as exc:
+        logger.exception("run_analyze timed out for job %s", job_id)
+        _update_job(job_id, status="failed", error=str(exc))
+        _update_folder_status(folder_id, "failed")
+        _log_event(
+            source="worker",
+            level="error",
+            event_type="jobs.failed",
+            message=f"Job analyze timed out: {job_id}",
+            folder_id=folder_id,
+            job_id=job_id,
+            error_type="timeout",
+            error_detail=(
+                f"Extractor subprocess exceeded 300s timeout. "
+                f"Original error: {str(exc)[:1900]}"
+            ),
         )
 
     except Exception as exc:
