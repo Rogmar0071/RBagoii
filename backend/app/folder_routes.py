@@ -918,10 +918,13 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
             "additional_analysis": {"enabled": true, "keyframes": true}}}
         {"type": "blueprint"}
 
-    **options** (analyze only, optional):
+    **options** (analyze / analyze_optional only, optional):
       - ``additional_analysis.enabled`` (bool, default ``false``): master switch.
-      - ``additional_analysis.keyframes`` (bool, default ``false``): produce
-        ``keyframes.json`` artifact listing extracted frames with timestamps.
+      - ``additional_analysis.keyframes`` (bool): per-segment keyframes.json.
+      - ``additional_analysis.ocr`` (bool): per-segment ocr.json.
+      - ``additional_analysis.transcript`` (bool): per-segment transcript.json.
+      - ``additional_analysis.events`` (bool): per-segment events.json.
+      - ``additional_analysis.segment_summaries`` (bool): per-segment summary.json.
 
     Omitting ``options`` is equivalent to ``{"additional_analysis": {"enabled": false}}``.
     All unknown keys inside ``options`` are rejected with HTTP 400.
@@ -939,15 +942,15 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
     _folder_or_404(db, fid)
 
     job_type = str(body.get("type", "")).strip()
-    if job_type not in ("analyze", "blueprint"):
+    if job_type not in ("analyze", "analyze_optional", "blueprint"):
         raise HTTPException(
             status_code=400,
-            detail="type must be 'analyze' or 'blueprint'",
+            detail="type must be 'analyze', 'analyze_optional', or 'blueprint'",
         )
 
     # Validate and normalise the optional per-job options block.
     analyze_options: dict[str, Any] | None = None
-    if job_type == "analyze" and "options" in body:
+    if job_type in ("analyze", "analyze_optional") and "options" in body:
         raw_options = body["options"]
         if not isinstance(raw_options, dict):
             raise HTTPException(status_code=400, detail="options must be a JSON object")
@@ -967,7 +970,9 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
             raise HTTPException(
                 status_code=400, detail="options.additional_analysis must be a JSON object"
             )
-        _AA_ALLOWED_KEYS = {"enabled", "keyframes", "ocr", "transcript"}
+        _AA_ALLOWED_KEYS = {
+            "enabled", "keyframes", "ocr", "transcript", "events", "segment_summaries"
+        }
         unknown_aa = set(aa) - _AA_ALLOWED_KEYS
         if unknown_aa:
             raise HTTPException(
@@ -983,18 +988,20 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
                 "keyframes": bool(aa.get("keyframes", False)),
                 "ocr": bool(aa.get("ocr", False)),
                 "transcript": bool(aa.get("transcript", False)),
+                "events": bool(aa.get("events", False)),
+                "segment_summaries": bool(aa.get("segment_summaries", False)),
             }
         }
 
     # Run watchdog before the dedupe check so stalled jobs are cleared first.
     _mark_stalled_jobs(db, fid)
 
-    # Idempotency: deduplicate active analyze jobs.
-    if job_type == "analyze":
+    # Idempotency: deduplicate active analyze/analyze_optional jobs.
+    if job_type in ("analyze", "analyze_optional"):
         existing = db.exec(
             select(Job)
             .where(Job.folder_id == fid)
-            .where(Job.type == "analyze")
+            .where(Job.type == job_type)
             .where(Job.status.in_(["queued", "running"]))
             .order_by(Job.created_at.asc())
         ).first()

@@ -167,6 +167,11 @@ class Job(SQLModel, table=True):
     analyze_options: Optional[Any] = Field(
         default=None, sa_column=Column(sa.JSON, nullable=True)
     )
+    # Segment cursor – number of segments processed so far.
+    # Used by baseline_segments stage (analyze) and segments stage (analyze_optional).
+    analyze_cursor_segment_index: Optional[int] = Field(
+        default=None, sa_column=Column(sa.Integer, nullable=True)
+    )
 
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:
