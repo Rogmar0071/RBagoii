@@ -1,6 +1,7 @@
 package com.uiblueprint.android
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -132,7 +133,7 @@ class FolderDetailActivity : AppCompatActivity() {
         try {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, RC_SPEECH_FOLDER)
-        } catch (_: Exception) {
+        } catch (_: ActivityNotFoundException) {
             Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show()
         }
     }

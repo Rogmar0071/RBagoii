@@ -1,5 +1,6 @@
 package com.uiblueprint.android
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -73,7 +74,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         try {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, RC_SPEECH_CHAT)
-        } catch (_: Exception) {
+        } catch (_: ActivityNotFoundException) {
             Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show()
         }
     }

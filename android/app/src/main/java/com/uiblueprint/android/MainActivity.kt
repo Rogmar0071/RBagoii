@@ -1,5 +1,6 @@
 package com.uiblueprint.android
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -80,7 +81,7 @@ class MainActivity : AppCompatActivity(),
         try {
             @Suppress("DEPRECATION")
             startActivityForResult(intent, requestCode)
-        } catch (_: Exception) {
+        } catch (_: ActivityNotFoundException) {
             Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show()
         }
     }
