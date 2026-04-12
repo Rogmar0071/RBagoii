@@ -212,7 +212,6 @@ def _create_artifact(folder_id: str, artifact_type: str, object_key: str) -> Non
             ).first()
             if existing:
                 existing.object_key = object_key
-                existing.created_at = datetime.now(timezone.utc)
                 session.add(existing)
             else:
                 artifact = Artifact(

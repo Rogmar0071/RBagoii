@@ -1004,13 +1004,26 @@ class FolderDetailActivity : AppCompatActivity() {
         }
     }
 
+    // Counter for locally generated message IDs to ensure uniqueness
+    private var localMessageCounter = 0
+
     private fun appendChatLine(line: String) {
-        val id = "local_${System.currentTimeMillis()}_${chatMessages.size}"
-        val role = if (line.startsWith("You:")) "user" else "assistant"
-        val content = if (line.startsWith("You: ") || line.startsWith("AI: ")) {
-            line.substringAfter(": ")
-        } else {
-            line
+        val id = "local_${++localMessageCounter}"
+        val role: String
+        val content: String
+        when {
+            line.startsWith("You: ") -> {
+                role = "user"
+                content = line.removePrefix("You: ")
+            }
+            line.startsWith("AI: ") -> {
+                role = "assistant"
+                content = line.removePrefix("AI: ")
+            }
+            else -> {
+                role = "assistant"
+                content = line
+            }
         }
         chatMessages.add(ChatMessageAdapter.Message(id = id, role = role, content = content))
         chatAdapter.submitList(chatMessages.toList())
