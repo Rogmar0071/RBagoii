@@ -6,142 +6,146 @@
     - Message text
     - Artifact code card (hidden by default)
     - Always-visible action row: Copy, Share, and (for user messages) Edit
+  User messages are right-aligned at 70% width via bubbleContainer gravity set in adapter.
 -->
-<LinearLayout
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
-    android:background="@color/black"
-    android:paddingStart="12dp"
-    android:paddingEnd="12dp"
     android:paddingTop="4dp"
-    android:paddingBottom="4dp">
+    android:paddingBottom="4dp"
+    android:background="@color/black">
 
-    <!-- Message bubble card -->
-    <com.google.android.material.card.MaterialCardView
-        android:id="@+id/cardMessage"
-        android:layout_width="match_parent"
+    <!-- Message bubble + actions column — positioned by adapter via layout_gravity -->
+    <LinearLayout
+        android:id="@+id/bubbleContainer"
+        android:layout_width="70%"
         android:layout_height="wrap_content"
-        android:clickable="true"
-        android:focusable="true"
-        app:cardBackgroundColor="@color/surface"
-        app:cardCornerRadius="12dp"
-        app:cardElevation="0dp"
-        xmlns:app="http://schemas.android.com/apk/res-auto">
+        android:orientation="vertical">
 
-        <LinearLayout
+        <!-- Message bubble card -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardMessage"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:padding="12dp">
+            android:clickable="true"
+            android:focusable="true"
+            app:cardBackgroundColor="@color/surface"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="0dp">
 
-            <!-- Role label -->
-            <TextView
-                android:id="@+id/tvRole"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textStyle="bold"
-                android:textSize="11sp"
-                android:textColor="@color/text_secondary"
-                android:layout_marginBottom="2dp" />
-
-            <!-- Normal message text -->
-            <TextView
-                android:id="@+id/tvContent"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:textSize="14sp"
-                android:textColor="@color/text_primary"
-                android:textIsSelectable="true"
-                android:lineSpacingMultiplier="1.4" />
+                android:orientation="vertical"
+                android:padding="12dp">
 
-            <!-- Artifact block: monospace card (only visible when ARTIFACT_ blocks detected) -->
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/cardArtifact"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:visibility="gone"
-                app:cardBackgroundColor="@color/surface_raised"
-                app:cardCornerRadius="8dp"
-                app:cardElevation="0dp">
+                <TextView
+                    android:id="@+id/tvRole"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_secondary"
+                    android:layout_marginBottom="2dp" />
 
-                <LinearLayout
+                <TextView
+                    android:id="@+id/tvContent"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="8dp">
+                    android:textSize="14sp"
+                    android:textColor="@color/text_primary"
+                    android:textIsSelectable="true"
+                    android:lineSpacingMultiplier="1.4" />
 
-                    <TextView
-                        android:id="@+id/tvArtifact"
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/cardArtifact"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:visibility="gone"
+                    app:cardBackgroundColor="@color/surface_raised"
+                    app:cardCornerRadius="8dp"
+                    app:cardElevation="0dp">
+
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:fontFamily="monospace"
-                        android:textColor="@color/text_primary"
-                        android:textSize="12sp"
-                        android:textIsSelectable="true" />
+                        android:orientation="vertical"
+                        android:padding="8dp">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btnCopyArtifact"
-                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="@string/action_copy_artifact"
-                        android:textColor="@color/text_primary"
-                        android:textSize="11sp" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
+                        <TextView
+                            android:id="@+id/tvArtifact"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:fontFamily="monospace"
+                            android:textColor="@color/text_primary"
+                            android:textSize="12sp"
+                            android:textIsSelectable="true" />
 
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btnCopyArtifact"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/action_copy_artifact"
+                            android:textColor="@color/text_primary"
+                            android:textSize="11sp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Action row -->
+        <LinearLayout
+            android:id="@+id/rowActions"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:layout_marginTop="2dp"
+            android:layout_marginStart="4dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCopy"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="@string/action_copy"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:minWidth="0dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnShare"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="@string/action_share"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:minWidth="0dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnEdit"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="@string/action_edit"
+                android:textColor="@color/text_secondary"
+                android:textSize="11sp"
+                android:minWidth="0dp"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:visibility="gone" />
         </LinearLayout>
-    </com.google.android.material.card.MaterialCardView>
 
-    <!-- Always-visible action row -->
-    <LinearLayout
-        android:id="@+id/rowActions"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="2dp"
-        android:layout_marginStart="4dp">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnCopy"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="@string/action_copy"
-            android:textColor="@color/text_secondary"
-            android:textSize="11sp"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnShare"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="@string/action_share"
-            android:textColor="@color/text_secondary"
-            android:textSize="11sp"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnEdit"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="wrap_content"
-            android:layout_height="32dp"
-            android:text="@string/action_edit"
-            android:textColor="@color/text_secondary"
-            android:textSize="11sp"
-            android:minWidth="0dp"
-            android:paddingStart="6dp"
-            android:paddingEnd="6dp"
-            android:visibility="gone" />
     </LinearLayout>
 
-</LinearLayout>
+</FrameLayout>

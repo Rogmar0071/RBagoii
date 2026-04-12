@@ -7,6 +7,8 @@ import android.content.Intent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
@@ -68,6 +70,7 @@ class ChatMessageAdapter(
     // -------------------------------------------------------------------------
 
     class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val bubbleContainer: LinearLayout = view.findViewById(R.id.bubbleContainer)
         val cardMessage: MaterialCardView = view.findViewById(R.id.cardMessage)
         val tvRole: TextView = view.findViewById(R.id.tvRole)
         val tvContent: TextView = view.findViewById(R.id.tvContent)
@@ -97,6 +100,21 @@ class ChatMessageAdapter(
 
         // Role label
         holder.tvRole.text = if (msg.role == "user") "You" else "AI"
+
+        // Align user messages to the right at 70% width
+        val bubbleParams = holder.bubbleContainer.layoutParams as FrameLayout.LayoutParams
+        if (msg.role == "user") {
+            bubbleParams.gravity = android.view.Gravity.END
+            holder.cardMessage.setCardBackgroundColor(
+                ContextCompat.getColor(context, R.color.surface_raised)
+            )
+        } else {
+            bubbleParams.gravity = android.view.Gravity.START
+            holder.cardMessage.setCardBackgroundColor(
+                ContextCompat.getColor(context, R.color.surface)
+            )
+        }
+        holder.bubbleContainer.layoutParams = bubbleParams
 
         // Superseded styling
         holder.itemView.alpha = if (msg.superseded) 0.45f else 1.0f

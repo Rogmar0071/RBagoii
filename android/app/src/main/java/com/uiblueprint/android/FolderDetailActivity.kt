@@ -1,6 +1,7 @@
 package com.uiblueprint.android
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.speech.RecognizerIntent
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
@@ -112,6 +114,43 @@ class FolderDetailActivity : AppCompatActivity() {
         }
     }
 
+    // File attachment picker launcher.
+    private val folderAttachPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val name = uri.lastPathSegment ?: uri.toString()
+            val current = binding.etMessage.text?.toString() ?: ""
+            binding.etMessage.setText(if (current.isBlank()) name else "$current $name")
+        }
+    }
+
+    private fun startFolderSpeechRecognition() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.btn_mic))
+        }
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, RC_SPEECH_FOLDER)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == RC_SPEECH_FOLDER && resultCode == RESULT_OK) {
+            val result = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!result.isNullOrBlank()) {
+                val current = binding.etMessage.text?.toString() ?: ""
+                binding.etMessage.setText(if (current.isBlank()) result else "$current $result")
+                binding.etMessage.setSelection(binding.etMessage.text?.length ?: 0)
+            }
+        }
+    }
+
     // Receives CAPTURE_DONE broadcast from CaptureService.
     private val captureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -155,6 +194,12 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.btnPickGallery.setOnClickListener { onPickGalleryClicked() }
         binding.btnAnalyze.setOnClickListener { onAnalyzeClicked() }
         binding.btnSend.setOnClickListener { onSendClicked() }
+        binding.btnAttach.setOnClickListener {
+            folderAttachPickerLauncher.launch("*/*")
+        }
+        binding.btnMic.setOnClickListener {
+            startFolderSpeechRecognition()
+        }
         binding.tvFolderTitle.text = getString(R.string.folder_detail_title)
         binding.tvFolderStatus.text = getString(R.string.folder_loading)
         binding.tvFolderId.text = getString(R.string.label_folder_id, folderId)
@@ -919,5 +964,6 @@ class FolderDetailActivity : AppCompatActivity() {
         private val ACTIVE_JOB_TYPES = setOf("analyze", "analyze_optional")
         private const val ERROR_PERMISSION_DENIED = "Screen capture permission denied"
         private const val ERROR_START_FAILED = "Capture failed to start recording."
+        private const val RC_SPEECH_FOLDER = 1002
     }
 }

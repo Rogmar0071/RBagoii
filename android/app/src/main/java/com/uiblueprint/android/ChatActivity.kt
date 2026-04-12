@@ -1,14 +1,18 @@
 package com.uiblueprint.android
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.view.View
 import android.widget.EditText
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
@@ -49,6 +53,43 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     companion object {
         private const val PREFS_NAME = "chat_prefs"
         private const val PREF_AGENT_MODE = "agent_mode"
+        private const val RC_SPEECH_CHAT = 1003
+    }
+
+    private val attachPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val name = uri.lastPathSegment ?: uri.toString()
+            val current = binding.etMessage.text?.toString() ?: ""
+            binding.etMessage.setText(if (current.isBlank()) name else "$current $name")
+        }
+    }
+
+    private fun startSpeechRecognition() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_PROMPT, getString(R.string.btn_mic))
+        }
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, RC_SPEECH_CHAT)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, "Speech recognition not available", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == RC_SPEECH_CHAT && resultCode == RESULT_OK) {
+            val result = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            if (!result.isNullOrBlank()) {
+                val current = binding.etMessage.text?.toString() ?: ""
+                binding.etMessage.setText(if (current.isBlank()) result else "$current $result")
+                binding.etMessage.setSelection(binding.etMessage.text?.length ?: 0)
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,6 +112,12 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         }
 
         binding.btnSend.setOnClickListener { onSendClicked() }
+        binding.btnAttach.setOnClickListener {
+            attachPickerLauncher.launch("*/*")
+        }
+        binding.btnMic.setOnClickListener {
+            startSpeechRecognition()
+        }
 
         // Multi-select toolbar buttons
         binding.btnSelectAll.setOnClickListener {
