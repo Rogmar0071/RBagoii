@@ -1,10 +1,10 @@
 package com.uiblueprint.android
 
-import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
@@ -37,11 +37,11 @@ class JobItemAdapter : ListAdapter<JobItem, JobItemAdapter.ViewHolder>(DIFF) {
         holder.tvType.text = item.type
         holder.tvStatus.text = item.status
         val badgeColor = when (item.status) {
-            "queued" -> Color.parseColor("#FFC107")
-            "running" -> Color.parseColor("#2196F3")
-            "succeeded" -> Color.parseColor("#4CAF50")
-            "failed" -> Color.parseColor("#F44336")
-            else -> Color.parseColor("#9E9E9E")
+            "queued" -> ContextCompat.getColor(holder.itemView.context, R.color.status_queued)
+            "running" -> ContextCompat.getColor(holder.itemView.context, R.color.status_running)
+            "succeeded" -> ContextCompat.getColor(holder.itemView.context, R.color.status_succeeded)
+            "failed" -> ContextCompat.getColor(holder.itemView.context, R.color.status_failed)
+            else -> ContextCompat.getColor(holder.itemView.context, R.color.status_unknown)
         }
         holder.tvStatus.setBackgroundColor(badgeColor)
 

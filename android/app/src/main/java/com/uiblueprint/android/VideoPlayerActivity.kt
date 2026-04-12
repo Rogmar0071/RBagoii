@@ -16,7 +16,6 @@ class VideoPlayerActivity : AppCompatActivity(), SurfaceHolder.Callback {
     private lateinit var progressBar: ProgressBar
     private var artifactUrl: String? = null
     private var surfaceReady = false
-    private var pendingPrepare = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,11 +39,7 @@ class VideoPlayerActivity : AppCompatActivity(), SurfaceHolder.Callback {
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
-        if (pendingPrepare) {
-            preparePlayer(holder.surface)
-        } else {
-            preparePlayer(holder.surface)
-        }
+        preparePlayer(holder.surface)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
