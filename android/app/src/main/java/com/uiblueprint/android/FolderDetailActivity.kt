@@ -585,7 +585,7 @@ class FolderDetailActivity : AppCompatActivity() {
         } catch (_: Exception) {
             isAudioRecording = false
             resetAudioRecordButton()
-            Toast.makeText(this, getString(R.string.status_audio_upload_failed), Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Failed to start audio recording.", Toast.LENGTH_SHORT).show()
         }
     }
 

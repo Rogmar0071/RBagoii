@@ -134,7 +134,9 @@ class AudioCaptureService : Service() {
         if (stopFailed) {
             try {
                 outputFile?.delete()
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to delete corrupt audio file", e)
+            }
             broadcastDone(audioPath = null, error = "Recording finalization failed.", durationMs = durationMs)
             stopSelf()
             return

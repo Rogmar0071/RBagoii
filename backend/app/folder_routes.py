@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -509,8 +510,6 @@ async def upload_audio(
 
     Returns 200 with the audio_object_key and artifact_id.
     """
-    import tempfile
-
     from backend.app import storage
     from backend.app.models import Artifact
 
@@ -533,16 +532,14 @@ async def upload_audio(
         logger.error("Audio R2 upload failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}") from exc
     finally:
-        import os as _os
         try:
-            _os.unlink(tmp_path)
+            os.unlink(tmp_path)
         except Exception:  # noqa: BLE001
             pass
 
     folder.audio_object_key = object_key
     if not folder.clip_object_key:
         folder.status = "audio_ready"
-    from datetime import datetime, timezone
     folder.updated_at = datetime.now(timezone.utc)
     db.add(folder)
 

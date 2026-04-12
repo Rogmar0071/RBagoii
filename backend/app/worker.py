@@ -832,17 +832,10 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
     # Download audio file if folder has an audio_object_key.
     audio_path: str | None = None
     folder = _get_folder(folder_id)
-    if folder is not None and folder.audio_object_key and clip_tmpdir is not None:
+    if folder is not None and folder.audio_object_key:
         try:
-            _audio_local = os.path.join(clip_tmpdir, "audio.m4a")
-            audio_found = storage.get_object_to_file(folder.audio_object_key, _audio_local)
-            if audio_found:
-                audio_path = _audio_local
-        except Exception:  # noqa: BLE001
-            audio_path = None
-    elif folder is not None and folder.audio_object_key and clip_tmpdir is None:
-        try:
-            clip_tmpdir = tempfile.mkdtemp()
+            if clip_tmpdir is None:
+                clip_tmpdir = tempfile.mkdtemp()
             _audio_local = os.path.join(clip_tmpdir, "audio.m4a")
             audio_found = storage.get_object_to_file(folder.audio_object_key, _audio_local)
             if audio_found:
