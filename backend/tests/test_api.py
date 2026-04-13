@@ -47,6 +47,16 @@ def _configure_sqlite(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     db_module.reset_engine()
 
 
+@pytest.fixture(autouse=True)
+def _configure_uploads_dir(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """Point _UPLOADS_DIR to a tmp_path so tests don't write to /tmp/uploads."""
+    import backend.app.main as m
+
+    uploads = tmp_path / "uploads"
+    uploads.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(m, "_UPLOADS_DIR", uploads)
+
+
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=True)

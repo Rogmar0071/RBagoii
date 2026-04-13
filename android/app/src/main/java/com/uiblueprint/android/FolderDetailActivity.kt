@@ -1365,6 +1365,27 @@ class FolderDetailActivity : AppCompatActivity() {
                 sheet.dismiss()
                 openLastAnalysisArtifact()
             }
+
+        // Cancel Analysis button — shown only when a job is active.
+        val btnCancelAnalysis = view.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnCancelAnalysis)
+        val activeJob = lastFolderJson?.optJSONArray("jobs")?.let { jobs ->
+            (0 until jobs.length())
+                .map { jobs.getJSONObject(it) }
+                .firstOrNull {
+                    it.optString("type") in ACTIVE_JOB_TYPES &&
+                        it.optString("status") in ACTIVE_JOB_STATUSES
+                }
+        }
+        if (activeJob != null) {
+            btnCancelAnalysis.visibility = View.VISIBLE
+            btnCancelAnalysis.setOnClickListener {
+                sheet.dismiss()
+                cancelAnalyzeJob(activeJob.optString("id"))
+            }
+        } else {
+            btnCancelAnalysis.visibility = View.GONE
+        }
+
         sheet.show()
     }
 
@@ -1426,6 +1447,51 @@ class FolderDetailActivity : AppCompatActivity() {
             return
         }
         ArtifactViewerRouter.open(this, analysisArtifact, folderId)
+    }
+
+    /**
+     * Cancel an active analyze job by calling DELETE /v1/folders/{folderId}/jobs/{jobId}.
+     * After cancellation, refreshes the folder and re-enables the Analyze button.
+     */
+    private fun cancelAnalyzeJob(jobId: String) {
+        if (jobId.isBlank()) return
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/v1/folders/$folderId/jobs/$jobId")
+            .delete()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        executor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful) {
+                            stopPolling()
+                            binding.btnAnalyze.isEnabled = true
+                            binding.btnAnalyze.text = getString(R.string.btn_analyze)
+                            Toast.makeText(this, getString(R.string.toast_analysis_cancelled), Toast.LENGTH_SHORT).show()
+                            loadFolder()
+                        } else {
+                            Toast.makeText(
+                                this,
+                                "${getString(R.string.toast_analysis_cancel_failed)}: HTTP ${resp.code}",
+                                Toast.LENGTH_LONG,
+                            ).show()
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                runOnUiThread {
+                    Toast.makeText(
+                        this,
+                        "${getString(R.string.toast_analysis_cancel_failed)}: ${e.message}",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
