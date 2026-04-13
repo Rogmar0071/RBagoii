@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import struct
+import time
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,14 @@ except ImportError:  # pragma: no cover - optional dependency path
 SCHEMA_VERSION = "1.0"
 DEFAULT_CHUNK_MS = 1000
 DEFAULT_SAMPLE_FPS = 10
+
+# ---------------------------------------------------------------------------
+# UI tree analysis pipeline constants
+# ---------------------------------------------------------------------------
+
+MAX_UI_NODES = 10000  # Max allowed UI elements in a tree before pruning
+MAX_UI_DEPTH = 50  # Max recursion depth allowed in segmentation
+MAX_SEGMENTATION_TIME_MS = 600000  # 10 minutes max segmentation runtime
 _MIN_COMPONENT_AREA = 16
 _BG_DIFF_THRESHOLD = 18
 _EDGE_THRESHOLD = 32
@@ -1259,3 +1268,359 @@ def extract_transcript(
     Falls back gracefully on any error.
     """
     return {"transcript": ""}
+
+
+# ---------------------------------------------------------------------------
+# Split video/audio analysis pipeline
+# ---------------------------------------------------------------------------
+
+
+def extract_video_track(clip_path: str, output_path: str) -> bool:
+    """Extract the video-only track from *clip_path*, writing to *output_path*.
+
+    Strips all audio streams using ``ffmpeg -an -c:v copy``.  The output
+    container format is inferred from *output_path*'s extension.
+
+    Returns ``True`` on success (non-empty output file created), ``False``
+    otherwise.  Never raises.
+    """
+    import os
+    import subprocess
+
+    try:
+        ffmpeg = _ffmpeg_exe()
+        cmd = [
+            ffmpeg,
+            "-i", clip_path,
+            "-an",
+            "-c:v", "copy",
+            "-y",
+            output_path,
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=300)
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def extract_audio_track(clip_path: str, output_path: str) -> bool:
+    """Extract the audio-only track from *clip_path*, writing to *output_path*.
+
+    Strips all video streams using ``ffmpeg -vn``.  When *output_path* ends
+    with ``.wav`` the audio is re-encoded to PCM 16-bit mono 16 kHz, which is
+    the format most speech-to-text backends expect.  For other extensions the
+    codec is copied verbatim.
+
+    Returns ``True`` on success (non-empty output file created), ``False``
+    otherwise.  Never raises.
+    """
+    import os
+    import subprocess
+
+    try:
+        ffmpeg = _ffmpeg_exe()
+        if output_path.lower().endswith(".wav"):
+            codec_args = ["-acodec", "pcm_s16le", "-ac", "1", "-ar", "16000"]
+        else:
+            codec_args = ["-c:a", "copy"]
+        cmd = [
+            ffmpeg,
+            "-i", clip_path,
+            "-vn",
+            *codec_args,
+            "-y",
+            output_path,
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=300)
+        return os.path.exists(output_path) and os.path.getsize(output_path) > 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def analyze_video_ui(clip_path: str) -> dict[str, Any]:
+    """Analyze *clip_path* for UI structure and return a ``ui_structure`` dict.
+
+    Runs the full frame-sampling → element-detection → tracking pipeline on
+    the file at *clip_path* (which should be a video-only file stripped of its
+    audio track for efficiency).
+
+    Returns a dict with keys: ``elements_catalog``, ``chunks``, ``events``,
+    ``quality``.  Falls back to an empty result on any error.
+    """
+    try:
+        result = extract(Path(clip_path))
+        all_events: list[dict[str, Any]] = [
+            event
+            for chunk in result.get("chunks", [])
+            for event in chunk.get("events", [])
+        ]
+        last_quality = (
+            result["chunks"][-1].get("quality", {}) if result.get("chunks") else {}
+        )
+        return {
+            "elements_catalog": result.get("elements_catalog", []),
+            "chunks": result.get("chunks", []),
+            "events": all_events,
+            "quality": last_quality,
+        }
+    except Exception:  # noqa: BLE001
+        return dict(_EMPTY_SEGMENT_RESULT)
+
+
+def analyze_audio_transcript(audio_path: str) -> dict[str, Any]:
+    """Analyze *audio_path* for speech content and return a ``transcript`` dict.
+
+    Delegates to :func:`extract_transcript` using the full file duration
+    (t0_ms=0, t1_ms=0 signals "whole file").  A real speech-to-text backend
+    should be wired in :func:`extract_transcript`; this function provides the
+    split-pipeline entry point that receives an audio-only file.
+
+    Returns a dict with key ``transcript`` (string).  Falls back to an empty
+    transcript on any error.
+    """
+    try:
+        return extract_transcript(audio_path, 0, 0, audio_path=audio_path)
+    except Exception:  # noqa: BLE001
+        return {"transcript": ""}
+
+
+def split_and_analyze(
+    clip_path: str,
+    *,
+    video_out: str | None = None,
+    audio_out: str | None = None,
+) -> dict[str, Any]:
+    """Run the split video/audio analysis pipeline on *clip_path*.
+
+    Steps:
+    1. Extract a video-only copy (``-an -c:v copy``) to *video_out* (or a
+       temp file when not supplied).
+    2. Extract an audio-only WAV to *audio_out* (or a temp file).
+    3. Analyze the video-only file for UI structure.
+    4. Analyze the audio-only file for speech transcript.
+    5. Return a combined dict with keys ``ui_structure`` and
+       ``audio_transcript``.
+
+    Intermediate temp files are always deleted when the caller has not
+    supplied explicit output paths.  Never raises.
+    """
+    import os
+    import tempfile
+
+    def _run(
+        video_path: str, audio_path: str
+    ) -> dict[str, Any]:
+        extract_video_track(clip_path, video_path)
+        extract_audio_track(clip_path, audio_path)
+        ui_structure = analyze_video_ui(video_path)
+        audio_transcript = analyze_audio_transcript(audio_path)
+        return {
+            "ui_structure": ui_structure,
+            "audio_transcript": audio_transcript,
+        }
+
+    own_video = video_out is None
+    own_audio = audio_out is None
+
+    try:
+        if own_video:
+            vfd, video_out = tempfile.mkstemp(suffix=".mp4")
+            os.close(vfd)
+        if own_audio:
+            afd, audio_out = tempfile.mkstemp(suffix=".wav")
+            os.close(afd)
+
+        return _run(video_out, audio_out)  # type: ignore[arg-type]
+    except Exception:  # noqa: BLE001
+        return {
+            "ui_structure": dict(_EMPTY_SEGMENT_RESULT),
+            "audio_transcript": {"transcript": ""},
+        }
+    finally:
+        if own_video and video_out and os.path.exists(video_out):
+            try:
+                os.unlink(video_out)
+            except Exception:  # noqa: BLE001
+                pass
+        if own_audio and audio_out and os.path.exists(audio_out):
+            try:
+                os.unlink(audio_out)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def preprocess_ui_tree(ui_tree: dict[str, Any]) -> dict[str, Any]:
+    """Count nodes and depth of *ui_tree*; prune if either limit is exceeded.
+
+    A UI tree is expected to be a dict with a ``root`` key whose value is a
+    node dict.  Each node may have an optional ``children`` list of child nodes.
+    """
+    node_count = 0
+    max_depth = 0
+
+    def _traverse(node: dict[str, Any], depth: int) -> None:
+        nonlocal node_count, max_depth
+        node_count += 1
+        if depth > max_depth:
+            max_depth = depth
+        for child in node.get("children") or []:
+            _traverse(child, depth + 1)
+
+    _traverse(ui_tree["root"], 1)
+
+    if node_count > MAX_UI_NODES or max_depth > MAX_UI_DEPTH:
+        import warnings
+
+        warnings.warn(
+            f"[preprocess_ui_tree] UI tree too large/deep "
+            f"(nodes={node_count}, depth={max_depth}), pruning...",
+            stacklevel=2,
+        )
+        return prune_ui_tree(ui_tree, MAX_UI_NODES, MAX_UI_DEPTH)
+
+    return ui_tree
+
+
+def prune_ui_tree(
+    ui_tree: dict[str, Any], max_nodes: int, max_depth: int
+) -> dict[str, Any]:
+    """Truncate *ui_tree* so that it does not exceed *max_nodes* or *max_depth*.
+
+    Children are pruned breadth-first when the node limit would be exceeded,
+    and the subtree is dropped entirely when the depth limit is reached.
+    """
+
+    def _prune(node: dict[str, Any], depth: int) -> None:
+        if depth > max_depth:
+            node["children"] = []
+            return
+        children = node.get("children")
+        if children:
+            if len(children) + 1 > max_nodes:
+                node["children"] = children[: max_nodes - 1]
+                children = node["children"]
+            for child in children:
+                _prune(child, depth + 1)
+
+    _prune(ui_tree["root"], 1)
+    return ui_tree
+
+
+def segment_ui_tree(ui_tree: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Decompose *ui_tree* into a flat list of segment nodes.
+
+    Returns ``None`` when the time limit is exceeded (and logs an error) or
+    when an unexpected exception occurs.  Subtrees beyond ``MAX_UI_DEPTH`` are
+    silently skipped.
+    """
+    start_time_s = time.monotonic()
+
+    def _segment_node(
+        node: dict[str, Any], depth: int
+    ) -> list[dict[str, Any]] | None:
+        if depth > MAX_UI_DEPTH:
+            import warnings
+
+            warnings.warn(
+                f"[segment_ui_tree] Max segmentation depth exceeded at depth {depth}, "
+                "skipping subtree.",
+                stacklevel=2,
+            )
+            return None
+        if (time.monotonic() - start_time_s) * 1000 > MAX_SEGMENTATION_TIME_MS:
+            raise TimeoutError(
+                "[segment_ui_tree] Segmentation time limit exceeded, aborting."
+            )
+
+        segments: list[dict[str, Any]] = []
+        for child in node.get("children") or []:
+            child_segments = _segment_node(child, depth + 1)
+            if child_segments is not None:
+                segments.extend(child_segments)
+
+        segments.append(node)
+        return segments
+
+    try:
+        return _segment_node(ui_tree["root"], 1)
+    except TimeoutError as exc:
+        import warnings
+
+        warnings.warn(str(exc), stacklevel=2)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def chunk_ui_tree(
+    ui_tree: dict[str, Any], max_chunk_size: int = 1000
+) -> list[list[dict[str, Any]]]:
+    """Split *ui_tree* into sub-lists of at most *max_chunk_size* nodes each.
+
+    The traversal is depth-first pre-order.  A new chunk is started whenever
+    the current one reaches *max_chunk_size*.
+    """
+    chunks: list[list[dict[str, Any]]] = []
+    current_chunk: list[dict[str, Any]] = []
+
+    def _traverse_and_chunk(node: dict[str, Any]) -> None:
+        nonlocal current_chunk
+        current_chunk.append(node)
+        for child in node.get("children") or []:
+            _traverse_and_chunk(child)
+            if len(current_chunk) >= max_chunk_size:
+                chunks.append(current_chunk)
+                current_chunk = []
+
+    _traverse_and_chunk(ui_tree["root"])
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
+def build_tree_from_nodes(nodes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Reconstruct a shallow UI tree from a flat list of nodes.
+
+    The first node in *nodes* becomes the root; the remaining nodes are
+    attached as direct children of the root (their own ``children`` lists are
+    preserved as-is so that per-chunk segmentation still traverses them).
+    Returns an empty-tree sentinel when *nodes* is empty.
+    """
+    if not nodes:
+        return {"root": {"children": []}}
+    root = dict(nodes[0])
+    root["children"] = list(nodes[1:])
+    return {"root": root}
+
+
+def analyze_clip(ui_tree: dict[str, Any]) -> list[dict[str, Any]]:
+    """Run the full UI analysis pipeline on *ui_tree*.
+
+    Steps:
+    1. Preprocess (prune oversized trees).
+    2. Chunk the tree for incremental segmentation.
+    3. Segment each chunk and collect all resulting segments.
+
+    Returns the combined list of segments (may be empty on failure).
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    logger.info("[analyze_clip] Starting preprocessing")
+    preprocessed_tree = preprocess_ui_tree(ui_tree)
+
+    logger.info("[analyze_clip] Starting segmentation")
+    chunks = chunk_ui_tree(preprocessed_tree)
+
+    all_segments: list[dict[str, Any]] = []
+    for chunk in chunks:
+        chunk_tree = build_tree_from_nodes(chunk)
+        segments = segment_ui_tree(chunk_tree)
+        if segments is not None:
+            all_segments.extend(segments)
+        else:
+            logger.warning("[analyze_clip] Segmentation skipped or failed for a chunk")
+
+    return all_segments

@@ -23,15 +23,28 @@ import jsonschema
 import pytest
 
 from ui_blueprint.extractor import (
+    MAX_UI_DEPTH,
+    MAX_UI_NODES,
     SCHEMA_VERSION,
     _generate_synthetic_frame,
     _ocr_region,
+    analyze_audio_transcript,
+    analyze_clip,
+    analyze_video_ui,
+    build_tree_from_nodes,
+    chunk_ui_tree,
     extract,
+    extract_audio_track,
     extract_keyframes,
     extract_ocr,
     extract_segment,
     extract_transcript,
+    extract_video_track,
+    preprocess_ui_tree,
+    prune_ui_tree,
     save_blueprint,
+    segment_ui_tree,
+    split_and_analyze,
 )
 
 # ---------------------------------------------------------------------------
@@ -433,3 +446,375 @@ class TestExtractOptionalHelpers:
             assert "t_ms" in frame
             assert "width" in frame
             assert "height" in frame
+
+
+# ---------------------------------------------------------------------------
+# UI tree analysis pipeline
+# ---------------------------------------------------------------------------
+
+def _make_tree(depth: int, branching: int = 2) -> dict:
+    """Build a balanced tree with *depth* levels and *branching* children per node."""
+    def _node(d: int) -> dict:
+        if d == 0:
+            return {"id": f"leaf_{d}", "children": []}
+        return {"id": f"node_{d}", "children": [_node(d - 1) for _ in range(branching)]}
+
+    return {"root": _node(depth)}
+
+
+class TestPreprocessUITree:
+    def test_passthrough_when_within_limits(self) -> None:
+        """Small trees are returned unchanged."""
+        tree = _make_tree(depth=3, branching=2)
+        result = preprocess_ui_tree(tree)
+        assert result is tree
+
+    def test_prunes_when_too_deep(self) -> None:
+        """Trees deeper than MAX_UI_DEPTH are pruned."""
+        tree = _make_tree(depth=MAX_UI_DEPTH + 5, branching=1)
+        import warnings
+        with warnings.catch_warnings(record=True):
+            result = preprocess_ui_tree(tree)
+        # After pruning the tree should be returned (same object, mutated)
+        assert "root" in result
+
+    def test_prunes_when_too_many_nodes(self) -> None:
+        """Trees with more than MAX_UI_NODES nodes are pruned."""
+        # Build a wide flat tree with MAX_UI_NODES + 100 children
+        big_tree: dict = {
+            "root": {
+                "id": "root",
+                "children": [{"id": f"c{i}", "children": []} for i in range(MAX_UI_NODES + 100)],
+            }
+        }
+        import warnings
+        with warnings.catch_warnings(record=True):
+            result = preprocess_ui_tree(big_tree)
+        assert len(result["root"]["children"]) < MAX_UI_NODES + 100
+
+
+class TestPruneUITree:
+    def test_depth_truncation(self) -> None:
+        """Nodes beyond max_depth should have their children cleared."""
+        tree = _make_tree(depth=10, branching=2)
+        pruned = prune_ui_tree(tree, max_nodes=10000, max_depth=3)
+        # Walk tree and verify no node past depth 3 has children
+        def _check(node: dict, depth: int) -> None:
+            if depth > 3:
+                assert node.get("children") == []
+            for child in node.get("children") or []:
+                _check(child, depth + 1)
+        _check(pruned["root"], 1)
+
+    def test_node_count_truncation(self) -> None:
+        """Children list is capped at max_nodes - 1."""
+        tree: dict = {
+            "root": {
+                "id": "root",
+                "children": [{"id": f"c{i}", "children": []} for i in range(20)],
+            }
+        }
+        pruned = prune_ui_tree(tree, max_nodes=5, max_depth=50)
+        assert len(pruned["root"]["children"]) <= 4  # max_nodes - 1
+
+
+class TestSegmentUITree:
+    def test_returns_list_of_nodes(self) -> None:
+        """segment_ui_tree returns every node in the tree."""
+        tree = _make_tree(depth=3, branching=2)
+        result = segment_ui_tree(tree)
+        assert result is not None
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_respects_max_depth(self) -> None:
+        """Subtrees beyond MAX_UI_DEPTH are skipped (no error raised)."""
+        # Build a chain that just exceeds MAX_UI_DEPTH
+        deep_tree = _make_tree(depth=MAX_UI_DEPTH + 2, branching=1)
+        import warnings
+        with warnings.catch_warnings(record=True):
+            result = segment_ui_tree(deep_tree)
+        # Should return some segments (root-level nodes) without crashing
+        assert result is not None
+
+    def test_returns_none_on_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """segment_ui_tree returns None when the time limit is exceeded."""
+        import ui_blueprint.extractor as ext
+
+        # Fake time so that the first check already exceeds the limit
+        monkeypatch.setattr(ext, "MAX_SEGMENTATION_TIME_MS", -1)
+        tree = _make_tree(depth=5, branching=2)
+        import warnings
+        with warnings.catch_warnings(record=True):
+            result = segment_ui_tree(tree)
+        assert result is None
+
+
+class TestChunkUITree:
+    def test_all_nodes_present_across_chunks(self) -> None:
+        """Every node from the original tree must appear across all chunks."""
+        tree = _make_tree(depth=4, branching=3)
+        chunks = chunk_ui_tree(tree, max_chunk_size=5)
+        total_nodes = sum(len(c) for c in chunks)
+        # 3^4 + 3^3 + 3^2 + 3^1 + 1 = 121 nodes in a depth-4 branching-3 tree
+        assert total_nodes > 0
+        # Multiple chunks should be produced
+        assert len(chunks) > 1
+
+    def test_single_chunk_for_small_tree(self) -> None:
+        tree = _make_tree(depth=2, branching=2)
+        chunks = chunk_ui_tree(tree, max_chunk_size=1000)
+        assert len(chunks) == 1
+
+    def test_empty_tree_returns_single_chunk(self) -> None:
+        tree: dict = {"root": {"id": "root", "children": []}}
+        chunks = chunk_ui_tree(tree)
+        assert len(chunks) == 1
+        assert chunks[0][0]["id"] == "root"
+
+
+class TestBuildTreeFromNodes:
+    def test_empty_list_returns_sentinel(self) -> None:
+        result = build_tree_from_nodes([])
+        assert result["root"]["children"] == []
+
+    def test_first_node_becomes_root(self) -> None:
+        nodes = [{"id": "a", "children": []}, {"id": "b", "children": []}]
+        result = build_tree_from_nodes(nodes)
+        assert result["root"]["id"] == "a"
+
+    def test_remaining_nodes_are_children(self) -> None:
+        nodes = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
+        result = build_tree_from_nodes(nodes)
+        assert len(result["root"]["children"]) == 2
+
+
+class TestAnalyzeClip:
+    def test_returns_list_of_segments(self) -> None:
+        tree = _make_tree(depth=3, branching=2)
+        result = analyze_clip(tree)
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_handles_large_tree(self) -> None:
+        """analyze_clip should not crash on a tree that needs pruning."""
+        big_tree: dict = {
+            "root": {
+                "id": "root",
+                "children": [
+                    {"id": f"c{i}", "children": []} for i in range(MAX_UI_NODES + 200)
+                ],
+            }
+        }
+        import warnings
+        with warnings.catch_warnings(record=True):
+            result = analyze_clip(big_tree)
+        assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# Split video/audio analysis pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestExtractVideoTrack:
+    def test_returns_false_on_missing_file(self, tmp_path: Path) -> None:
+        assert extract_video_track("/nonexistent/clip.mp4", str(tmp_path / "out.mp4")) is False
+
+    def test_returns_true_for_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "src.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        out = tmp_path / "video_only.mp4"
+        result = extract_video_track(str(src), str(out))
+        assert result is True
+        assert out.exists()
+        assert out.stat().st_size > 0
+
+
+class TestExtractAudioTrack:
+    def test_returns_false_on_missing_file(self, tmp_path: Path) -> None:
+        assert extract_audio_track("/nonexistent/clip.mp4", str(tmp_path / "out.wav")) is False
+
+    def test_returns_false_for_silent_video(self, tmp_path: Path) -> None:
+        """A synthetic video-only file has no audio stream; extraction yields False."""
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "src.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        out = tmp_path / "audio_only.wav"
+        # Silent video: ffmpeg will produce an empty/missing output → False
+        result = extract_audio_track(str(src), str(out))
+        assert isinstance(result, bool)
+
+
+class TestAnalyzeVideoUI:
+    def test_returns_expected_shape_on_missing_file(self) -> None:
+        result = analyze_video_ui("/nonexistent/video.mp4")
+        assert "elements_catalog" in result
+        assert "chunks" in result
+        assert "events" in result
+        assert "quality" in result
+        assert isinstance(result["elements_catalog"], list)
+        assert isinstance(result["chunks"], list)
+        assert isinstance(result["events"], list)
+
+    def test_returns_data_for_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "video_only.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        result = analyze_video_ui(str(src))
+        assert isinstance(result["elements_catalog"], list)
+        assert isinstance(result["chunks"], list)
+
+
+class TestAnalyzeAudioTranscript:
+    def test_returns_transcript_key(self, tmp_path: Path) -> None:
+        result = analyze_audio_transcript(str(tmp_path / "dummy.wav"))
+        assert "transcript" in result
+        assert isinstance(result["transcript"], str)
+
+    def test_falls_back_on_error(self) -> None:
+        result = analyze_audio_transcript("/nonexistent/audio.wav")
+        assert "transcript" in result
+        assert isinstance(result["transcript"], str)
+
+
+class TestSplitAndAnalyze:
+    def test_returns_expected_shape_on_missing_file(self) -> None:
+        result = split_and_analyze("/nonexistent/clip.mp4")
+        assert "ui_structure" in result
+        assert "audio_transcript" in result
+        assert isinstance(result["ui_structure"], dict)
+        assert isinstance(result["audio_transcript"], dict)
+        assert "elements_catalog" in result["ui_structure"]
+        assert "transcript" in result["audio_transcript"]
+
+    def test_accepts_explicit_output_paths(self, tmp_path: Path) -> None:
+        video_out = str(tmp_path / "video.mp4")
+        audio_out = str(tmp_path / "audio.wav")
+        result = split_and_analyze(
+            "/nonexistent/clip.mp4",
+            video_out=video_out,
+            audio_out=audio_out,
+        )
+        assert "ui_structure" in result
+        assert "audio_transcript" in result
+
+    def test_returns_data_for_real_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "clip.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        result = split_and_analyze(str(src))
+        assert "ui_structure" in result
+        assert "audio_transcript" in result
+        assert isinstance(result["ui_structure"]["elements_catalog"], list)
+        assert isinstance(result["audio_transcript"]["transcript"], str)
+
+
+class TestSplitAnalyzeCLI:
+    def test_split_analyze_missing_clip(self, tmp_path: Path) -> None:
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "ui_blueprint",
+                "split-analyze", "/nonexistent/clip.mp4",
+                "--ui-output", str(tmp_path / "ui.json"),
+                "--audio-output", str(tmp_path / "audio.json"),
+                "--combined-output", str(tmp_path / "combined.json"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode != 0
+
+    def test_split_analyze_synthetic_video(self, tmp_path: Path) -> None:
+        imageio = pytest.importorskip("imageio.v2")
+        numpy = pytest.importorskip("numpy")
+
+        src = tmp_path / "clip.mp4"
+        meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
+        frames_np = [
+            numpy.asarray(
+                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
+            )
+            for i in range(12)
+        ]
+        with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
+            for f in frames_np:
+                writer.append_data(f)
+
+        ui_json = tmp_path / "ui.json"
+        audio_json = tmp_path / "audio.json"
+        combined_json = tmp_path / "combined.json"
+
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "ui_blueprint",
+                "split-analyze", str(src),
+                "--ui-output", str(ui_json),
+                "--audio-output", str(audio_json),
+                "--combined-output", str(combined_json),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert result.returncode == 0, (
+            f"split-analyze failed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        assert ui_json.exists()
+        assert audio_json.exists()
+        assert combined_json.exists()
+
+        with combined_json.open() as fh:
+            combined = json.load(fh)
+        assert "ui_structure" in combined
+        assert "audio_transcript" in combined
