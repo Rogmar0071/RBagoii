@@ -89,8 +89,16 @@ class FolderDetailActivity : AppCompatActivity() {
     private var lastRecordingDurationMs: Int? = null
     private var lastGalleryUri: Uri? = null
 
+    /** Toggle state machine for the "Record Audio 20 s" button. */
+    private val audioToggle by lazy {
+        AudioRecordingToggleState(
+            labelRecord = getString(R.string.btn_record_audio_20s),
+            labelStop = getString(R.string.btn_stop_audio),
+        )
+    }
+
     /** True while AudioCaptureService is actively recording. */
-    private var isAudioRecording = false
+    private val isAudioRecording get() = audioToggle.isRecording
 
     /** Last full folder JSON response; used by openLastAnalysisArtifact(). */
     private var lastFolderJson: JSONObject? = null
@@ -234,7 +242,7 @@ class FolderDetailActivity : AppCompatActivity() {
     // Receives AUDIO_CAPTURE_DONE broadcast from AudioCaptureService.
     private val audioCaptureReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
-            isAudioRecording = false
+            audioToggle.onRecordingStopped()
             resetAudioRecordButton()
             val audioPath = intent.getStringExtra(AudioCaptureService.EXTRA_AUDIO_PATH)
             val error = intent.getStringExtra(AudioCaptureService.EXTRA_ERROR)
@@ -282,7 +290,7 @@ class FolderDetailActivity : AppCompatActivity() {
         binding.btnRecord.setOnClickListener { onRecordClicked() }
         binding.btnPickGallery.setOnClickListener { onPickGalleryClicked() }
         binding.btnAnalyze.setOnClickListener { showAnalyzeBottomSheet() }
-        binding.btnRecordAudio.setOnClickListener { onRecordAudioClicked() }
+        binding.btnRecordAudio20s.setOnClickListener { onRecordAudioClicked() }
         binding.btnSend.setOnClickListener { onSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         if (initialTitle.isNullOrBlank()) {
@@ -579,7 +587,7 @@ class FolderDetailActivity : AppCompatActivity() {
         if (isAudioRecording) {
             // Already recording — stop it.
             AudioCaptureService.stop(this)
-            isAudioRecording = false
+            audioToggle.onRecordingStopped()
             resetAudioRecordButton()
             return
         }
@@ -594,22 +602,25 @@ class FolderDetailActivity : AppCompatActivity() {
     }
 
     private fun startAudioCapture() {
-        isAudioRecording = true
+        audioToggle.onRecordingStarted()
         setActionStatus(getString(R.string.status_recording_audio))
-        binding.btnRecordAudio.isEnabled = false
+        binding.btnRecordAudio20s.text = getString(R.string.btn_stop_audio)
 
-        val intent = Intent(this, AudioCaptureService::class.java)
+        val intent = Intent(this, AudioCaptureService::class.java).apply {
+            putExtra(AudioCaptureService.EXTRA_MAX_DURATION_MS, AUDIO_RECORDING_MAX_MS)
+        }
         try {
             startForegroundService(intent)
         } catch (_: Exception) {
-            isAudioRecording = false
+            audioToggle.onStartFailed()
             resetAudioRecordButton()
             Toast.makeText(this, "Failed to start audio recording.", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun resetAudioRecordButton() {
-        binding.btnRecordAudio.isEnabled = true
+        binding.btnRecordAudio20s.isEnabled = true
+        binding.btnRecordAudio20s.text = getString(R.string.btn_record_audio_20s)
         if (!isAudioRecording) {
             setActionStatus(null)
         }
@@ -1490,6 +1501,7 @@ class FolderDetailActivity : AppCompatActivity() {
         const val EXTRA_FOLDER_ID = "folder_id"
         const val EXTRA_FOLDER_TITLE = "folder_title"
         private const val RECORDING_TIMEOUT_MS = 30_000L
+        private const val AUDIO_RECORDING_MAX_MS = 20_000L
         private const val POLL_INTERVAL_MS = 2_000L
         private val ACTIVE_JOB_STATUSES = setOf("queued", "running")
         private val ACTIVE_JOB_TYPES = setOf("analyze", "analyze_optional")
