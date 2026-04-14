@@ -76,23 +76,9 @@ def _write_manifest(upload_id: str, manifest: dict[str, Any]) -> None:
 
 def _write_chunk_bytes(chunk_dir: Path, chunk_index: int, data: bytes) -> None:
     """Write one chunk beneath a previously validated directory using a fixed filename."""
-    chunk_dir_fd = os.open(chunk_dir, os.O_RDONLY)
-    try:
-        chunk_fd = os.open(
-            f"chunk_{chunk_index:05d}",
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-            0o600,
-            dir_fd=chunk_dir_fd,
-        )
-        try:
-            with os.fdopen(chunk_fd, "wb") as handle:
-                handle.write(data)
-            chunk_fd = None
-        finally:
-            if chunk_fd is not None:
-                os.close(chunk_fd)
-    finally:
-        os.close(chunk_dir_fd)
+    chunk_path = chunk_dir / f"chunk_{chunk_index:05d}"
+    with chunk_path.open("wb") as handle:
+        handle.write(data)
 
 
 def _validate_manifest_compatibility(
@@ -182,9 +168,12 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
     chunk_dir = _chunks_dir(upload_id, create=False)
     total_chunks = int(manifest["total_chunks"])
 
-    missing = [
-        index for index in range(total_chunks) if not (chunk_dir / f"chunk_{index:05d}").exists()
-    ]
+    present_chunk_indexes = {
+        int(path.name.removeprefix("chunk_"))
+        for path in chunk_dir.iterdir()
+        if path.name.startswith("chunk_")
+    }
+    missing = [index for index in range(total_chunks) if index not in present_chunk_indexes]
     if missing:
         raise HTTPException(
             status_code=409,
