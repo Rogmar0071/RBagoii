@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ui-blueprint"
+name = "RecoB"
 version = "0.1.0"
-description = "Convert 10-second Android screen-recording clips into structured UI blueprints."
+description = "RecoB combines blueprint tooling with a strict evidence-only query prototype."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -28,11 +28,12 @@ dev = [
 ]
 
 [project.scripts]
+recob = "interface.cli:run_cli"
 ui-blueprint = "ui_blueprint.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["ui_blueprint*"]
+include = ["ui_blueprint*", "app*", "interface*"]
 
 [tool.ruff]
 line-length = 100
