@@ -38,10 +38,17 @@
     <string name="label_jobs">Jobs</string>
     <string name="label_artifacts">Artifacts</string>
     <string name="label_chat">Chat</string>
+    <string name="label_upload_details">Resource</string>
     <string name="folder_loading">Loading…</string>
     <string name="folder_load_error">Failed to load folder.</string>
     <string name="folder_no_jobs">No jobs yet.</string>
     <string name="folder_no_artifacts">No artifacts yet.</string>
+    <string name="label_no_related_files">No produced files yet.</string>
+    <string name="btn_show_details">Details</string>
+    <string name="btn_hide_details">Hide</string>
+    <string name="action_view_file">View</string>
+    <string name="label_project_files">Project files</string>
+    <string name="dialog_rename_file_title">Rename file</string>
     <string name="folder_chat_retrying">(Retrying %1$d/%2$d…)</string>
     <!-- Project rename / delete actions -->
     <string name="action_rename_project">Rename project</string>

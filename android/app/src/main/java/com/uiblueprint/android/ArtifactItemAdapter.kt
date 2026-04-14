@@ -15,6 +15,9 @@ data class ArtifactItem(
     val type: String,
     val objectKey: String,
     val url: String?,
+    val displayName: String? = null,
+    val jobId: String? = null,
+    val createdAt: String = "",
 )
 
 class ArtifactItemAdapter(
@@ -35,7 +38,7 @@ class ArtifactItemAdapter(
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val item = getItem(position)
-        holder.tvType.text = item.type
+        holder.tvType.text = item.displayName ?: defaultLabel(item)
 
         val iconRes = when {
             item.type == "clip" || item.type.endsWith("_video") ->
@@ -58,6 +61,21 @@ class ArtifactItemAdapter(
         private val DIFF = object : DiffUtil.ItemCallback<ArtifactItem>() {
             override fun areItemsTheSame(a: ArtifactItem, b: ArtifactItem) = a.id == b.id
             override fun areContentsTheSame(a: ArtifactItem, b: ArtifactItem) = a == b
+        }
+
+        fun defaultLabel(item: ArtifactItem): String {
+            return when (item.type) {
+                "analysis_json" -> "analysis.json"
+                "analysis_md" -> "analysis.md"
+                "blueprint_json" -> "blueprint.json"
+                "blueprint_md" -> "blueprint.md"
+                "segments_manifest_json" -> "segments_manifest.json"
+                "repo_analysis_md" -> "repo_analysis.md"
+                "repo_structure_json" -> "repo_structure.json"
+                else -> item.objectKey.substringAfterLast('/').ifBlank {
+                    item.type.replace('_', ' ')
+                }
+            }
         }
     }
 }

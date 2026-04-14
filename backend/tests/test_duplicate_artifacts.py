@@ -1,12 +1,8 @@
 """
 test_duplicate_artifacts.py
-============================
-Verifies that creating artifacts with the same folder_id + type results in
-an upsert (one row with the latest object_key), not a duplicate row.
-
-Tests both:
-- _create_artifact() worker helper (for aggregate artifact types including "clip")
-- upload_clip() route (clip artifact upsert via the HTTP endpoint)
+===========================
+Verifies that repeated uploads and generated outputs retain their own artifact
+rows so files stay attached to the originating clip history.
 """
 
 from __future__ import annotations
@@ -75,15 +71,15 @@ def _create_folder_api(client: TestClient) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tests for _create_artifact() upsert behaviour
+# Tests for _create_artifact() retention behaviour
 # ---------------------------------------------------------------------------
 
 
-class TestCreateArtifactUpsert:
-    """_create_artifact() must upsert for aggregate types (including 'clip')."""
+class TestCreateArtifactRetention:
+    """_create_artifact() must retain history for repeated artifact types."""
 
-    def test_same_type_twice_yields_one_row(self) -> None:
-        """Calling _create_artifact() twice for the same folder+type → one row."""
+    def test_same_type_twice_yields_two_rows(self) -> None:
+        """Calling _create_artifact() twice for the same folder+type retains both rows."""
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
@@ -119,11 +115,11 @@ class TestCreateArtifactUpsert:
                 )
             ).all()
 
-        assert len(rows) == 1, f"Expected 1 row, got {len(rows)}"
-        assert rows[0].object_key == "key/v2.json"
+        assert len(rows) == 2, f"Expected 2 rows, got {len(rows)}"
+        assert {row.object_key for row in rows} == {"key/v1.json", "key/v2.json"}
 
-    def test_clip_type_upserts(self) -> None:
-        """clip artifact type is in UPSERT_TYPES — second call updates object_key."""
+    def test_clip_type_retains_history(self) -> None:
+        """Clip artifacts are retained so multiple uploads can be grouped separately."""
         from datetime import datetime, timezone
 
         from sqlmodel import Session, select
@@ -156,8 +152,8 @@ class TestCreateArtifactUpsert:
                 )
             ).all()
 
-        assert len(rows) == 1, f"Expected 1 clip row, got {len(rows)}"
-        assert rows[0].object_key == "clips/updated.mp4"
+        assert len(rows) == 2, f"Expected 2 clip rows, got {len(rows)}"
+        assert {row.object_key for row in rows} == {"clips/original.mp4", "clips/updated.mp4"}
 
     def test_different_types_each_get_one_row(self) -> None:
         """Different types for the same folder each get their own row."""
@@ -194,12 +190,12 @@ class TestCreateArtifactUpsert:
 
 
 # ---------------------------------------------------------------------------
-# Tests for upload_clip() route upsert behaviour
+# Tests for upload_clip() route retention behaviour
 # ---------------------------------------------------------------------------
 
 
-class TestUploadClipUpsert:
-    """Uploading a clip twice to the same folder must not create duplicate artifacts."""
+class TestUploadClipRetention:
+    """Uploading clips repeatedly should retain separate numbered clip artifacts."""
 
     def test_upload_clip_twice_no_storage(self, client: TestClient) -> None:
         """Without R2 configured, no artifact is created — just smoke-test the route."""
@@ -213,3 +209,48 @@ class TestUploadClipUpsert:
             # Without storage configured the endpoint returns 202 (job created)
             # or may behave differently; we just check it doesn't crash.
             assert resp.status_code in (202, 400, 502), resp.text
+
+    def test_upload_clip_twice_creates_clip_1_and_clip_2(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Artifact
+
+        folder_id = _create_folder_api(client)
+
+        import backend.app.folder_routes as folder_routes
+        import backend.app.storage as storage
+        import backend.app.worker as worker
+
+        upload_keys = iter(
+            [
+                f"folders/{folder_id}/clip-1.mp4",
+                f"folders/{folder_id}/clip-2.mp4",
+            ]
+        )
+        monkeypatch.setattr(storage, "storage_available", lambda: True)
+        monkeypatch.setattr(storage, "upload_file", lambda *args, **kwargs: next(upload_keys))
+        monkeypatch.setattr(worker, "enqueue_job", lambda *args, **kwargs: None)
+        monkeypatch.setattr(folder_routes, "_find_active_analyze_job", lambda *args, **kwargs: None)
+
+        for _ in range(2):
+            resp = client.post(
+                f"/v1/folders/{folder_id}/clip",
+                files={"clip": ("clip.mp4", _TINY_MP4, "video/mp4")},
+                headers=_auth(),
+            )
+            assert resp.status_code == 202, resp.text
+
+        with Session(db_module.get_engine()) as session:
+            rows = session.exec(
+                select(Artifact)
+                .where(Artifact.folder_id == uuid.UUID(folder_id))
+                .where(Artifact.type == "clip")
+                .order_by(Artifact.created_at.asc())
+            ).all()
+
+        assert [row.display_name for row in rows] == ["Clip 1", "Clip 2"]

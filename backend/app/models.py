@@ -144,6 +144,10 @@ class Job(SQLModel, table=True):
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
     )
     rq_job_id: Optional[str] = Field(default=None)
+    source_artifact_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True, index=True),
+    )
 
     # ---------------------------------------------------------------------------
     # Pipeline v1 checkpoint fields (analyze stage)
@@ -204,6 +208,7 @@ class Artifact(SQLModel, table=True):
     # clip / analysis_json / analysis_md / blueprint_json / blueprint_md / transcript
     type: str
     object_key: str
+    display_name: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),

@@ -190,54 +190,21 @@ def _create_artifact(
     object_key: str,
     job_id: str | None = None,
 ) -> None:
-    from sqlmodel import Session, select
+    from sqlmodel import Session
 
     from backend.app.database import get_engine
     from backend.app.models import Artifact
 
-    # Aggregate artifact types that should be upserted (one per folder).
-    # Per-segment artifacts (baseline_segment_json, keyframes_segment_json, etc.)
-    # always use INSERT so all records are retained.
-    UPSERT_TYPES = {
-        "analysis_json",
-        "analysis_md",
-        "blueprint_json",
-        "blueprint_md",
-        "segments_manifest_json",
-        "preview_png",
-        "clip",
-    }
-
     job_uuid = uuid.UUID(job_id) if job_id else None
 
     with Session(get_engine()) as session:
-        if artifact_type in UPSERT_TYPES:
-            existing = session.exec(
-                select(Artifact).where(
-                    Artifact.folder_id == uuid.UUID(folder_id),
-                    Artifact.type == artifact_type,
-                )
-            ).first()
-            if existing:
-                existing.object_key = object_key
-                existing.job_id = job_uuid
-                session.add(existing)
-            else:
-                artifact = Artifact(
-                    folder_id=uuid.UUID(folder_id),
-                    type=artifact_type,
-                    object_key=object_key,
-                    job_id=job_uuid,
-                )
-                session.add(artifact)
-        else:
-            artifact = Artifact(
-                folder_id=uuid.UUID(folder_id),
-                type=artifact_type,
-                object_key=object_key,
-                job_id=job_uuid,
-            )
-            session.add(artifact)
+        artifact = Artifact(
+            folder_id=uuid.UUID(folder_id),
+            type=artifact_type,
+            object_key=object_key,
+            job_id=job_uuid,
+        )
+        session.add(artifact)
         session.commit()
 
 
@@ -1053,7 +1020,12 @@ def _analyze_aggregate(job_id: str, folder_id: str, job) -> None:
     options = _get_analyze_options(job)
     aa = options.get("additional_analysis", {})
     if aa.get("enabled", False):
-        _enqueue_analyze_optional(folder_id, options)
+        _enqueue_analyze_optional(
+            folder_id,
+            options,
+            job.analyze_clip_object_key,
+            str(job.source_artifact_id) if job.source_artifact_id else None,
+        )
 
 
 def _generate_folder_intent_pack(job_id: str, folder_id: str) -> None:
@@ -1182,7 +1154,12 @@ def _generate_folder_intent_pack(job_id: str, folder_id: str) -> None:
         )
 
 
-def _enqueue_analyze_optional(folder_id: str, options: dict) -> None:
+def _enqueue_analyze_optional(
+    folder_id: str,
+    options: dict,
+    clip_object_key: str | None,
+    source_artifact_id: str | None,
+) -> None:
     """
     Create a new ``analyze_optional`` Job row and enqueue it.
 
@@ -1199,6 +1176,8 @@ def _enqueue_analyze_optional(folder_id: str, options: dict) -> None:
             folder_id=uuid.UUID(folder_id),
             type="analyze_optional",
             analyze_options=options,
+            analyze_clip_object_key=clip_object_key,
+            source_artifact_id=uuid.UUID(source_artifact_id) if source_artifact_id else None,
         )
         session.add(opt_job)
         session.commit()
@@ -2319,14 +2298,18 @@ def run_analyze_repo_step(job_id: str) -> None:
         from backend.app.database import get_engine
         from backend.app.models import Artifact
 
-        # Find the repo_zip artifact for this folder.
+        # Find the repo_zip artifact for this job's originating upload.
         with Session(get_engine()) as session:
-            artifact = session.exec(
-                select(Artifact)
-                .where(Artifact.folder_id == uuid.UUID(folder_id))
-                .where(Artifact.type == "repo_zip")
-                .order_by(Artifact.created_at.desc())
-            ).first()
+            artifact = None
+            if job.source_artifact_id is not None:
+                artifact = session.get(Artifact, job.source_artifact_id)
+            if artifact is None:
+                artifact = session.exec(
+                    select(Artifact)
+                    .where(Artifact.folder_id == uuid.UUID(folder_id))
+                    .where(Artifact.type == "repo_zip")
+                    .order_by(Artifact.created_at.desc())
+                ).first()
 
         if artifact is None:
             raise RuntimeError("No repo_zip artifact found for folder; upload repo first.")
