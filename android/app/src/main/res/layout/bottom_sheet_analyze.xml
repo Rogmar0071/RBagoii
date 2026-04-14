@@ -98,6 +98,18 @@
         android:textSize="15sp"
         android:textAllCaps="false" />
 
+    <!-- Cancel active analysis job (shown only while a job is running/queued) -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnCancelAnalysis"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:text="@string/btn_cancel_analysis"
+        android:textColor="@color/error"
+        android:textSize="15sp"
+        android:textAllCaps="false"
+        android:visibility="gone" />
+
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"

@@ -309,3 +309,51 @@ Both `analyze` and `analyze_optional` checkpoint to `jobs.analyze_cursor_segment
 Killing the worker mid-step and restarting resumes from the last committed
 checkpoint. Each step processes segments until `ANALYZE_STEP_MAX_SECONDS` is
 reached, then re-enqueues itself.
+
+
+---
+
+## `/tmp/uploads/` — temporary file storage
+
+All uploaded files are streamed to `/tmp/uploads/<uuid>.<ext>` before being
+copied to the session directory.  This avoids buffering large files entirely
+in memory.
+
+### Automatic cleanup
+
+A background daemon thread (`upload-cleanup`) runs every **60 minutes** and
+deletes any file in `/tmp/uploads/` (including chunk sub-directories) whose
+`mtime` is older than **24 hours**.
+
+This covers:
+- Successfully assembled single-shot uploads (the `/tmp/uploads/<uuid>.ext` file).
+- Orphaned chunk directories left by incomplete chunked uploads.
+
+No manual cleanup script is required for normal operation.
+
+### Manual cleanup
+
+To delete all uploads older than 1 hour immediately:
+
+```bash
+find /tmp/uploads/ -maxdepth 2 -mmin +60 -type f -delete
+find /tmp/uploads/chunks/ -maxdepth 1 -mindepth 1 -type d \
+     -mmin +60 -exec rm -rf {} +
+```
+
+### Monitoring disk usage
+
+```bash
+# Total disk used by in-flight uploads
+du -sh /tmp/uploads/
+
+# Files older than 24 h (candidates for cleanup)
+find /tmp/uploads/ -mtime +1 -type f
+```
+
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_UPLOAD_BYTES` | 52428800 (50 MB) | Maximum upload size in bytes |
+| `MAX_UNCOMPRESSED_BYTES` | 524288000 (500 MB) | Zip-bomb protection threshold |

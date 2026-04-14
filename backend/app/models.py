@@ -273,3 +273,41 @@ class OpsEvent(SQLModel, table=True):
         if data.get("error_detail") and len(data["error_detail"]) > 2000:
             data["error_detail"] = data["error_detail"][:2000]
         super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# analysis_jobs
+# ---------------------------------------------------------------------------
+
+
+class AnalysisJob(SQLModel, table=True):
+    """Standalone analysis job for uploaded zips / clips (session-based pipeline)."""
+
+    __tablename__ = "analysis_jobs"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # Path of the uploaded file (absolute, under /tmp/uploads/).
+    file_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    # queued / running / succeeded / failed
+    status: str = Field(default="queued")
+    # Full analysis result JSON (populated on success).
+    results_json: Optional[Any] = Field(default=None, sa_column=Column(sa.JSON, nullable=True))
+    # List of error dicts recorded during processing.
+    errors_json: Optional[Any] = Field(default=None, sa_column=Column(sa.JSON, nullable=True))
+    # List of warning dicts recorded during processing.
+    warnings_json: Optional[Any] = Field(default=None, sa_column=Column(sa.JSON, nullable=True))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
+        super().__init__(**data)

@@ -384,3 +384,124 @@ Run unit tests (no device needed):
 ## License
 
 MIT
+
+---
+
+## Upload API guidelines
+
+### Accepted file types
+
+| MIME type | Extension | Notes |
+|---|---|---|
+| `video/mp4` | `.mp4` | Android screen recordings |
+| `application/zip` | `.zip` | Repository archives for structural analysis |
+
+### Size limit
+
+Uploads are rejected with **HTTP 413** once they exceed `MAX_UPLOAD_BYTES`
+(default **50 MB**).  Override with the environment variable:
+
+```bash
+export MAX_UPLOAD_BYTES=104857600   # 100 MB
+```
+
+### Single-shot upload
+
+```
+POST /v1/sessions
+Content-Type: multipart/form-data
+
+Fields:
+  video   — file (video/mp4 or application/zip)
+  meta    — optional JSON string
+```
+
+Returns `{"session_id": "<uuid>", "status": "queued"}`.
+
+### Chunked upload flow
+
+Use chunked upload for files larger than ~5 MB.
+
+**1. Send each chunk:**
+
+```
+POST /v1/sessions/chunks
+Headers:
+  X-Upload-Id:    <stable UUID for this upload>
+  X-Chunk-Index:  0-based integer
+  X-Total-Chunks: total number of chunks
+
+Body: multipart/form-data  field "chunk"
+```
+
+**2. Finalize (assemble all chunks):**
+
+```
+PUT /v1/sessions/chunks/{upload_id}/finalize
+Body: multipart/form-data  field "meta" (optional JSON string)
+```
+
+Returns same shape as single-shot upload on success.
+
+---
+
+## Job queue architecture
+
+```
+Android app
+  │
+  │  POST /v1/sessions  (or chunked upload)
+  ▼
+FastAPI (main.py)
+  │ streams file to /tmp/uploads/<uuid>.ext
+  │ creates session directory
+  │
+  ├──(REDIS_URL set)──► Redis RQ queue ──► worker.py / analysis_job_processor.py
+  │
+  └──(no Redis)────────► background Thread
+```
+
+Session-based jobs call `analysis_job_processor.process_analysis_job()` which:
+
+1. Extracts zip (if applicable) — streaming, with zip-bomb and corrupt-archive guards.
+2. Parses Android XML/layout files.
+3. Checks Python/Kotlin code syntax.
+4. Validates image assets.
+
+Results and per-stage errors are persisted to the `analysis_jobs` table after each stage.
+
+---
+
+## `/v1/analysis/*` API endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/analysis` | Create and enqueue an analysis job for an uploaded file |
+| `GET`  | `/v1/analysis/{job_id}` | Get current status and partial results |
+| `GET`  | `/v1/analysis/{job_id}/results` | Get full results JSON (terminal jobs only) |
+| `DELETE` | `/v1/analysis/{job_id}` | Cancel / delete an analysis job |
+
+All endpoints require `Authorization: Bearer <API_KEY>`.
+
+### Job status values
+
+| Status | Meaning |
+|--------|---------|
+| `queued` | Job is waiting to be processed |
+| `running` | Job is actively being processed |
+| `succeeded` | All stages completed without fatal errors |
+| `failed` | At least one fatal error; `errors_json` has details |
+
+---
+
+## Error codes reference
+
+| Code | HTTP | Description |
+|------|------|-------------|
+| `corrupt_archive` | 200 (in job errors) | Zip file is malformed or truncated |
+| `unsupported_compression` | 200 (in job errors) | Zip requires a password or unsupported method |
+| `zip_bomb` | 200 (in job errors) | Uncompressed size exceeds `MAX_UNCOMPRESSED_BYTES` |
+| `413 Request Entity Too Large` | 413 | Upload body exceeds `MAX_UPLOAD_BYTES` |
+| `415 Unsupported Media Type` | 415 | MIME type not in allowed set |
+| `409 Conflict` | 409 | Chunked finalize called before all chunks arrived |
+| `internal_error` | 500 | Unexpected server error (see server logs) |
