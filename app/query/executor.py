@@ -42,20 +42,22 @@ class StrictEvidenceExecutor:
 
         facts: list[tuple[int, VerifiedFact]] = []
         for item in chunks:
-            for line in item.chunk.text.splitlines():
+            lines = item.chunk.text.splitlines()
+            for index, line in enumerate(lines):
                 stripped = line.strip()
                 if not stripped:
                     continue
                 overlap = len(set(tokenize(stripped)) & set(query_terms))
                 if overlap == 0:
                     continue
+                claim_line = _preferred_claim_line(lines, index, stripped)
                 facts.append(
                     (
                         overlap,
                         VerifiedFact(
-                            claim=stripped,
+                            claim=claim_line,
                             source_chunk_ids=[item.chunk.chunk_id],
-                            quote=stripped,
+                            quote=claim_line,
                             file_path=item.chunk.file_path,
                             start_line=item.chunk.start_line,
                             end_line=item.chunk.end_line,
@@ -78,3 +80,13 @@ class StrictEvidenceExecutor:
                 break
 
         return QueryResponse(verified_facts=ordered_facts)
+
+
+def _preferred_claim_line(lines: list[str], index: int, fallback: str) -> str:
+    if fallback.startswith(("class ", "def ")):
+        for candidate in lines[index + 1 :]:
+            stripped = candidate.strip()
+            if not stripped:
+                continue
+            return stripped
+    return fallback
