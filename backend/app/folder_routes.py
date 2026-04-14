@@ -44,6 +44,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 from backend.app.auth import require_auth
 from backend.app.ops_log import log_event
 from ui_blueprint.domain.ir import SCHEMA_VERSION
+from ui_blueprint.prompt_security import (
+    append_prompt_injection_defense,
+    format_untrusted_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -989,15 +993,26 @@ def _call_openai_responses_api(
 
     client = OpenAI(api_key=api_key, base_url=f"{base_url}/v1", timeout=timeout)
 
-    instructions = _FOLDER_CHAT_SYSTEM_PROMPT
+    instructions = append_prompt_injection_defense(_FOLDER_CHAT_SYSTEM_PROMPT)
     if folder_context:
         instructions += f"\n\n--- Current folder state ---\n{folder_context}"
 
     input_messages = []
-    for msg in history:
+    total_history = len(history)
+    for idx, msg in enumerate(history, start=1):
         if msg.role in ("user", "assistant"):
-            input_messages.append({"role": msg.role, "content": msg.content})
-    input_messages.append({"role": "user", "content": message})
+            content = (
+                format_untrusted_text(
+                    f"Quoted prior user message ({idx} of {total_history})",
+                    msg.content,
+                )
+                if msg.role == "user"
+                else msg.content
+            )
+            input_messages.append({"role": msg.role, "content": content})
+    input_messages.append(
+        {"role": "user", "content": format_untrusted_text("Latest user message", message)}
+    )
 
     response = client.responses.create(
         model=model,

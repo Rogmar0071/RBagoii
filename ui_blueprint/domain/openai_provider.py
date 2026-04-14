@@ -43,6 +43,10 @@ from ui_blueprint.domain.ir import (
     ProfileExporter,
     ProfileValidator,
 )
+from ui_blueprint.prompt_security import (
+    append_prompt_injection_defense,
+    format_untrusted_json,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,12 +221,24 @@ class OpenAIDomainDerivationProvider(DomainDerivationProvider):
         media_type: str = media_input.get("media_type", "video")
         hint: str = media_input.get("hint", "")
 
-        system_msg = _SYSTEM_PROMPT.format(max_candidates=max_candidates)
-        user_msg = _USER_PROMPT_TEMPLATE.format(
-            media_id=media_id,
-            media_type=media_type,
-            hint=hint or "(none provided)",
-            max_candidates=max_candidates,
+        system_msg = append_prompt_injection_defense(
+            _SYSTEM_PROMPT.format(max_candidates=max_candidates)
+        )
+        user_msg = format_untrusted_json(
+            "Media input",
+            {
+                "media_id": media_id,
+                "media_type": media_type,
+                "hint": hint or "(none provided)",
+                "metadata": media_input.get("metadata", {}),
+                "max_candidates": max_candidates,
+                "task": _USER_PROMPT_TEMPLATE.format(
+                    media_id=media_id,
+                    media_type=media_type,
+                    hint=hint or "(none provided)",
+                    max_candidates=max_candidates,
+                ),
+            },
         )
 
         payload = {
@@ -351,4 +367,3 @@ def build_provider_from_env() -> OpenAIDomainDerivationProvider | None:
     if not api_key:
         return None
     return OpenAIDomainDerivationProvider(api_key=api_key)
-

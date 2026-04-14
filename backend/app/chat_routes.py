@@ -32,6 +32,11 @@ from sqlmodel import Session, select
 from backend.app.auth import require_auth
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
+from ui_blueprint.prompt_security import (
+    append_prompt_injection_defense,
+    format_untrusted_json,
+    format_untrusted_text,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -484,12 +489,25 @@ def _call_openai_chat(
     timeout = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT))
     url = _build_completions_url(base_url)
 
-    effective_prompt = system_prompt if system_prompt is not None else _CHAT_SYSTEM_PROMPT
+    effective_prompt = append_prompt_injection_defense(
+        system_prompt if system_prompt is not None else _CHAT_SYSTEM_PROMPT
+    )
     prompt_messages: list[dict[str, str]] = [{"role": "system", "content": effective_prompt}]
-    for item in history or []:
+    total_history = len(history or [])
+    for idx, item in enumerate(history or [], start=1):
         if item.role in ("user", "assistant", "system"):
-            prompt_messages.append({"role": item.role, "content": item.content})
-    prompt_messages.append({"role": "user", "content": message})
+            content = (
+                format_untrusted_text(
+                    f"Quoted prior user message ({idx} of {total_history})",
+                    item.content,
+                )
+                if item.role == "user"
+                else item.content
+            )
+            prompt_messages.append({"role": item.role, "content": content})
+    prompt_messages.append(
+        {"role": "user", "content": format_untrusted_text("Latest user message", message)}
+    )
 
     payload = {
         "model": model,
@@ -643,17 +661,31 @@ def _call_openai_intent_v2(
     # Build user message — include serialised repo context when present.
     if repo_context is not None:
         context_json = repo_context.model_dump(mode="json", exclude_none=True)
-        user_content = (
-            f"USER INPUT: {message}\n\n"
-            f"REPO CONTEXT (Mode B):\n{json.dumps(context_json, indent=2)}"
+        user_content = format_untrusted_json(
+            "Intent request",
+            {
+                "message": message,
+                "repo_context": context_json,
+                "mode": "B",
+            },
         )
     else:
-        user_content = f"USER INPUT: {message}\n\nREPO CONTEXT: none (Mode A)"
+        user_content = format_untrusted_json(
+            "Intent request",
+            {
+                "message": message,
+                "repo_context": None,
+                "mode": "A",
+            },
+        )
 
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _INTERACTION_LAYER_V2_SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": append_prompt_injection_defense(_INTERACTION_LAYER_V2_SYSTEM_PROMPT),
+            },
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
