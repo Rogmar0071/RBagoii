@@ -1020,7 +1020,7 @@ def _analyze_aggregate(job_id: str, folder_id: str, job) -> None:
     options = _get_analyze_options(job)
     aa = options.get("additional_analysis", {})
     if aa.get("enabled", False):
-        _enqueue_analyze_optional(folder_id, options)
+        _enqueue_analyze_optional(folder_id, options, job.analyze_clip_object_key)
 
 
 def _generate_folder_intent_pack(job_id: str, folder_id: str) -> None:
@@ -1149,7 +1149,7 @@ def _generate_folder_intent_pack(job_id: str, folder_id: str) -> None:
         )
 
 
-def _enqueue_analyze_optional(folder_id: str, options: dict) -> None:
+def _enqueue_analyze_optional(folder_id: str, options: dict, clip_object_key: str | None) -> None:
     """
     Create a new ``analyze_optional`` Job row and enqueue it.
 
@@ -1166,7 +1166,7 @@ def _enqueue_analyze_optional(folder_id: str, options: dict) -> None:
             folder_id=uuid.UUID(folder_id),
             type="analyze_optional",
             analyze_options=options,
-            analyze_clip_object_key=job.analyze_clip_object_key,
+            analyze_clip_object_key=clip_object_key,
         )
         session.add(opt_job)
         session.commit()

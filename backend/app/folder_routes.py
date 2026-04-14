@@ -734,7 +734,7 @@ async def upload_repo(
     from backend.app.models import Artifact, Job
 
     fid = _parse_uuid(folder_id, "folder_id")
-    folder = _folder_or_404(db, fid)
+    _folder_or_404(db, fid)
 
     if not storage.storage_available():
         raise HTTPException(status_code=502, detail="Storage not configured")
@@ -1255,7 +1255,7 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
     from backend.app.models import Job
 
     fid = _parse_uuid(folder_id, "folder_id")
-    _folder_or_404(db, fid)
+    folder = _folder_or_404(db, fid)
 
     job_type = str(body.get("type", "")).strip()
     if job_type not in ("analyze", "analyze_optional", "blueprint"):

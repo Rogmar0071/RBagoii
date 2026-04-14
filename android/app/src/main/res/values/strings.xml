@@ -38,7 +38,7 @@
     <string name="label_jobs">Jobs</string>
     <string name="label_artifacts">Artifacts</string>
     <string name="label_chat">Chat</string>
-    <string name="label_upload_details">Upload details</string>
+    <string name="label_upload_details">Resource</string>
     <string name="folder_loading">Loading…</string>
     <string name="folder_load_error">Failed to load folder.</string>
     <string name="folder_no_jobs">No jobs yet.</string>
