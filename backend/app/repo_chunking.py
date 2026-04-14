@@ -11,7 +11,10 @@ from typing import Any
 from fastapi import HTTPException
 
 _DEFAULT_CHUNK_SIZE_BYTES = 5 * 1024 * 1024
-_UPLOADS_ROOT = Path(os.environ.get("REPO_ZIP_UPLOADS_DIR", "/tmp/repo_zip_uploads"))
+_DEFAULT_UPLOADS_ROOT = (
+    Path(os.environ.get("DATA_DIR", "/tmp/ui_blueprint_data")) / "repo_zip_uploads"
+)
+_UPLOADS_ROOT = Path(os.environ.get("REPO_ZIP_UPLOADS_DIR", str(_DEFAULT_UPLOADS_ROOT)))
 
 
 def default_chunk_size_bytes() -> int:
@@ -69,6 +72,27 @@ def _write_manifest(upload_id: str, manifest: dict[str, Any]) -> None:
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with manifest_path.open("w", encoding="utf-8") as handle:
         json.dump(manifest, handle, sort_keys=True)
+
+
+def _write_chunk_bytes(chunk_dir: Path, chunk_index: int, data: bytes) -> None:
+    """Write one chunk beneath a previously validated directory using a fixed filename."""
+    chunk_dir_fd = os.open(chunk_dir, os.O_RDONLY)
+    try:
+        chunk_fd = os.open(
+            f"chunk_{chunk_index:05d}",
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            0o600,
+            dir_fd=chunk_dir_fd,
+        )
+        try:
+            with os.fdopen(chunk_fd, "wb") as handle:
+                handle.write(data)
+            chunk_fd = None
+        finally:
+            if chunk_fd is not None:
+                os.close(chunk_fd)
+    finally:
+        os.close(chunk_dir_fd)
 
 
 def _validate_manifest_compatibility(
@@ -134,9 +158,7 @@ def write_chunk(
 
     # Each chunk is stored under its stable ordinal so re-uploading a failed chunk
     # simply replaces the old bytes without duplicating state.
-    chunk_path = chunk_dir / f"chunk_{chunk_index:05d}"
-    with chunk_path.open("wb") as handle:
-        handle.write(data)
+    _write_chunk_bytes(chunk_dir, chunk_index, data)
 
     received_chunks = set(int(index) for index in manifest.get("received_chunks", []))
     received_chunks.add(chunk_index)
@@ -200,7 +222,7 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
         raise
     except Exception as exc:  # noqa: BLE001
         destination.unlink(missing_ok=True)
-        detail = "Failed to assemble repo ZIP chunks"
+        detail = f"Failed to assemble repo ZIP chunks ({type(exc).__name__})"
         if current_chunk_path is not None:
             detail = f"{detail} at {current_chunk_path.name}"
         raise HTTPException(status_code=500, detail=detail) from exc

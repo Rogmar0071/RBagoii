@@ -65,7 +65,7 @@ object RepoZipChunking {
         if (totalChunks == 0) return@sequence
 
         val buffer = ByteArray(chunkSizeBytes.toInt())
-        var chunkIndex = 0
+        var currentIndex = 0
         while (true) {
             val bytesRead = inputStream.read(buffer)
             if (bytesRead == -1) break
@@ -74,12 +74,12 @@ object RepoZipChunking {
             // reuse the same payload without holding the entire ZIP in memory.
             yield(
                 RepoZipChunk(
-                    index = chunkIndex,
+                    index = currentIndex,
                     totalChunks = totalChunks,
                     bytes = buffer.copyOf(bytesRead),
                 ),
             )
-            chunkIndex += 1
+            currentIndex += 1
         }
     }
 
