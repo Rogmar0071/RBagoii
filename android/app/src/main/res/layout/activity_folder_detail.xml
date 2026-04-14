@@ -96,6 +96,8 @@
                 android:id="@+id/tvActionStatus"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:accessibilityLiveRegion="polite"
+                android:importantForAccessibility="yes"
                 android:layout_marginTop="8dp"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp"
