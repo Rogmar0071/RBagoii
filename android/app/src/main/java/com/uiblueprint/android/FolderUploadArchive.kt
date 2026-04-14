@@ -18,6 +18,8 @@ data class FolderUploadArchiveResult(
 )
 
 object FolderUploadArchive {
+    // Block Windows reserved device names so extracted folder archives remain
+    // portable across platforms that reject entries like CON/NUL/COM1.
     private val RESERVED_PATH_SEGMENTS = setOf(
         "con", "prn", "aux", "nul",
         "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",

@@ -14,7 +14,7 @@ from fastapi import HTTPException
 _DEFAULT_CHUNK_SIZE_BYTES = 5 * 1024 * 1024
 _CONTENT_RANGE_RE = re.compile(r"^bytes (?P<start>\d+)-(?P<end>\d+)/(?P<total>\d+)$")
 _DEFAULT_UPLOADS_ROOT = (
-    Path(os.environ.get("DATA_DIR", "/tmp/ui_blueprint_data")) / "repo_zip_uploads"
+    Path(os.environ.get("DATA_DIR", "/tmp/ui_blueprint_data")) / "chunk_uploads"
 )
 _UPLOADS_ROOT = Path(os.environ.get("REPO_ZIP_UPLOADS_DIR", str(_DEFAULT_UPLOADS_ROOT)))
 

@@ -96,6 +96,8 @@ object BackendClient {
             return BACKOFF_DELAYS_MS[retryNumber - 1]
         }
         val extraRetries = retryNumber - BACKOFF_DELAYS_MS.size
+        // Exponential backoff: last configured delay * 2^extraRetries,
+        // capped so very large retry counts do not overflow or sleep forever.
         return BACKOFF_DELAYS_MS.last() * (1L shl extraRetries.coerceAtMost(MAX_EXPONENTIAL_BACKOFF_SHIFT))
     }
 }

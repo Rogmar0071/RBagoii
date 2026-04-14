@@ -53,6 +53,8 @@ object RepoZipChunking {
     fun totalChunks(totalBytes: Long, chunkSizeBytes: Long): Int {
         require(totalBytes >= 0) { "totalBytes must be non-negative" }
         require(chunkSizeBytes > 0) { "chunkSizeBytes must be positive" }
+        // A zero-byte archive yields zero chunks; callers that upload data must
+        // treat that as an invalid/empty upload before starting network transfer.
         if (totalBytes == 0L) return 0
         return ((totalBytes + chunkSizeBytes - 1) / chunkSizeBytes).toInt()
     }

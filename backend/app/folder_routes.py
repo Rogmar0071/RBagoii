@@ -37,6 +37,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
+import botocore.exceptions
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -460,7 +461,6 @@ def get_folder(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
 @router.delete("/{folder_id}", status_code=204, dependencies=[Depends(require_auth)])
 def delete_folder(folder_id: str, db=Depends(_db_session)) -> None:
     """Delete folder and all cascade-linked rows."""
-    import botocore.exceptions
     from sqlmodel import select
 
     from backend.app import storage
@@ -1888,6 +1888,8 @@ def list_messages(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
 # Stalled-job watchdog
 # ---------------------------------------------------------------------------
 
+# ``analyze_repo`` is included because repo structural analysis also runs via the
+# worker queue and can be stranded in ``running`` if the worker restarts.
 _STALLED_JOB_TYPES = {"analyze", "analyze_repo", "blueprint"}
 
 # Maximum seconds a job may remain in "running" state before being declared
