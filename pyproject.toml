@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-recob = "ui_blueprint.__main__:main"
+recob = "interface.cli:run_cli"
 ui-blueprint = "ui_blueprint.__main__:main"
 
 [tool.setuptools.packages.find]

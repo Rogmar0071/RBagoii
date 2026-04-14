@@ -1,1 +1,2 @@
-Pillow>=10.0
+# The evidence-only query prototype uses the Python standard library only.
+# Install `.[dev]` from pyproject.toml for linting and test dependencies.
