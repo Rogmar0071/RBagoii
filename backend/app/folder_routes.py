@@ -1041,14 +1041,20 @@ async def upload_repo_chunk(
         range_start, range_end, range_total = repo_chunking.parse_content_range(content_range)
         expected_start = x_chunk_index * x_chunk_size
         expected_end = expected_start + len(chunk_bytes) - 1
-        if (
-            range_total != x_total_bytes
-            or range_start != expected_start
-            or range_end != expected_end
-        ):
+        if range_total != x_total_bytes:
             raise HTTPException(
                 status_code=400,
-                detail="Content-Range does not match chunk metadata",
+                detail="Content-Range total does not match chunk metadata",
+            )
+        if range_start != expected_start:
+            raise HTTPException(
+                status_code=400,
+                detail="Content-Range start does not align with chunk index",
+            )
+        if range_end != expected_end:
+            raise HTTPException(
+                status_code=400,
+                detail="Content-Range end does not match chunk payload size",
             )
 
     manifest = repo_chunking.write_chunk(
@@ -1525,11 +1531,16 @@ def delete_artifact(
             ),
         )
 
-    derived_artifacts = db.exec(
-        select(Artifact)
-        .where(Artifact.folder_id == fid)
-        .where(Artifact.job_id.in_([job.id for job in linked_jobs] or [uuid.uuid4()]))
-    ).all()
+    linked_job_ids = [job.id for job in linked_jobs]
+    derived_artifacts = (
+        db.exec(
+            select(Artifact)
+            .where(Artifact.folder_id == fid)
+            .where(Artifact.job_id.in_(linked_job_ids))
+        ).all()
+        if linked_job_ids
+        else []
+    )
 
     to_delete = [artifact, *derived_artifacts]
     deleted_artifact_ids: list[str] = []

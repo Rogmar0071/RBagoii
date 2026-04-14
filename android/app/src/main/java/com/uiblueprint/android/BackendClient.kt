@@ -29,6 +29,7 @@ object BackendClient {
 
     /** Delays (ms) between successive attempts – index 0 before attempt 2, index 1 before attempt 3. */
     val BACKOFF_DELAYS_MS = longArrayOf(1_500L, 3_000L)
+    private const val MAX_EXPONENTIAL_BACKOFF_SHIFT = 10
 
     /** HTTP status codes that warrant a retry (server temporarily unavailable). */
     private val RETRYABLE_STATUS_CODES = setOf(502, 503, 504)
@@ -95,6 +96,6 @@ object BackendClient {
             return BACKOFF_DELAYS_MS[retryNumber - 1]
         }
         val extraRetries = retryNumber - BACKOFF_DELAYS_MS.size
-        return BACKOFF_DELAYS_MS.last() * (1L shl extraRetries.coerceAtMost(10))
+        return BACKOFF_DELAYS_MS.last() * (1L shl extraRetries.coerceAtMost(MAX_EXPONENTIAL_BACKOFF_SHIFT))
     }
 }

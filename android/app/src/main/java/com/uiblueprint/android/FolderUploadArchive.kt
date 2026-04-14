@@ -18,6 +18,12 @@ data class FolderUploadArchiveResult(
 )
 
 object FolderUploadArchive {
+    private val RESERVED_PATH_SEGMENTS = setOf(
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    )
+
     @Throws(IOException::class)
     fun createZipFromTree(context: Context, treeUri: Uri): FolderUploadArchiveResult {
         val contentResolver = context.contentResolver
@@ -114,13 +120,29 @@ object FolderUploadArchive {
     }
 
     private fun buildRelativePath(prefix: String, displayName: String): String {
-        val normalizedName = displayName
+        val normalizedSegments = displayName
             .replace('\\', '/')
             .trim('/')
             .split('/')
             .filter { it.isNotBlank() && it != "." && it != ".." }
+            .map { segment ->
+                val sanitized = segment.trim()
+                if (sanitized.isEmpty()) {
+                    throw IOException("Folder upload entry name must not be empty")
+                }
+                if (sanitized.startsWith('/')) {
+                    throw IOException("Folder upload entry must be relative")
+                }
+                if (sanitized.contains('\u0000')) {
+                    throw IOException("Folder upload entry contains null byte")
+                }
+                if (sanitized.lowercase() in RESERVED_PATH_SEGMENTS) {
+                    throw IOException("Folder upload entry uses a reserved name")
+                }
+                sanitized
+            }
             .joinToString("/")
-        return listOf(prefix.trim('/'), normalizedName)
+        return listOf(prefix.trim('/'), normalizedSegments)
             .filter { it.isNotBlank() }
             .joinToString("/")
     }
