@@ -39,9 +39,11 @@ Depends on:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any
 
+from ..shared.hash_contract import HASH_INPUT_TEMPLATE
 from .audit import persist_simulation_audit_record
 from .contract import (
     RISK_HIGH,
@@ -327,6 +329,18 @@ def simulation_gateway(
     result.safe_to_execute = gate.safe_to_execute
     result.blocked_reason = gate.blocked_reason
     result.override_used = gate.override_used
+
+    # Compute per-file snapshot hashes using the shared HASH_INPUT_TEMPLATE.
+    _contract_id = str(governance_result.get("contract_id", ""))
+    _proposed = str(mutation_proposal.get("proposed_changes", ""))
+    result.file_snapshot_hashes = {
+        fpath: hashlib.sha256(
+            HASH_INPUT_TEMPLATE.format(
+                contract_id=_contract_id, fpath=fpath, proposed_changes=_proposed
+            ).encode()
+        ).hexdigest()
+        for fpath in list(mutation_proposal.get("target_files") or [])
+    }
 
     result.reasoning_summary = _build_reasoning_summary(
         mutation_proposal=mutation_proposal,

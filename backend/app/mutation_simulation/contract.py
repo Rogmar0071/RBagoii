@@ -284,6 +284,9 @@ class SimulationResult:
             "no_deployment_trigger": True,
         }
     )
+    # Per-file SHA-256 fingerprints; produced by simulation_gateway,
+    # verified by bridge revalidation to detect proposal tampering.
+    file_snapshot_hashes: dict[str, str] = field(default_factory=dict)
 
     def validate_for_return(self) -> None:
         """Raise ValueError if source_governance_audit_id is absent or empty."""
@@ -315,6 +318,7 @@ class SimulationResult:
             "audit_id": self.audit_id,
             "created_at": self.created_at,
             "execution_boundary": self.execution_boundary,
+            "file_snapshot_hashes": self.file_snapshot_hashes,
         }
 
 

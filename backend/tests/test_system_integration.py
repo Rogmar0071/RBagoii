@@ -27,6 +27,7 @@ so that tests are hermetic and always pass in CI.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from contextlib import ExitStack
@@ -40,6 +41,7 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_system_integration")
 
 from backend.app.main import app
+from backend.app.shared.hash_contract import HASH_INPUT_TEMPLATE
 
 # ---------------------------------------------------------------------------
 # Test constants
@@ -668,6 +670,26 @@ class TestFullPipelineTrace:
         assert "NO_REAL_MUTATION" in summary, (
             "execution_summary must contain NO_REAL_MUTATION marker"
         )
+
+    def test_hash_consistency_between_simulation_and_bridge(self, pipeline_trace):
+        """Proves simulation and bridge share a single hash formula — no drift."""
+        gov = pipeline_trace["governance"]
+        sim = pipeline_trace["simulation"]
+        contract_id = gov["contract_id"]
+        proposed_changes = gov["mutation_proposal"]["proposed_changes"]
+        target_files = gov["mutation_proposal"]["target_files"]
+        snapshot = sim.get("file_snapshot_hashes", {})
+        assert snapshot, "simulation must produce file_snapshot_hashes"
+        for fpath in target_files:
+            expected = hashlib.sha256(
+                HASH_INPUT_TEMPLATE.format(
+                    contract_id=contract_id,
+                    fpath=fpath,
+                    proposed_changes=proposed_changes,
+                ).encode()
+            ).hexdigest()
+            assert snapshot.get(fpath) == expected, f"hash mismatch for {fpath!r}"
+        assert pipeline_trace["bridge"]["status"] == "executed"
 
 
 # ===========================================================================
