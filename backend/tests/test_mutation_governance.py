@@ -453,8 +453,8 @@ class TestAuditPersistence:
         original = db_module.get_engine
 
         # Re-enable the logger in case Alembic's logging.config.fileConfig has
-        # set its .disabled flag to True (fileConfig disables_existing_loggers
-        # by default, which affects all non-listed loggers including ours).
+        # set its .disabled flag to True (fileConfig disable_existing_loggers
+        # defaults to True, which affects all non-listed loggers including ours).
         audit_logger = logging.getLogger("backend.app.mutation_governance.audit")
         was_disabled = audit_logger.disabled
         audit_logger.disabled = False
