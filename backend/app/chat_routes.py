@@ -10,6 +10,10 @@ POST /api/chat                               send a message and persist it
 POST /api/chat/{message_id}/edit             create an edited user message (supersedes original)
 POST /api/chat/intent                        INTERACTION_LAYER_V2 — parse raw human input into
                                              a deterministic structured intent JSON (never executes)
+
+All AI generation on POST /api/chat is routed through MODE_ENGINE_EXECUTION_V2
+(see backend.app.mode_engine) which enforces mode-driven constraints,
+post-generation validation, retry control, and mandatory audit logging.
 """
 
 from __future__ import annotations
@@ -30,6 +34,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
+from backend.app.mode_engine import (
+    MODE_STRICT,
+    build_mode_system_prompt_injection,
+    mode_engine_gateway,
+    resolve_modes,
+)
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
 from ui_blueprint.prompt_security import (
@@ -227,6 +237,9 @@ class ChatPostRequest(BaseModel):
     message: str
     context: ChatContext = Field(default_factory=ChatContext)
     agent_mode: bool = False
+    # MODE_ENGINE_EXECUTION_V2: active modes for this request.
+    # Defaults to [strict_mode] when omitted or empty.
+    modes: list[str] | None = None
 
     @field_validator("message")
     @classmethod
@@ -832,6 +845,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     agent_mode = request.agent_mode or (
         http_request.headers.get("X-Agent-Mode", "0") == "1"
     )
+    # MODE_ENGINE_EXECUTION_V2: resolve active modes (defaults to strict_mode).
+    active_modes = resolve_modes(request.modes or [MODE_STRICT])
 
     db = _db_session()
     try:
@@ -842,7 +857,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
         if not openai_api_key:
-            reply = _stub_reply(message)
+            # No OpenAI key — pass stub through the mode engine gateway so that
+            # audit logging, pre-generation constraints, and validation still run.
+            def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
+                return _stub_reply(message)
+
+            reply, _audit = mode_engine_gateway(
+                user_intent=message,
+                modes=active_modes,
+                ai_call=_stub_ai_call,
+                base_system_prompt="",
+            )
         else:
             # Optionally retrieve web results for recency-sensitive queries.
             search_results: list[dict[str, Any]] = []
@@ -858,27 +883,36 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 except Exception:
                     logger.warning("web_search call failed; continuing without retrieval.")
 
-            # Build system prompt with ops context + optional retrieval results.
+            # Build base system prompt with ops context + optional retrieval results.
             if search_results:
-                system_prompt = _build_retrieval_system_prompt(db, search_results)
+                base_system_prompt = _build_retrieval_system_prompt(db, search_results)
             else:
-                system_prompt = _build_chat_system_prompt(db)
+                base_system_prompt = _build_chat_system_prompt(db)
 
             # When agent_mode is enabled, append an instruction to use ARTIFACT format.
             if agent_mode:
-                system_prompt += (
+                base_system_prompt += (
                     "\n\nRespond using structured ARTIFACT sections. "
                     "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
                     "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
                     "ARTIFACT_SOURCES, etc."
                 )
 
-            try:
-                reply = _call_openai_chat(
+            # Build the ai_call closure; mode constraints are injected by the gateway.
+            def _openai_ai_call(system_prompt: str) -> str:
+                return _call_openai_chat(
                     message,
                     openai_api_key,
                     history[:-1] if history else [],
                     system_prompt=system_prompt,
+                )
+
+            try:
+                reply, _audit = mode_engine_gateway(
+                    user_intent=message,
+                    modes=active_modes,
+                    ai_call=_openai_ai_call,
+                    base_system_prompt=base_system_prompt,
                 )
             except httpx.TimeoutException:
                 return _error(
