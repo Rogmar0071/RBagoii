@@ -833,19 +833,20 @@ class TestStubPathThroughGateway:
             ).all()
         assert len(rows) >= 1
 
-    def test_stub_path_pregeneration_constraint_still_runs(
-        self, client: TestClient, monkeypatch
-    ):
-        """Stage 0 blocks empty messages on the stub path just like the live path."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-        resp = client.post(
-            "/api/chat",
-            json={"message": "   "},
-            headers=_auth(),
+    def test_stub_path_stage_0_runs_in_gateway(self):
+        """Stage 0 pre-generation constraints are enforced inside the gateway on the
+        stub path — an empty user_intent is blocked before AI is ever called."""
+        ai_call = MagicMock(return_value="should not be called")
+        output, audit = mode_engine_gateway(
+            user_intent="",  # empty — stage 0 must block
+            modes=[MODE_STRICT],
+            ai_call=ai_call,
+            base_system_prompt="",
         )
-        # Empty message is caught by ChatPostRequest validator (400) before gateway.
-        assert resp.status_code == 400
+        parsed = json.loads(output)
+        assert parsed["error"] == "PRE_GENERATION_BLOCKED"
+        assert "missing_required_input" in parsed["reason"]
+        ai_call.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -877,8 +878,7 @@ class TestModeStackingConflictResolution:
         """strict + prediction → conflict resolution text in injected prompt."""
         prompt = build_mode_system_prompt_injection([MODE_STRICT, MODE_PREDICTION])
         assert "CONFLICT RESOLUTION" in prompt
-        assert "assumptions_allowed_only_if_flagged" in prompt.lower().replace(" ", "_") or \
-               "assumptions_allowed_only_if_flagged" in prompt
+        assert "assumptions_allowed_only_if_flagged" in prompt
 
     def test_strict_prevents_guessing_within_prediction_output(self):
         """With strict + prediction, guessing language anywhere in the response fails."""
