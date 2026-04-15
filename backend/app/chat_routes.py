@@ -846,7 +846,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         http_request.headers.get("X-Agent-Mode", "0") == "1"
     )
     # MODE_ENGINE_EXECUTION_V2: resolve active modes (defaults to strict_mode).
-    active_modes = resolve_modes(request.modes or [MODE_STRICT])
+    # resolve_modes([]) already falls back to [MODE_STRICT], so passing an empty
+    # list or None both produce the same default behaviour.
+    active_modes = resolve_modes(request.modes or [])
 
     db = _db_session()
     try:
