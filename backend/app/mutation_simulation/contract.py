@@ -285,6 +285,13 @@ class SimulationResult:
         }
     )
 
+    def validate_for_return(self) -> None:
+        """Raise ValueError if source_governance_audit_id is absent or empty."""
+        if not self.source_governance_audit_id:
+            raise ValueError(
+                "INVALID_SIMULATION_RESULT: missing source_governance_audit_id"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "simulation_id": self.simulation_id,

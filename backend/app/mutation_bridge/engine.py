@@ -198,6 +198,15 @@ def _verify_simulation_integrity(
                 f"missing required field {fname!r} in simulation_result"
             )
 
+    # Key presence alone is insufficient — an empty value breaks the audit chain.
+    sgai = simulation_result.get("source_governance_audit_id", "")
+    if not isinstance(sgai, str) or not sgai.strip():
+        return (
+            "block_if:simulation_not_verified — "
+            "source_governance_audit_id is absent or empty in simulation_result; "
+            "audit chain integrity cannot be verified"
+        )
+
     safe_to_execute = simulation_result.get("safe_to_execute")
     if safe_to_execute is not True:
         return (
@@ -490,6 +499,10 @@ def _build_execution_summary(
         "  no_auto_merge: enforced",
         "  no_deployment_trigger: enforced",
         "  execution_scope: simulated (no real git ops, no file writes)",
+        "",
+        "EXECUTION BOUNDARY DECLARATION:",
+        "  SIMULATED_EXECUTION_ONLY",
+        "  NO_REAL_MUTATION",
     ]
     return "\n".join(lines)
 

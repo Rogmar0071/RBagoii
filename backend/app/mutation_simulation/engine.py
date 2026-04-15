@@ -363,8 +363,11 @@ def simulation_gateway(
     # (block_if_log_not_written invariant).
     persist_simulation_audit_record(audit)
 
+    # Step 9: contract enforcement — result must be structurally complete.
+    result.validate_for_return()
+
     # ------------------------------------------------------------------
-    # Step 9: return structured result (no execution)
+    # Step 10: return structured result (no execution)
     # ------------------------------------------------------------------
     return result
 

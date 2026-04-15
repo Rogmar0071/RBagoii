@@ -658,3 +658,110 @@ class TestFullPipelineTrace:
         # All three IDs must be distinct.
         ids = {gov_audit, sim_audit, bridge_audit}
         assert len(ids) == 3, f"audit_ids are not unique: {ids}"
+
+    def test_execution_summary_contains_boundary_markers(self, pipeline_trace):
+        """Execution boundary must be declared as invariant, not just convention."""
+        summary = pipeline_trace["bridge"].get("execution_summary", "")
+        assert "SIMULATED_EXECUTION_ONLY" in summary, (
+            "execution_summary must contain SIMULATED_EXECUTION_ONLY marker"
+        )
+        assert "NO_REAL_MUTATION" in summary, (
+            "execution_summary must contain NO_REAL_MUTATION marker"
+        )
+
+
+# ===========================================================================
+# Negative path tests — failure behavior must be deterministic
+# ===========================================================================
+
+
+class TestNegativePaths:
+    """Prove the system fails correctly — failure behavior is where governance lives."""
+
+    @pytest.fixture()
+    def governance_result(self, client):
+        resp = client.post(
+            "/api/mutations/propose",
+            json={"intent": _INTENT_MESSAGE},
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        return resp.json()
+
+    @pytest.fixture()
+    def simulation_result(self, client, governance_result):
+        resp = client.post(
+            "/api/mutations/simulate",
+            json={"governance_result": governance_result},
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        return resp.json()
+
+    # -----------------------------------------------------------------------
+    # Simulation — rejects governance without audit_id
+    # -----------------------------------------------------------------------
+
+    def test_simulation_rejects_missing_governance_audit_id(
+        self, client, governance_result
+    ):
+        """Simulation must hard-block when governance audit_id is absent."""
+        bad_gov = dict(governance_result)
+        bad_gov.pop("audit_id", None)
+        resp = client.post(
+            "/api/mutations/simulate",
+            json={"governance_result": bad_gov},
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["safe_to_execute"] is False
+        assert data["blocked_reason"]
+
+    # -----------------------------------------------------------------------
+    # Bridge — rejects simulation with broken audit chain
+    # -----------------------------------------------------------------------
+
+    def test_bridge_rejects_missing_source_governance_audit_id(
+        self, client, governance_result, simulation_result
+    ):
+        """Bridge must block when source_governance_audit_id is absent."""
+        bad_sim = dict(simulation_result)
+        del bad_sim["source_governance_audit_id"]
+        resp = client.post(
+            "/api/mutations/execute",
+            json={
+                "governance_result": governance_result,
+                "simulation_result": bad_sim,
+            },
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "blocked"
+        assert data["blocked_reason"]
+
+    def test_bridge_rejects_tampered_source_governance_audit_id(
+        self, client, governance_result, simulation_result
+    ):
+        """Bridge must block when source_governance_audit_id does not match governance.
+
+        A forged or replayed audit ID must be caught at the revalidation step,
+        proving the bridge cannot be bypassed by constructing a plausible-looking
+        simulation result.
+        """
+        bad_sim = dict(simulation_result)
+        bad_sim["source_governance_audit_id"] = "fake-audit-id-tampered"
+        resp = client.post(
+            "/api/mutations/execute",
+            json={
+                "governance_result": governance_result,
+                "simulation_result": bad_sim,
+            },
+            headers=_AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "blocked"
+        assert data["blocked_reason"]
+
