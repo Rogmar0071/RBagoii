@@ -33,12 +33,20 @@ from ui_blueprint.domain.derivation import StubDomainDerivationProvider  # noqa:
 from ui_blueprint.domain.ir import SCHEMA_VERSION  # noqa: E402
 from ui_blueprint.domain.store import InMemoryDomainProfileStore  # noqa: E402
 
+TOKEN = "test-domain-key"
+
 
 @pytest.fixture(autouse=True)
 def _fresh_store() -> None:
     """Reset the in-memory store and provider cache before every test."""
     _dr.set_store(InMemoryDomainProfileStore())
     _dr.set_provider(StubDomainDerivationProvider())
+
+
+@pytest.fixture(autouse=True)
+def _set_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ensure API_KEY is always set — no open/dev mode permitted."""
+    monkeypatch.setenv("API_KEY", TOKEN)
 
 
 @pytest.fixture()
@@ -54,9 +62,13 @@ _MEDIA = {"media_id": "vid_001", "media_type": "video"}
 _OPTIONS_MECH = {"hint": "drawer hinge cabinet assembly", "max_candidates": 1}
 
 
+def _headers() -> dict[str, str]:
+    return {"Authorization": f"Bearer {TOKEN}"}
+
+
 def _derive(client: TestClient, options: dict | None = None) -> dict:
     body = {"media": _MEDIA, "options": options or _OPTIONS_MECH}
-    resp = client.post("/api/domains/derive", json=body)
+    resp = client.post("/api/domains/derive", json=body, headers=_headers())
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["candidates"], "Expected at least one candidate"
@@ -67,6 +79,7 @@ def _confirm(client: TestClient, domain_profile_id: str) -> dict:
     resp = client.post(
         f"/api/domains/{domain_profile_id}/confirm",
         json={"confirmed_by": "test_user", "note": "LGTM"},
+        headers=_headers(),
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -76,6 +89,7 @@ def _compile(client: TestClient, domain_profile_id: str) -> tuple[int, dict]:
     resp = client.post(
         "/api/blueprints/compile",
         json={"media": _MEDIA, "domain_profile_id": domain_profile_id},
+        headers=_headers(),
     )
     return resp.status_code, resp.json()
 
@@ -99,7 +113,7 @@ class TestErrorShape:
         pid = candidate["domain_profile_id"]
         _confirm(client, pid)
         resp = client.patch(
-            f"/api/domains/{pid}", json={"patch": {"name": "X"}}
+            f"/api/domains/{pid}", json={"patch": {"name": "X"}}, headers=_headers()
         )
         assert resp.status_code == 409
         body = resp.json()
@@ -107,7 +121,7 @@ class TestErrorShape:
         assert body["error"]["code"] == "state_conflict"
 
     def test_400_uses_error_envelope(self, client: TestClient) -> None:
-        resp = client.post("/api/blueprints/compile", json={"media": _MEDIA})
+        resp = client.post("/api/blueprints/compile", json={"media": _MEDIA}, headers=_headers())
         assert resp.status_code == 400
         body = resp.json()
         assert "error" in body
@@ -125,6 +139,7 @@ class TestResponseSchemaVersion:
         resp = client.post(
             "/api/domains/derive",
             json={"media": _MEDIA, "options": _OPTIONS_MECH},
+            headers=_headers(),
         )
         assert resp.status_code == 200
         assert resp.json()["schema_version"] == SCHEMA_VERSION
@@ -157,7 +172,11 @@ class TestDerive:
         assert candidate["summary"]
 
     def test_derive_no_hint_includes_warning(self, client: TestClient) -> None:
-        resp = client.post("/api/domains/derive", json={"media": _MEDIA, "options": {}})
+        resp = client.post(
+            "/api/domains/derive",
+            json={"media": _MEDIA, "options": {}},
+            headers=_headers(),
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert any("hint" in w.lower() for w in data["warnings"])
@@ -173,6 +192,7 @@ class TestDerive:
         resp = client.post(
             "/api/domains/derive",
             json={"media": _MEDIA, "options": {"max_candidates": 2}},
+            headers=_headers(),
         )
         assert resp.status_code == 200
         assert len(resp.json()["candidates"]) <= 2
@@ -181,6 +201,7 @@ class TestDerive:
         resp = client.post(
             "/api/domains/derive",
             json={"media": {"media_type": "video"}, "options": {}},
+            headers=_headers(),
         )
         assert resp.status_code == 400
         body = resp.json()
@@ -190,6 +211,7 @@ class TestDerive:
         resp = client.post(
             "/api/domains/derive",
             json={"media": {"media_id": "vid_001"}, "options": {}},
+            headers=_headers(),
         )
         assert resp.status_code == 400
         body = resp.json()
@@ -198,7 +220,11 @@ class TestDerive:
     def test_derive_missing_multiple_required_fields_lists_all_in_message(
         self, client: TestClient
     ) -> None:
-        resp = client.post("/api/domains/derive", json={"media": {}, "options": {}})
+        resp = client.post(
+            "/api/domains/derive",
+            json={"media": {}, "options": {}},
+            headers=_headers(),
+        )
         assert resp.status_code == 400
         body = resp.json()
         assert body["error"]["code"] == "invalid_request"
@@ -244,7 +270,7 @@ class TestPatchDomain:
         candidate = _derive(client)
         pid = candidate["domain_profile_id"]
         resp = client.patch(
-            f"/api/domains/{pid}", json={"patch": {"name": "Updated Name"}}
+            f"/api/domains/{pid}", json={"patch": {"name": "Updated Name"}}, headers=_headers()
         )
         assert resp.status_code == 200
         assert resp.json()["domain_profile"]["name"] == "Updated Name"
@@ -253,7 +279,7 @@ class TestPatchDomain:
         candidate = _derive(client)
         pid = candidate["domain_profile_id"]
         resp = client.patch(
-            f"/api/domains/{pid}", json={"patch": {"notes": "My custom note"}}
+            f"/api/domains/{pid}", json={"patch": {"notes": "My custom note"}}, headers=_headers()
         )
         assert resp.status_code == 200
         assert resp.json()["domain_profile"]["notes"] == "My custom note"
@@ -270,6 +296,7 @@ class TestPatchDomain:
         resp = client.patch(
             f"/api/domains/{pid}",
             json={"patch": {"capture_protocol": [new_step]}},
+            headers=_headers(),
         )
         assert resp.status_code == 200
         protocol = resp.json()["domain_profile"]["capture_protocol"]
@@ -282,7 +309,7 @@ class TestPatchDomain:
         pid = candidate["domain_profile_id"]
         _confirm(client, pid)
         resp = client.patch(
-            f"/api/domains/{pid}", json={"patch": {"name": "Should Fail"}}
+            f"/api/domains/{pid}", json={"patch": {"name": "Should Fail"}}, headers=_headers()
         )
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "state_conflict"
@@ -291,6 +318,7 @@ class TestPatchDomain:
         resp = client.patch(
             "/api/domains/00000000-0000-0000-0000-000000000000",
             json={"patch": {"name": "X"}},
+            headers=_headers(),
         )
         assert resp.status_code == 404
 
@@ -313,13 +341,17 @@ class TestConfirmDomain:
         candidate = _derive(client)
         pid = candidate["domain_profile_id"]
         _confirm(client, pid)
-        resp = client.post(f"/api/domains/{pid}/confirm", json={"confirmed_by": "u2"})
+        resp = client.post(
+            f"/api/domains/{pid}/confirm",
+            json={"confirmed_by": "u2"},
+            headers=_headers(),
+        )
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "state_conflict"
 
     def test_confirm_unknown_profile_returns_404(self, client: TestClient) -> None:
         resp = client.post(
-            "/api/domains/00000000-0000-0000-0000-000000000000/confirm", json={}
+            "/api/domains/00000000-0000-0000-0000-000000000000/confirm", json={}, headers=_headers()
         )
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "not_found"
@@ -334,7 +366,7 @@ class TestCompile:
     def test_compile_missing_domain_profile_id_returns_400(
         self, client: TestClient
     ) -> None:
-        resp = client.post("/api/blueprints/compile", json={"media": _MEDIA})
+        resp = client.post("/api/blueprints/compile", json={"media": _MEDIA}, headers=_headers())
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "invalid_request"
 
@@ -347,6 +379,7 @@ class TestCompile:
                 "media": _MEDIA,
                 "domain_profile_id": "00000000-0000-0000-0000-000000000000",
             },
+            headers=_headers(),
         )
         assert resp.status_code == 404
         assert resp.json()["error"]["code"] == "not_found"
@@ -487,6 +520,7 @@ class TestOpenAIProvider:
         resp = client.post(
             "/api/domains/derive",
             json={"media": _MEDIA, "options": _OPTIONS_MECH},
+            headers=_headers(),
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -516,6 +550,7 @@ class TestOpenAIProvider:
             resp = client.post(
                 "/api/domains/derive",
                 json={"media": _MEDIA, "options": _OPTIONS_MECH},
+                headers=_headers(),
             )
 
         assert resp.status_code == 502
@@ -548,6 +583,7 @@ class TestOpenAIProvider:
             resp = client.post(
                 "/api/domains/derive",
                 json={"media": _MEDIA, "options": _OPTIONS_MECH},
+                headers=_headers(),
             )
 
         assert resp.status_code == 502
@@ -601,6 +637,7 @@ class TestOpenAIProvider:
                     "media": _MEDIA,
                     "options": {"hint": injected, "max_candidates": 1},
                 },
+                headers=_headers(),
             )
 
         assert resp.status_code == 200

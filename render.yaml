@@ -5,7 +5,7 @@
 #
 # Governance invariants enforced:
 #   - deployment_is_deterministic (all services declared; no implicit config)
-#   - auto_deploy_enabled: false  (no push-to-deploy; manual trigger only)
+#   - auto_deploy_enabled: false  (no push-to-deploy; manual control only)
 
 services:
 
@@ -16,6 +16,8 @@ services:
     name: backend
     runtime: docker
     plan: starter
+    dockerfilePath: backend/Dockerfile
+    startCommand: bash backend/entrypoint.sh
     envVars:
       - key: DATABASE_URL
         sync: false
@@ -32,6 +34,11 @@ services:
     runtime: docker
     dockerfilePath: backend/Dockerfile
     startCommand: python -m rq worker --url $REDIS_URL default
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
 
 # ---------------------------------------------------------------------------
 # Databases — audit spine (postgres)
