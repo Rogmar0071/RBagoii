@@ -2,13 +2,16 @@
 Tests for MUTATION_SIMULATION_EXECUTION_V1.
 
 Coverage:
-  - dependency_surface_mapping: direct, indirect, incomplete, path guards
+  - dependency_surface_mapping: direct, indirect, incomplete, path guards,
+    partial resolution tracking
   - impact_analysis: structural, behavioral, data-flow
-  - failure_prediction: failure types, alternative scenarios
-  - risk_scoring: low / medium / high criteria; always assigned
+  - failure_prediction: all 4 categories always evaluated per simulation
+  - risk_scoring: low / medium / high criteria; always assigned;
+    partially_resolved → at least medium
   - simulation_decision_gate: all blocking rules + override protocol (hardened)
   - simulation_gateway: full pipeline (approved / blocked / invalid input)
-    - risk_level never "unknown" (RISK_INTAKE_BLOCKED used instead)
+    - risk_level never "unknown" (RISK_HIGH used for intake failures)
+    - governance authenticity verification (rejects external payloads)
     - audit is mandatory blocking
     - hard-gate enforcement
     - invalid override treated as absent
@@ -36,7 +39,6 @@ from backend.app.mutation_simulation import (
     FAILURE_RUNTIME,
     OVERRIDE_MIN_JUSTIFICATION_LENGTH,
     RISK_HIGH,
-    RISK_INTAKE_BLOCKED,
     RISK_LOW,
     RISK_MEDIUM,
     DependencySurface,
@@ -307,6 +309,41 @@ class TestFailurePrediction:
         failures = predict_failures(contract, impact, surface)
         assert len(failures.predicted_failures) >= 1
 
+    def test_all_four_failure_categories_always_present(self):
+        """All 4 failure categories must be evaluated in every simulation."""
+        for contract in (_APPROVED_CONTRACT, _DELETE_CONTRACT, _MULTI_MODULE_CONTRACT):
+            surface = map_dependency_surface(contract)
+            impact = analyze_impact(contract, surface)
+            failures = predict_failures(contract, impact, surface)
+            for category in (
+                FAILURE_BUILD,
+                FAILURE_RUNTIME,
+                FAILURE_DEPENDENCY_BREAK,
+                FAILURE_CONTRACT_VIOLATION,
+            ):
+                assert category in failures.failure_types, (
+                    f"Category {category!r} missing from failures for contract "
+                    f"operation_type={contract['operation_type']!r}. "
+                    f"Got: {failures.failure_types}"
+                )
+
+    def test_all_four_categories_present_for_minimal_contract(self):
+        """Even a minimal contract with no risks must evaluate all 4 categories."""
+        contract = dict(
+            _APPROVED_CONTRACT,
+            risks=["none"],
+            missing_data=["none"],
+            target_files=["backend/app/new_module.py"],
+            operation_type="create_file",
+        )
+        surface = map_dependency_surface(contract)
+        impact = analyze_impact(contract, surface)
+        failures = predict_failures(contract, impact, surface)
+        assert FAILURE_BUILD in failures.failure_types
+        assert FAILURE_RUNTIME in failures.failure_types
+        assert FAILURE_DEPENDENCY_BREAK in failures.failure_types
+        assert FAILURE_CONTRACT_VIOLATION in failures.failure_types
+
 
 # ---------------------------------------------------------------------------
 # risk_scoring
@@ -568,7 +605,7 @@ class TestSimulationGateway:
         governance = dict(_APPROVED_GOVERNANCE_RESULT, status="pending")
         result = simulation_gateway(governance_result=governance)
         assert result.safe_to_execute is False
-        assert result.risk_level == RISK_INTAKE_BLOCKED
+        assert result.risk_level == RISK_HIGH
 
     def test_missing_contract_id_blocked(self):
         governance = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
@@ -581,21 +618,21 @@ class TestSimulationGateway:
         governance = dict(_APPROVED_GOVERNANCE_RESULT, mutation_proposal=None)
         result = simulation_gateway(governance_result=governance)
         assert result.safe_to_execute is False
-        assert result.risk_level == RISK_INTAKE_BLOCKED
+        assert result.risk_level == RISK_HIGH
 
     def test_empty_target_files_in_proposal_blocked(self):
         bad_proposal = dict(_APPROVED_CONTRACT, target_files=[])
         governance = dict(_APPROVED_GOVERNANCE_RESULT, mutation_proposal=bad_proposal)
         result = simulation_gateway(governance_result=governance)
         assert result.safe_to_execute is False
-        assert result.risk_level == RISK_INTAKE_BLOCKED
+        assert result.risk_level == RISK_HIGH
 
-    def test_intake_blocked_never_uses_unknown_risk_level(self):
-        """risk_level must never be 'unknown'; RISK_INTAKE_BLOCKED is used."""
+    def test_intake_failure_never_uses_unknown_risk_level(self):
+        """risk_level must never be 'unknown'; RISK_HIGH is used for intake failures."""
         governance = dict(_APPROVED_GOVERNANCE_RESULT, status="blocked")
         result = simulation_gateway(governance_result=governance)
         assert result.risk_level != "unknown"
-        assert result.risk_level == RISK_INTAKE_BLOCKED
+        assert result.risk_level == RISK_HIGH
 
     def test_approved_single_file_returns_structured_result(self):
         result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
@@ -747,7 +784,7 @@ class TestSimulationAPI:
         body = resp.json()
         assert body["safe_to_execute"] is False
         assert body["blocked_reason"] is not None
-        assert body["risk_level"] == RISK_INTAKE_BLOCKED
+        assert body["risk_level"] == RISK_HIGH
 
     def test_post_simulate_high_risk_blocked(self, client):
         gov = _approved_governance(_MULTI_MODULE_CONTRACT)
@@ -860,8 +897,8 @@ class TestSimulationAPI:
         assert resp.status_code == 200
         assert resp.json()["governance_contract"] == "MUTATION_SIMULATION_EXECUTION_V1"
 
-    def test_intake_blocked_risk_level_in_response(self, client):
-        """API response risk_level must be intake_blocked for rejected contracts."""
+    def test_intake_failure_risk_level_in_response(self, client):
+        """API response risk_level must be RISK_HIGH for rejected intake contracts."""
         gov = dict(_APPROVED_GOVERNANCE_RESULT, status="pending")
         with patch.dict(os.environ, {"API_KEY": TOKEN}):
             resp = client.post(
@@ -872,4 +909,224 @@ class TestSimulationAPI:
         assert resp.status_code == 200
         body = resp.json()
         assert body["safe_to_execute"] is False
-        assert body["risk_level"] == RISK_INTAKE_BLOCKED
+        assert body["risk_level"] == RISK_HIGH
+
+
+# ---------------------------------------------------------------------------
+# Governance authenticity tests
+# ---------------------------------------------------------------------------
+
+
+class TestGovernanceAuthenticity:
+    """Simulation must reject input that does not originate from the governance layer."""
+
+    def test_reject_missing_governance_contract_field(self):
+        """Missing governance_contract must be rejected as unauthenticated."""
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
+               if k != "governance_contract"}
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_reject_wrong_governance_contract_value(self):
+        """Invalid governance_contract string must be rejected."""
+        gov = dict(_APPROVED_GOVERNANCE_RESULT,
+                   governance_contract="SOME_EXTERNAL_SYSTEM_V1")
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_reject_missing_audit_id(self):
+        """Missing audit_id must be rejected — proves governance audit did not run."""
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
+               if k != "audit_id"}
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_reject_empty_audit_id(self):
+        """Empty audit_id must be rejected."""
+        gov = dict(_APPROVED_GOVERNANCE_RESULT, audit_id="")
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_reject_gate_result_not_passed(self):
+        """gate_result.passed != True must be rejected."""
+        gov = dict(_APPROVED_GOVERNANCE_RESULT,
+                   gate_result={"passed": False, "reason": "something"})
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_reject_missing_gate_result(self):
+        """Missing gate_result must be rejected."""
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
+               if k != "gate_result"}
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_reject_missing_execution_boundary(self):
+        """Missing execution_boundary must be rejected — governance always stamps it."""
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
+               if k != "execution_boundary"}
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "governance_authenticity_failed" in result.blocked_reason
+
+    def test_authenticity_failure_uses_risk_high(self):
+        """Authenticity failures must return RISK_HIGH, never 'unknown'."""
+        gov = dict(_APPROVED_GOVERNANCE_RESULT, audit_id="")
+        result = simulation_gateway(governance_result=gov)
+        assert result.risk_level == RISK_HIGH
+        assert result.risk_level != "unknown"
+
+    def test_valid_governance_result_passes_authenticity(self):
+        """A fully formed governance result must pass authenticity checks."""
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert isinstance(result, SimulationResult)
+        # If authenticity check passed, blocked_reason should not mention it.
+        if result.blocked_reason:
+            assert "governance_authenticity_failed" not in result.blocked_reason
+
+
+# ---------------------------------------------------------------------------
+# Dependency completeness tests
+# ---------------------------------------------------------------------------
+
+
+class TestDependencyCompleteness:
+    """Dependency mapping must declare completeness; partial resolution raises risk."""
+
+    def test_complete_surface_has_complete_true(self):
+        surface = map_dependency_surface(_APPROVED_CONTRACT)
+        assert surface.complete is True
+
+    def test_empty_target_files_surface_is_incomplete(self):
+        contract = dict(_APPROVED_CONTRACT, target_files=[])
+        surface = map_dependency_surface(contract)
+        assert surface.complete is False
+
+    def test_incomplete_surface_blocks_simulation(self):
+        """Incomplete dependency surface must produce a hard block."""
+        bad_proposal = dict(_APPROVED_CONTRACT, target_files=[])
+        gov = dict(_APPROVED_GOVERNANCE_RESULT, mutation_proposal=bad_proposal)
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        # Should be blocked by dependency gate rule.
+        assert result.blocked_reason is not None
+
+    def test_incomplete_surface_not_overridable(self):
+        """Incomplete dependency surface must be a hard block that cannot be overridden."""
+        bad_proposal = dict(_APPROVED_CONTRACT, target_files=[])
+        gov = dict(_APPROVED_GOVERNANCE_RESULT, mutation_proposal=bad_proposal)
+        result = simulation_gateway(governance_result=gov, override=_VALID_OVERRIDE)
+        assert result.safe_to_execute is False
+
+    def test_surface_completeness_flag_present(self):
+        """DependencySurface must always declare a completeness flag."""
+        surface = map_dependency_surface(_APPROVED_CONTRACT)
+        assert hasattr(surface, "complete")
+        assert isinstance(surface.complete, bool)
+
+    def test_partially_resolved_surface_flag(self):
+        """DependencySurface exposes partially_resolved and unresolved_files fields."""
+        surface = map_dependency_surface(_APPROVED_CONTRACT)
+        assert hasattr(surface, "partially_resolved")
+        assert hasattr(surface, "unresolved_files")
+        assert isinstance(surface.partially_resolved, bool)
+        assert isinstance(surface.unresolved_files, list)
+
+    def test_partially_resolved_surface_yields_at_least_medium_risk(self):
+        """A partially resolved surface must result in risk ≥ medium (not low)."""
+        # Use a file that has no known dependency record to trigger partial resolution.
+        contract = dict(_APPROVED_CONTRACT,
+                        target_files=["backend/app/unknown_module_xyz.py"])
+        surface = map_dependency_surface(contract)
+        if not surface.partially_resolved:
+            pytest.skip("surface fully resolved for this file — cannot test partial")
+        impact = analyze_impact(contract, surface)
+        failures = predict_failures(contract, impact, surface)
+        score = score_risk(surface, impact, failures)
+        assert score.level in (RISK_MEDIUM, RISK_HIGH), (
+            f"Expected medium or high for partially_resolved surface, got {score.level!r}"
+        )
+
+    def test_incomplete_surface_yields_high_risk(self):
+        """An incomplete dependency surface must score RISK_HIGH."""
+        incomplete_surface = DependencySurface(
+            complete=False,
+            incomplete_reason="dependency_graph_unavailable:target_files_empty",
+        )
+        impact = ImpactAnalysis(
+            structural_impact=[],
+            behavioral_impact=[],
+            data_flow_impact=[],
+        )
+        failures = FailurePrediction(predicted_failures=[], failure_types=[])
+        score = score_risk(incomplete_surface, impact, failures)
+        assert score.level == RISK_HIGH
+
+
+# ---------------------------------------------------------------------------
+# Reasoning summary validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestReasoningSummaryValidation:
+    """reasoning_summary must include dependency impact, risk rationale, failure sections."""
+
+    def test_reasoning_summary_includes_dependency_impact_section(self):
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert "DEPENDENCY SURFACE" in result.reasoning_summary, (
+            "reasoning_summary must include a DEPENDENCY SURFACE section"
+        )
+
+    def test_reasoning_summary_includes_risk_rationale(self):
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert "RISK LEVEL" in result.reasoning_summary, (
+            "reasoning_summary must include a RISK LEVEL (risk rationale) section"
+        )
+
+    def test_reasoning_summary_includes_failure_justification(self):
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert "PREDICTED FAILURES" in result.reasoning_summary, (
+            "reasoning_summary must include a PREDICTED FAILURES section"
+        )
+
+    def test_reasoning_summary_names_impacted_files(self):
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert "backend/app/example.py" in result.reasoning_summary, (
+            "reasoning_summary must explicitly name impacted files"
+        )
+
+    def test_reasoning_summary_states_gate_decision(self):
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert ("BLOCKED" in result.reasoning_summary
+                or "SAFE_TO_PROCEED" in result.reasoning_summary), (
+            "reasoning_summary must state BLOCKED or SAFE_TO_PROCEED"
+        )
+
+    def test_reasoning_summary_blocked_contains_block_reason(self):
+        """Blocked summary must explain why."""
+        gov = _approved_governance(_MULTI_MODULE_CONTRACT)
+        result = simulation_gateway(governance_result=gov)
+        assert result.safe_to_execute is False
+        assert "BLOCKED" in result.reasoning_summary
+
+    def test_reasoning_summary_includes_risk_criteria(self):
+        """reasoning_summary must mention the criteria that drove the risk level."""
+        gov = _approved_governance(_MULTI_MODULE_CONTRACT)
+        result = simulation_gateway(governance_result=gov)
+        # At least the risk level name must appear.
+        assert result.risk_level.upper() in result.reasoning_summary.upper(), (
+            "reasoning_summary must reference the risk level in its rationale"
+        )
+
+    def test_reasoning_summary_impact_section_present(self):
+        """reasoning_summary must include an impact analysis section."""
+        result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
+        assert "IMPACT" in result.reasoning_summary.upper(), (
+            "reasoning_summary must include an IMPACT section"
+        )
