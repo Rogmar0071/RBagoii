@@ -4,12 +4,12 @@ backend.app.mutation_bridge.audit
 Mandatory audit persistence for MUTATION_BRIDGE_EXECUTION_V1.
 
 Enforcement — ``block_if:audit_write_failure``:
-  - If the database IS configured: the write MUST succeed.  On any failure a
-    ``RuntimeError("BRIDGE_AUDIT_LOG_FAILURE: ...")`` is raised, which
-    propagates through the gateway and blocks the result from being returned.
+  - The database MUST be configured and the write MUST succeed.  On any
+    failure (including DATABASE_URL not configured) a
+    ``RuntimeError("BRIDGE_AUDIT_LOG_FAILURE: ...")`` is raised.
     NO try/except suppression is permitted.
-  - If the database is NOT configured: a warning is logged and the function
-    returns without blocking (deployment/configuration concern).
+
+Contract invariant: ``audit_is_mandatory`` — no execution without audit.
 
 Audit log fields (mandatory per contract):
   - governance_result
@@ -22,11 +22,7 @@ Audit log fields (mandatory per contract):
 
 from __future__ import annotations
 
-import logging
-
 from .contract import BridgeAuditRecord
-
-logger = logging.getLogger(__name__)
 
 
 def persist_bridge_audit_record(record: BridgeAuditRecord) -> None:
@@ -35,21 +31,19 @@ def persist_bridge_audit_record(record: BridgeAuditRecord) -> None:
     Raises
     ------
     RuntimeError
-        If the database is configured and the write fails
-        (``block_if:audit_write_failure`` invariant).
+        If the database is not configured or the write fails
+        (``block_if:audit_write_failure`` invariant — audit is mandatory).
         This exception is NEVER suppressed — it must propagate.
     """
     try:
         from backend.app.database import get_engine
 
         engine = get_engine()
-    except RuntimeError:
-        logger.warning(
-            "mutation_bridge: database not configured; "
-            "audit record %s not persisted",
-            record.audit_id,
-        )
-        return
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"AUDIT_SYSTEM_UNAVAILABLE: DATABASE_URL is not configured — "
+            f"audit cannot be persisted (record {record.audit_id}): {exc}"
+        ) from exc
 
     # DO NOT wrap the write in try/except — audit failure must propagate
     # (block_if:audit_write_failure invariant).

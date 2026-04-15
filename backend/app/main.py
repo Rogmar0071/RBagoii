@@ -191,10 +191,20 @@ def root() -> dict:
 
 
 def _require_auth(authorization: str | None = Header(default=None)) -> None:
-    """Validate the Authorization: Bearer <token> header."""
+    """Validate the Authorization: Bearer <token> header.
+
+    Raises
+    ------
+    RuntimeError
+        If API_KEY is not configured (``no_open_mode`` invariant).
+    HTTPException 401 / 403
+        For missing or invalid tokens.
+    """
     if not API_KEY:
-        # No key configured — allow all requests (dev mode).
-        return
+        raise RuntimeError(
+            "AUTHENTICATION_NOT_CONFIGURED: API_KEY environment variable is not set. "
+            "Set API_KEY to a strong secret before deployment."
+        )
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
