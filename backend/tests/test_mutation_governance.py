@@ -452,6 +452,13 @@ class TestAuditPersistence:
         import backend.app.database as db_module
         original = db_module.get_engine
 
+        # Re-enable the logger in case Alembic's logging.config.fileConfig has
+        # set its .disabled flag to True (fileConfig disable_existing_loggers
+        # defaults to True, which affects all non-listed loggers including ours).
+        audit_logger = logging.getLogger("backend.app.mutation_governance.audit")
+        was_disabled = audit_logger.disabled
+        audit_logger.disabled = False
+
         def _raise():
             raise RuntimeError("not configured")
 
@@ -464,6 +471,24 @@ class TestAuditPersistence:
             assert any("not persisted" in msg for msg in caplog.messages)
         finally:
             db_module.get_engine = original
+            audit_logger.disabled = was_disabled
+
+    def test_governance_audit_failure_propagates_through_gateway(self):
+        """Audit write failure must propagate through mutation_governance_gateway.
+
+        Block condition: block_if_log_not_written.  The RuntimeError from the
+        audit layer must NOT be suppressed by the gateway — it must propagate to
+        the caller, effectively blocking the result from being returned.
+        """
+        with patch(
+            "backend.app.mutation_governance.engine.persist_mutation_audit_record",
+            side_effect=RuntimeError("AUDIT_LOG_FAILURE: db unreachable"),
+        ):
+            with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
+                mutation_governance_gateway(
+                    user_intent="Add input validation",
+                    ai_call=_make_ai_call(_VALID_OUTPUT),
+                )
 
 
 # ===========================================================================
