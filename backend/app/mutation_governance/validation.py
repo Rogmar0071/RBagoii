@@ -61,7 +61,7 @@ def stage_1_structural_validation(
     corrections: list[str] = []
 
     # Scalar string fields must be non-empty.
-    string_fields: list[tuple[str, Any]] = [
+    string_fields: list[tuple[str, str]] = [
         ("operation_type", contract.operation_type),
         ("proposed_changes", contract.proposed_changes),
     ]
@@ -71,7 +71,7 @@ def stage_1_structural_validation(
             corrections.append(f"Field '{name}' must be present and non-empty")
 
     # List fields must be non-empty lists.
-    list_fields: list[tuple[str, Any]] = [
+    list_fields: list[tuple[str, list]] = [
         ("target_files", contract.target_files),
         ("assumptions", contract.assumptions),
         ("alternatives", contract.alternatives),
