@@ -24,7 +24,7 @@ Input enforcement:
   - governance_result.status MUST be "approved"
   - governance_result.mutation_proposal MUST be a non-empty dict
   - governance_result.contract_id MUST be present
-  - Rejected contracts receive risk_level=RISK_INTAKE_BLOCKED (not "unknown")
+  - Rejected contracts receive risk_level=RISK_HIGH (conservative default for unverifiable contracts)
 
 Execution boundary (enforced constants - never relaxed):
   - no_file_write
@@ -44,7 +44,7 @@ from typing import Any
 from .audit import persist_simulation_audit_record
 from .contract import (
     RISK_HIGH,
-    RISK_INTAKE_BLOCKED,
+    RISK_HIGH,
     SimulationAuditRecord,
     SimulationOverride,
     SimulationResult,
@@ -81,6 +81,65 @@ _REQUIRED_PROPOSAL_FIELDS: tuple[str, ...] = (
     "proposed_changes",
 )
 
+# Structural signature that only a genuine governance result carries.
+_EXPECTED_GOVERNANCE_CONTRACT = "MUTATION_GOVERNANCE_EXECUTION_V1"
+
+
+def _verify_governance_authenticity(
+    governance_result: dict[str, Any],
+) -> str | None:
+    """Verify the result structurally originates from the governance pipeline.
+
+    The simulation layer must not trust arbitrary external payloads that merely
+    set status='approved'.  We check for a set of fields that only the
+    MUTATION_GOVERNANCE_EXECUTION_V1 pipeline stamps onto a result:
+
+      - governance_contract == "MUTATION_GOVERNANCE_EXECUTION_V1"
+      - audit_id is a non-empty string (proves it was audited)
+      - gate_result is a dict with passed=True (proves it cleared the governance gate)
+      - execution_boundary is a dict with the three no-execution keys
+        (proves it was created by the governance engine, not hand-crafted)
+
+    Returns None if authentic, or a rejection reason string.
+    """
+    # 1. governance_contract field must identify the correct pipeline.
+    gc = governance_result.get("governance_contract", "")
+    if gc != _EXPECTED_GOVERNANCE_CONTRACT:
+        return (
+            "block_if:governance_authenticity_failed - "
+            f"governance_contract={gc!r}; expected {_EXPECTED_GOVERNANCE_CONTRACT!r}. "
+            "Input does not originate from the governance pipeline."
+        )
+
+    # 2. audit_id must be present (proves the governance audit ran).
+    audit_id = governance_result.get("audit_id", "")
+    if not isinstance(audit_id, str) or not audit_id.strip():
+        return (
+            "block_if:governance_authenticity_failed - "
+            "audit_id is absent or empty. "
+            "Governance pipeline stamps a UUID audit_id on every result."
+        )
+
+    # 3. gate_result must show passed=True.
+    gate_result = governance_result.get("gate_result")
+    if not isinstance(gate_result, dict) or gate_result.get("passed") is not True:
+        return (
+            "block_if:governance_authenticity_failed - "
+            f"gate_result={gate_result!r}; must be a dict with passed=True. "
+            "Only governance-approved results may enter the simulation pipeline."
+        )
+
+    # 4. execution_boundary dict must be present (governance engine stamps this).
+    eb = governance_result.get("execution_boundary")
+    if not isinstance(eb, dict):
+        return (
+            "block_if:governance_authenticity_failed - "
+            "execution_boundary dict is absent. "
+            "Governance pipeline always stamps execution_boundary."
+        )
+
+    return None
+
 
 def _validate_governance_result(
     governance_result: dict[str, Any],
@@ -91,11 +150,17 @@ def _validate_governance_result(
     validation failure (used as blocked_reason).
 
     Checks (in order):
-      1. All required top-level fields are present.
-      2. status == "approved" (rejects blocked, pending, or unknown status).
-      3. mutation_proposal is a non-empty dict.
-      4. mutation_proposal contains the required proposal fields.
+      1. Governance authenticity: structural signature matches governance pipeline.
+      2. All required top-level fields are present.
+      3. status == "approved" (rejects blocked, pending, or unknown status).
+      4. mutation_proposal is a non-empty dict.
+      5. mutation_proposal contains the required proposal fields.
     """
+    # Check authenticity before anything else — do not process untrusted payloads.
+    auth_error = _verify_governance_authenticity(governance_result)
+    if auth_error:
+        return auth_error
+
     for field_name in _REQUIRED_GOVERNANCE_FIELDS:
         if field_name not in governance_result:
             return (
@@ -145,7 +210,7 @@ def simulation_gateway(
       4. failure_prediction                  - possible failure modes.
       5. risk_scoring                        - deterministic low/medium/high level.
          risk_level is ALWAYS assigned; intake-blocked contracts receive
-         RISK_INTAKE_BLOCKED, not "unknown".
+         RISK_HIGH, not "unknown".
       6. simulation_decision_gate            - HARD BLOCK if any rule fires.
          safe_to_execute=False is absolute; the engine never overrides the gate.
       7. audit_log                           - mandatory write; audit exceptions
@@ -316,12 +381,12 @@ def _build_intake_blocked_result(
 ) -> SimulationResult:
     """Populate *result* as an intake-blocked simulation and persist audit.
 
-    Uses RISK_INTAKE_BLOCKED (not "unknown") so callers always receive a
+    Uses RISK_HIGH (conservative for unverifiable contracts).
     meaningful risk_level value (governance invariant: all_mutations_must_be_scored).
     """
     result.safe_to_execute = False
     result.blocked_reason = blocked_reason
-    result.risk_level = RISK_INTAKE_BLOCKED
+    result.risk_level = RISK_HIGH
     result.reasoning_summary = (
         "BLOCKED at intake validation.\n"
         f"Reason: {blocked_reason}\n"

@@ -203,6 +203,8 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
     all_files: set[str] = set()
     all_modules: set[str] = set()
     dependency_links: list[dict[str, str]] = []
+    # Track files whose dependency mapping had no known records.
+    unresolved_files: list[str] = []
 
     seen: set[str] = set(target_files)
     all_files.update(target_files)
@@ -214,6 +216,13 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
 
         direct_deps = _direct_dependencies(target)
         new_direct: list[str] = []
+
+        # If the file has no known deps in the table AND it's a Python source
+        # file (where we would expect imports), mark it as unresolved so the
+        # risk scorer can treat it conservatively.
+        norm = target.replace("\\", "/").lstrip("/")
+        if not direct_deps and norm.endswith(".py"):
+            unresolved_files.append(target)
 
         for dep in direct_deps:
             dep_module = _infer_module(dep)
@@ -240,9 +249,12 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
                     seen.add(transitive)
                     all_files.add(transitive)
 
+    partially_resolved = bool(unresolved_files)
     return DependencySurface(
         impacted_files=sorted(all_files),
         impacted_modules=sorted(all_modules),
         dependency_links=dependency_links,
         complete=True,
+        partially_resolved=partially_resolved,
+        unresolved_files=unresolved_files,
     )

@@ -5,8 +5,16 @@ Deterministic risk scorer for MUTATION_SIMULATION_EXECUTION_V1.
 
 Risk levels:
   low    — isolated_change, no_dependency_impact
-  medium — limited_dependency_impact, reversible_changes
-  high   — cross_module_impact, structural_changes, unknown_dependencies
+  medium — limited_dependency_impact, reversible_changes,
+           or partially_resolved surface (unknown deps cannot be assumed safe)
+  high   — cross_module_impact, structural_changes, unknown_dependencies,
+           incomplete surface
+
+Completeness contract enforcement:
+  - surface.complete=False   → always HIGH (unknown_dependencies:incomplete_surface)
+  - surface.partially_resolved=True → at least MEDIUM (unresolved_deps_present)
+    A partially-resolved surface means some Python source files had no dependency
+    records; the scorer must not classify them as isolated/low-risk.
 """
 
 from __future__ import annotations
@@ -40,15 +48,19 @@ def score_risk(
     The first matching level wins.
 
     High criteria (any one sufficient):
-      - cross_module_impact: impacted_modules >= _HIGH_MODULE_THRESHOLD
-      - structural_changes: delete_file operation or schema_break_risk in structural_impact
-      - unknown_dependencies: surface is incomplete
+      - unknown_dependencies:incomplete_surface   (complete=False)
+      - cross_module_impact                       (modules >= threshold)
+      - structural_changes                        (delete/schema/cross-module)
+      - high_severity_predicted_failure
+      - cross_module_impact:dep_links             (links >= threshold)
 
     Medium criteria (any one sufficient, no high criterion matched):
-      - limited_dependency_impact: 1 < impacted_modules < _HIGH_MODULE_THRESHOLD
-      - reversible_changes: update_file on ≤ 2 files, no high-severity predicted failures
+      - unresolved_deps_present                   (partially_resolved=True)
+      - limited_dependency_impact
+      - dependency_links_present
+      - medium_severity_predicted_failure
 
-    Low (default): no dependency impact, isolated change.
+    Low (default): complete surface, no unresolved deps, no dependency impact.
     """
     criteria: list[str] = []
 
@@ -77,9 +89,7 @@ def score_risk(
     ):
         high_triggers.append("structural_changes:high_impact_structural_item")
 
-    if any(
-        f.severity == "high" for f in failures.predicted_failures
-    ):
+    if any(f.severity == "high" for f in failures.predicted_failures):
         high_triggers.append("high_severity_predicted_failure")
 
     if len(surface.dependency_links) >= _HIGH_DEP_LINK_THRESHOLD:
@@ -95,6 +105,14 @@ def score_risk(
     # Medium criteria
     # -----------------------------------------------------------------------
     medium_triggers: list[str] = []
+
+    # Partially-resolved surface: some files had no dependency records.
+    # Cannot assume isolated — must treat as at least medium risk.
+    if surface.partially_resolved:
+        medium_triggers.append(
+            f"unresolved_deps_present:{len(surface.unresolved_files)}_file(s)"
+            f"_with_no_known_dependency_record"
+        )
 
     if len(surface.impacted_modules) > 1:
         medium_triggers.append(
@@ -114,7 +132,7 @@ def score_risk(
         return RiskScore(level=RISK_MEDIUM, criteria_matched=criteria)
 
     # -----------------------------------------------------------------------
-    # Low (default)
+    # Low (default) — complete surface, fully resolved, no dependency impact.
     # -----------------------------------------------------------------------
     criteria.append("isolated_change:no_dependency_impact")
     return RiskScore(level=RISK_LOW, criteria_matched=criteria)

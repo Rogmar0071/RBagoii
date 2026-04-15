@@ -23,23 +23,26 @@ RISK_LOW = "low"
 RISK_MEDIUM = "medium"
 RISK_HIGH = "high"
 
-# Sentinel used when a contract is rejected at the intake gate before scoring
-# can run.  safe_to_execute will always be False when this is set.
-RISK_INTAKE_BLOCKED = "intake_blocked"
-
 _VALID_RISK_LEVELS: frozenset[str] = frozenset({RISK_LOW, RISK_MEDIUM, RISK_HIGH})
 
 # Minimum meaningful length for override justification strings.
 OVERRIDE_MIN_JUSTIFICATION_LENGTH = 10
 
 # ---------------------------------------------------------------------------
-# Failure types
+# Failure types — all four categories are evaluated for every simulation.
 # ---------------------------------------------------------------------------
 
 FAILURE_BUILD = "build_failure"
 FAILURE_RUNTIME = "runtime_failure"
 FAILURE_DEPENDENCY_BREAK = "dependency_break"
 FAILURE_CONTRACT_VIOLATION = "contract_violation"
+
+ALL_FAILURE_CATEGORIES: tuple[str, ...] = (
+    FAILURE_BUILD,
+    FAILURE_RUNTIME,
+    FAILURE_DEPENDENCY_BREAK,
+    FAILURE_CONTRACT_VIOLATION,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -52,8 +55,14 @@ class DependencySurface:
     """Output of the dependency surface mapping step.
 
     Identifies all components that a proposed mutation touches.
-    ``complete`` is False when mapping could not fully resolve dependencies
-    (triggers a simulation block).
+
+    Completeness contract:
+      ``complete=False``        — mapping failed entirely (triggers hard block).
+      ``partially_resolved=True`` — mapping succeeded but some target files have
+                                    no known dependency records.  The simulation
+                                    continues but risk scoring treats unresolved
+                                    files as a medium-risk factor (unknown deps
+                                    cannot be assumed safe).
     """
 
     impacted_files: list[str] = field(default_factory=list)
@@ -61,6 +70,9 @@ class DependencySurface:
     dependency_links: list[dict[str, str]] = field(default_factory=list)
     complete: bool = True
     incomplete_reason: str | None = None
+    # Partial resolution: mapping completed but some files had no known deps.
+    partially_resolved: bool = False
+    unresolved_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +81,8 @@ class DependencySurface:
             "dependency_links": self.dependency_links,
             "complete": self.complete,
             "incomplete_reason": self.incomplete_reason,
+            "partially_resolved": self.partially_resolved,
+            "unresolved_files": self.unresolved_files,
         }
 
 

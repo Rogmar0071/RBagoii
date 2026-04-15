@@ -22,7 +22,6 @@ from .contract import (
     FAILURE_RUNTIME,
     OVERRIDE_MIN_JUSTIFICATION_LENGTH,
     RISK_HIGH,
-    RISK_INTAKE_BLOCKED,
     RISK_LOW,
     RISK_MEDIUM,
     DependencySurface,
@@ -49,7 +48,6 @@ __all__ = [
     "FAILURE_RUNTIME",
     "OVERRIDE_MIN_JUSTIFICATION_LENGTH",
     "RISK_HIGH",
-    "RISK_INTAKE_BLOCKED",
     "RISK_LOW",
     "RISK_MEDIUM",
     # Data types
