@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mutation_simulation")
 
+from backend.app.main import app
 from backend.app.mutation_simulation import (
     FAILURE_BUILD,
     FAILURE_CONTRACT_VIOLATION,
@@ -55,8 +56,6 @@ from backend.app.mutation_simulation import (
     simulation_decision_gate,
     simulation_gateway,
 )
-from backend.app.mutation_simulation.gate import SimulationGateResult
-from backend.app.main import app
 
 TOKEN = "test-simulation-key"
 
@@ -733,7 +732,7 @@ class TestSimulationGateway:
     def test_audit_failure_raises_runtime_error(self):
         """Audit failure must propagate (block_if_log_not_written)."""
         from unittest.mock import patch as _patch
-        from backend.app.mutation_simulation.audit import persist_simulation_audit_record
+
 
         def _failing_audit(record):
             raise RuntimeError("SIMULATION_AUDIT_LOG_FAILURE: test injection")
