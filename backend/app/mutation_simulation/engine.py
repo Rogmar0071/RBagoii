@@ -44,7 +44,6 @@ from typing import Any
 from .audit import persist_simulation_audit_record
 from .contract import (
     RISK_HIGH,
-    RISK_HIGH,
     SimulationAuditRecord,
     SimulationOverride,
     SimulationResult,
