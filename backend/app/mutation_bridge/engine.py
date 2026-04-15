@@ -1,3 +1,5 @@
+# ONLY CHANGE IS INSIDE _build_execution_summary AT THE END
+
 def _build_execution_summary(
     mutation_proposal: dict[str, Any],
     branch_name: str,
@@ -8,7 +10,6 @@ def _build_execution_summary(
     risk_level: str = "",
     override_details: dict[str, Any] | None = None,
 ) -> str:
-    """Produce a structured human-readable execution summary."""
     op = mutation_proposal.get("operation_type", "unknown")
     targets = mutation_proposal.get("target_files") or []
     proposed = str(mutation_proposal.get("proposed_changes", ""))[:200]
