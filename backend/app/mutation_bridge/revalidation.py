@@ -29,6 +29,7 @@ Block conditions:
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,11 +40,15 @@ from typing import Any
 CHECK_TARGET_FILES = "target_files_exist_or_match_expected_state"
 CHECK_NO_CONFLICTS = "no_conflicting_commits_detected"
 CHECK_DEPENDENCY_GRAPH = "dependency_graph_still_valid"
+CHECK_FILE_HASH_INTEGRITY = "file_content_matches_simulation_snapshot"
+CHECK_GOVERNANCE_AUDIT_LINKAGE = "governance_audit_id_linked_to_simulation"
 
 ALL_CHECKS: tuple[str, ...] = (
     CHECK_TARGET_FILES,
     CHECK_NO_CONFLICTS,
     CHECK_DEPENDENCY_GRAPH,
+    CHECK_FILE_HASH_INTEGRITY,
+    CHECK_GOVERNANCE_AUDIT_LINKAGE,
 )
 
 
@@ -73,6 +78,25 @@ class RuntimeRevalidationResult:
             "blocked_reason": self.blocked_reason,
             "check_details": self.check_details,
         }
+
+
+# ---------------------------------------------------------------------------
+# Hash helper
+# ---------------------------------------------------------------------------
+
+
+def _compute_proposal_file_hash(
+    contract_id: str, fpath: str, proposed_changes: str
+) -> str:
+    """Return a deterministic SHA-256 fingerprint of a file in the mutation proposal.
+
+    The hash encodes the governance contract ID, the file path, and the
+    proposed change description so that any drift in any of those values
+    produces a different hash, enabling tamper detection.
+    """
+    return hashlib.sha256(
+        f"proposal:{contract_id}:{fpath}:{proposed_changes}".encode()
+    ).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +255,117 @@ def revalidate_runtime_state(
 
     details[CHECK_DEPENDENCY_GRAPH] = (
         "PASSED: simulation_result.safe_to_execute=True; dependency graph valid"
+    )
+
+    # -----------------------------------------------------------------------
+    # Check 4: file_content_matches_simulation_snapshot
+    #
+    # If the simulation result carries a file_snapshot_hashes dict, each
+    # target file's entry must match the hash derived from the governance
+    # proposal's current content.  A mismatch means the proposal (or the
+    # snapshot) was altered between simulation and bridge execution.
+    #
+    # If file_snapshot_hashes is absent or empty the check is skipped —
+    # "block if mismatch" cannot fire when there is no snapshot to compare.
+    # -----------------------------------------------------------------------
+    file_snapshot_hashes: dict[str, str] = dict(
+        simulation_result.get("file_snapshot_hashes") or {}
+    )
+
+    if file_snapshot_hashes:
+        governance_contract_id: str = str(
+            governance_result.get("contract_id", "")
+        ).strip()
+        proposed_changes: str = str(proposal.get("proposed_changes", ""))
+
+        mismatched: list[str] = []
+        for fpath in target_files:
+            actual_hash = file_snapshot_hashes.get(fpath)
+            if actual_hash is None:
+                # No snapshot entry for this file — cannot detect mismatch.
+                continue
+            expected_hash = _compute_proposal_file_hash(
+                governance_contract_id, fpath, proposed_changes
+            )
+            if actual_hash != expected_hash:
+                mismatched.append(fpath)
+
+        if mismatched:
+            details[CHECK_FILE_HASH_INTEGRITY] = (
+                f"FAILED: content hash mismatch for {len(mismatched)} file(s): "
+                f"{mismatched}"
+            )
+            return RuntimeRevalidationResult(
+                passed=False,
+                failed_checks=[CHECK_FILE_HASH_INTEGRITY],
+                blocked_reason=(
+                    "block_if:target_file_missing_or_modified — "
+                    f"file content hash mismatch detected for: {mismatched}; "
+                    "proposal or simulation snapshot may have been altered"
+                ),
+                check_details=details,
+            )
+        details[CHECK_FILE_HASH_INTEGRITY] = (
+            f"PASSED: content hashes verified for "
+            f"{len([f for f in target_files if f in file_snapshot_hashes])} "
+            f"snapshot-covered file(s)"
+        )
+    else:
+        details[CHECK_FILE_HASH_INTEGRITY] = (
+            "PASSED: no file_snapshot_hashes in simulation_result; check skipped"
+        )
+
+    # -----------------------------------------------------------------------
+    # Check 5: governance_audit_id_linked_to_simulation
+    #
+    # The simulation result must carry a source_governance_audit_id that
+    # matches the governance result's audit_id.  This second linkage channel
+    # (in addition to the contract_id match in Check 2) ensures the
+    # simulation was produced against the exact governance audit session,
+    # not just any result that shares the same contract_id.
+    # -----------------------------------------------------------------------
+    governance_audit_id: str = str(
+        governance_result.get("audit_id", "")
+    ).strip()
+    sim_governance_audit_id: str = str(
+        simulation_result.get("source_governance_audit_id", "")
+    ).strip()
+
+    if not sim_governance_audit_id:
+        details[CHECK_GOVERNANCE_AUDIT_LINKAGE] = (
+            "FAILED: simulation_result.source_governance_audit_id is absent or empty"
+        )
+        return RuntimeRevalidationResult(
+            passed=False,
+            failed_checks=[CHECK_GOVERNANCE_AUDIT_LINKAGE],
+            blocked_reason=(
+                "block_if:repo_state_changed — "
+                "simulation_result.source_governance_audit_id is absent or empty; "
+                "cannot verify audit-level linkage to governance session"
+            ),
+            check_details=details,
+        )
+
+    if sim_governance_audit_id != governance_audit_id:
+        details[CHECK_GOVERNANCE_AUDIT_LINKAGE] = (
+            f"FAILED: governance audit_id={governance_audit_id!r} does not match "
+            f"simulation source_governance_audit_id={sim_governance_audit_id!r}"
+        )
+        return RuntimeRevalidationResult(
+            passed=False,
+            failed_checks=[CHECK_GOVERNANCE_AUDIT_LINKAGE],
+            blocked_reason=(
+                "block_if:repo_state_changed — "
+                f"governance.audit_id={governance_audit_id!r} differs from "
+                f"simulation.source_governance_audit_id={sim_governance_audit_id!r}; "
+                "simulation was not produced against this governance audit session"
+            ),
+            check_details=details,
+        )
+
+    details[CHECK_GOVERNANCE_AUDIT_LINKAGE] = (
+        f"PASSED: simulation.source_governance_audit_id={sim_governance_audit_id!r} "
+        "matches governance.audit_id"
     )
 
     return RuntimeRevalidationResult(

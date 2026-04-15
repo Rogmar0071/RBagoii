@@ -32,6 +32,8 @@ from .engine import bridge_gateway
 from .gate import BridgeGateResult, bridge_execution_gate
 from .revalidation import (
     CHECK_DEPENDENCY_GRAPH,
+    CHECK_FILE_HASH_INTEGRITY,
+    CHECK_GOVERNANCE_AUDIT_LINKAGE,
     CHECK_NO_CONFLICTS,
     CHECK_TARGET_FILES,
     RuntimeRevalidationResult,
@@ -47,6 +49,8 @@ __all__ = [
     "BUILD_STATUS_PASSED",
     "BUILD_STATUS_SKIPPED",
     "CHECK_DEPENDENCY_GRAPH",
+    "CHECK_FILE_HASH_INTEGRITY",
+    "CHECK_GOVERNANCE_AUDIT_LINKAGE",
     "CHECK_NO_CONFLICTS",
     "CHECK_TARGET_FILES",
     # Data types

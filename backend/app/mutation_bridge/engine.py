@@ -90,6 +90,7 @@ _REQUIRED_SIMULATION_FIELDS: tuple[str, ...] = (
     "simulation_id",
     "governance_contract",
     "source_contract_id",
+    "source_governance_audit_id",
     "safe_to_execute",
     "risk_level",
     "audit_id",
@@ -374,10 +375,17 @@ def _validate_artifacts(
     diff_patch: str,
     modified_files_list: list[str],
     execution_summary: str,
+    target_files: list[str],
 ) -> str | None:
-    """Verify all required artifacts are non-empty.
+    """Verify all required artifacts are non-empty and consistent with the contract.
 
-    Returns None if all artifacts are present, or a blocked_reason string.
+    Checks:
+      1. Each artifact field is non-empty.
+      2. modified_files_list must match mutation_contract.target_files exactly
+         (order-independent set equality).
+      3. diff_patch must contain a reference to every target file path.
+
+    Returns None if all checks pass, or a blocked_reason string.
     """
     if not branch_name or not branch_name.strip():
         return "block_if:artifact_missing — branch_name is empty"
@@ -387,6 +395,23 @@ def _validate_artifacts(
         return "block_if:artifact_missing — modified_files_list is empty"
     if not execution_summary or not execution_summary.strip():
         return "block_if:artifact_missing — execution_summary is empty"
+
+    # modified_files_list must exactly match mutation_contract.target_files.
+    if sorted(modified_files_list) != sorted(target_files):
+        return (
+            "block_if:artifact_inconsistency — "
+            f"modified_files_list {sorted(modified_files_list)} does not match "
+            f"mutation_contract.target_files {sorted(target_files)}"
+        )
+
+    # diff_patch must contain a reference to every target file path.
+    for fpath in target_files:
+        if fpath not in diff_patch:
+            return (
+                f"block_if:artifact_inconsistency — "
+                f"diff_patch does not reference target file {fpath!r}"
+            )
+
     return None
 
 
@@ -402,8 +427,17 @@ def _build_execution_summary(
     gate: BridgeGateResult,
     revalidation: RuntimeRevalidationResult,
     override_used: bool,
+    risk_level: str = "",
+    override_details: dict[str, Any] | None = None,
 ) -> str:
-    """Produce a structured human-readable execution summary."""
+    """Produce a structured human-readable execution summary.
+
+    Mandatory fields per contract:
+      - mutation scope (operation + target files)
+      - risk level
+      - decision (EXECUTED / BLOCKED)
+      - override details (justification + accepted_risks when applied)
+    """
     op = mutation_proposal.get("operation_type", "unknown")
     targets = mutation_proposal.get("target_files") or []
     proposed = str(mutation_proposal.get("proposed_changes", ""))[:200]
@@ -413,8 +447,12 @@ def _build_execution_summary(
     lines: list[str] = [
         f"=== MUTATION BRIDGE RESULT: {decision_label} ===",
         "",
-        f"OPERATION: {op} on {len(targets)} target file(s): {', '.join(targets[:5])}",
-        f"PROPOSED CHANGE: {proposed}",
+        "MUTATION SCOPE:",
+        f"  operation: {op}",
+        f"  target_files ({len(targets)}): {', '.join(targets[:5])}",
+        f"  proposed_changes: {proposed}",
+        "",
+        f"RISK LEVEL: {risk_level.upper() if risk_level else 'UNKNOWN'}",
         "",
         f"ISOLATED BRANCH: {branch_name}",
         f"BUILD STATUS: {build_status.upper()}",
@@ -430,10 +468,21 @@ def _build_execution_summary(
     ]
     if gate.blocked_reason:
         lines.append(f"  Blocked because: {gate.blocked_reason}")
-    if override_used:
-        lines.append("  Override was accepted and applied.")
     if gate.gate_notes:
         lines.append(f"  Gate notes: {'; '.join(gate.gate_notes[:6])}")
+
+    lines += [
+        "",
+        "OVERRIDE:",
+        f"  applied: {override_used}",
+    ]
+    if override_used and override_details:
+        justification = override_details.get("justification", "")
+        accepted_risks = override_details.get("accepted_risks", [])
+        lines.append(f"  justification: {justification}")
+        lines.append(
+            f"  accepted_risks: {', '.join(str(r) for r in accepted_risks)}"
+        )
 
     lines += [
         "",
@@ -618,6 +667,10 @@ def bridge_gateway(
     # ------------------------------------------------------------------
     # Step 7: artifact_generation
     # ------------------------------------------------------------------
+    override_details_dict: dict[str, Any] | None = None
+    if gate.override_used and bridge_override:
+        override_details_dict = bridge_override.to_dict()
+
     execution_summary = _build_execution_summary(
         mutation_proposal=mutation_proposal,
         branch_name=branch_name,
@@ -625,13 +678,17 @@ def bridge_gateway(
         gate=gate,
         revalidation=revalidation,
         override_used=gate.override_used,
+        risk_level=str(simulation_result.get("risk_level", "")),
+        override_details=override_details_dict,
     )
 
+    target_files: list[str] = list(mutation_proposal.get("target_files") or [])
     artifact_error = _validate_artifacts(
         branch_name=branch_name,
         diff_patch=diff_patch,
         modified_files_list=modified_files_list,
         execution_summary=execution_summary,
+        target_files=target_files,
     )
     if artifact_error:
         return _build_blocked_result(
@@ -668,6 +725,7 @@ def bridge_gateway(
     audit.status = result.status
     audit.blocked_reason = result.blocked_reason
     audit.override_used = result.override_used
+    audit.override_details = override_details_dict
 
     # DO NOT wrap in try/except — audit failure must propagate
     # (block_if:audit_write_failure invariant).

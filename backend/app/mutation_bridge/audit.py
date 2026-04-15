@@ -73,6 +73,7 @@ def persist_bridge_audit_record(record: BridgeAuditRecord) -> None:
             "status": record.status,
             "blocked_reason": record.blocked_reason,
             "override_used": record.override_used,
+            "override_details": record.override_details,
             "created_at": record.created_at,
         },
     )

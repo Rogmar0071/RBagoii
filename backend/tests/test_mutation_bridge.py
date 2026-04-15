@@ -42,6 +42,8 @@ from backend.app.mutation_bridge import (
     BUILD_STATUS_FAILED,
     BUILD_STATUS_PASSED,
     CHECK_DEPENDENCY_GRAPH,
+    CHECK_FILE_HASH_INTEGRITY,
+    CHECK_GOVERNANCE_AUDIT_LINKAGE,
     CHECK_NO_CONFLICTS,
     CHECK_TARGET_FILES,
     BridgeExecutionOverride,
@@ -55,6 +57,9 @@ from backend.app.mutation_bridge import (
 from backend.app.mutation_bridge.engine import (
     _verify_governance_authenticity,
     _verify_simulation_integrity,
+)
+from backend.app.mutation_bridge.revalidation import (
+    _compute_proposal_file_hash,
 )
 from backend.app.main import app
 
@@ -111,16 +116,28 @@ def _make_simulation_result(
     *,
     simulation_id: str = _SIMULATION_ID,
     source_contract_id: str = _CONTRACT_ID,
+    source_governance_audit_id: str = _AUDIT_ID_GOV,
     safe_to_execute: bool = True,
     risk_level: str = "low",
     audit_id: str = _AUDIT_ID_SIM,
     impacted_files: list[str] | None = None,
     blocked_reason: str | None = None,
+    file_snapshot_hashes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    # Build matching hashes from the default proposal when not explicitly provided.
+    if file_snapshot_hashes is None:
+        default_files = ["backend/app/example.py"]
+        file_snapshot_hashes = {
+            f: _compute_proposal_file_hash(
+                source_contract_id, f, _APPROVED_PROPOSAL["proposed_changes"]
+            )
+            for f in default_files
+        }
     return {
         "simulation_id": simulation_id,
         "governance_contract": "MUTATION_SIMULATION_EXECUTION_V1",
         "source_contract_id": source_contract_id,
+        "source_governance_audit_id": source_governance_audit_id,
         "impacted_files": impacted_files
         if impacted_files is not None
         else ["backend/app/example.py", "backend/app/models.py"],
@@ -138,6 +155,7 @@ def _make_simulation_result(
         "blocked_reason": blocked_reason,
         "override_used": False,
         "audit_id": audit_id,
+        "file_snapshot_hashes": file_snapshot_hashes,
         "created_at": "2026-01-01T00:00:00+00:00",
         "execution_boundary": {
             "no_file_write": True,
@@ -265,6 +283,8 @@ class TestRevalidateRuntimeState:
         assert CHECK_TARGET_FILES in result.check_details
         assert CHECK_NO_CONFLICTS in result.check_details
         assert CHECK_DEPENDENCY_GRAPH in result.check_details
+        assert CHECK_FILE_HASH_INTEGRITY in result.check_details
+        assert CHECK_GOVERNANCE_AUDIT_LINKAGE in result.check_details
 
     def test_target_file_missing_from_simulation(self):
         gov = _make_governance_result()
@@ -322,12 +342,87 @@ class TestRevalidateRuntimeState:
         result = revalidate_runtime_state(gov, sim)
         assert result.check_details[CHECK_TARGET_FILES].startswith("FAILED:")
 
+    # ------------------------------------------------------------------
+    # Check 4: file_content_matches_simulation_snapshot
+    # ------------------------------------------------------------------
+
+    def test_file_hash_no_snapshot_passes(self):
+        """No snapshot hashes → check skipped, revalidation passes."""
+        gov = _make_governance_result()
+        sim = _make_simulation_result(file_snapshot_hashes={})
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is True
+        assert "skipped" in result.check_details[CHECK_FILE_HASH_INTEGRITY]
+
+    def test_file_hash_matching_snapshot_passes(self):
+        """Snapshot hashes match governance proposal → check passes."""
+        gov = _make_governance_result()
+        # _make_simulation_result() computes matching hashes by default.
+        sim = _make_simulation_result()
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is True
+        assert "PASSED" in result.check_details[CHECK_FILE_HASH_INTEGRITY]
+
+    def test_file_hash_mismatch_blocks(self):
+        """Tampered hash in snapshot → Check 4 fires."""
+        gov = _make_governance_result()
+        sim = _make_simulation_result(
+            file_snapshot_hashes={"backend/app/example.py": "deadbeef" * 8}
+        )
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is False
+        assert CHECK_FILE_HASH_INTEGRITY in result.failed_checks
+        assert "target_file_missing_or_modified" in result.blocked_reason
+
+    def test_file_hash_extra_snapshot_entry_no_block(self):
+        """Snapshot with an entry for a non-target file is ignored."""
+        gov = _make_governance_result()
+        sim = _make_simulation_result()
+        sim["file_snapshot_hashes"]["backend/app/other.py"] = "irrelevant"
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is True
+
+    # ------------------------------------------------------------------
+    # Check 5: governance_audit_id_linked_to_simulation
+    # ------------------------------------------------------------------
+
+    def test_governance_audit_id_linked_correctly_passes(self):
+        gov = _make_governance_result(audit_id=_AUDIT_ID_GOV)
+        sim = _make_simulation_result(source_governance_audit_id=_AUDIT_ID_GOV)
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is True
+        assert "PASSED" in result.check_details[CHECK_GOVERNANCE_AUDIT_LINKAGE]
+
+    def test_governance_audit_id_mismatch_blocks(self):
+        gov = _make_governance_result(audit_id=_AUDIT_ID_GOV)
+        sim = _make_simulation_result(source_governance_audit_id="wrong-audit-id")
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is False
+        assert CHECK_GOVERNANCE_AUDIT_LINKAGE in result.failed_checks
+        assert "repo_state_changed" in result.blocked_reason
+
+    def test_governance_audit_id_empty_in_simulation_blocks(self):
+        gov = _make_governance_result(audit_id=_AUDIT_ID_GOV)
+        sim = _make_simulation_result()
+        sim["source_governance_audit_id"] = ""
+        result = revalidate_runtime_state(gov, sim)
+        assert result.passed is False
+        assert CHECK_GOVERNANCE_AUDIT_LINKAGE in result.failed_checks
+
     def test_check_details_populated_on_all_pass(self):
         gov = _make_governance_result()
         sim = _make_simulation_result()
         result = revalidate_runtime_state(gov, sim)
-        for check in (CHECK_TARGET_FILES, CHECK_NO_CONFLICTS, CHECK_DEPENDENCY_GRAPH):
-            assert "PASSED" in result.check_details[check]
+        for check in (
+            CHECK_TARGET_FILES,
+            CHECK_NO_CONFLICTS,
+            CHECK_DEPENDENCY_GRAPH,
+            CHECK_FILE_HASH_INTEGRITY,
+            CHECK_GOVERNANCE_AUDIT_LINKAGE,
+        ):
+            assert "PASSED" in result.check_details[check], (
+                f"expected PASSED in check_details[{check!r}]"
+            )
 
 
 # ===========================================================================
@@ -809,6 +904,181 @@ class TestBridgeGateway:
         assert result.source_governance_contract_id == _CONTRACT_ID
         assert result.source_simulation_id == _SIMULATION_ID
 
+    # ------------------------------------------------------------------
+    # Governance → Simulation audit_id linkage
+    # ------------------------------------------------------------------
+
+    def test_missing_source_governance_audit_id_in_simulation_blocks(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result()
+        del sim["source_governance_audit_id"]
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert result.status == BRIDGE_STATUS_BLOCKED
+        assert "simulation_not_verified" in result.blocked_reason
+
+    def test_revalidation_audit_id_mismatch_blocks(self, no_audit):
+        gov = _make_governance_result(audit_id=_AUDIT_ID_GOV)
+        sim = _make_simulation_result(source_governance_audit_id="wrong-audit-id")
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert result.status == BRIDGE_STATUS_BLOCKED
+        assert "repo_state_changed" in result.blocked_reason
+
+    def test_file_hash_mismatch_blocks_gateway(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result(
+            file_snapshot_hashes={"backend/app/example.py": "deadbeef" * 8}
+        )
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert result.status == BRIDGE_STATUS_BLOCKED
+        assert "target_file_missing_or_modified" in result.blocked_reason
+
+    # ------------------------------------------------------------------
+    # Artifact consistency enforcement
+    # ------------------------------------------------------------------
+
+    def test_modified_files_list_inconsistency_blocks(self, no_audit):
+        """modified_files_list not matching target_files must block."""
+        from backend.app.mutation_bridge import engine as _engine
+
+        gov = _make_governance_result()
+        sim = _make_simulation_result()
+
+        original = _engine._perform_staged_execution
+
+        def _bad_staged(proposal, bridge_id):
+            branch, diff, files, build, fail_reason, actions = original(
+                proposal, bridge_id
+            )
+            # Return a mismatched files list
+            return branch, diff, ["backend/app/WRONG.py"], build, fail_reason, actions
+
+        with patch.object(_engine, "_perform_staged_execution", side_effect=_bad_staged):
+            result = bridge_gateway(governance_result=gov, simulation_result=sim)
+
+        assert result.status == BRIDGE_STATUS_BLOCKED
+        assert "artifact_inconsistency" in result.blocked_reason
+
+    def test_diff_patch_missing_file_blocks(self, no_audit):
+        """diff_patch not referencing a target file must block."""
+        from backend.app.mutation_bridge import engine as _engine
+
+        gov = _make_governance_result()
+        sim = _make_simulation_result()
+
+        original = _engine._perform_staged_execution
+
+        def _empty_diff_staged(proposal, bridge_id):
+            branch, _, files, build, fail_reason, actions = original(
+                proposal, bridge_id
+            )
+            return branch, "# empty patch", files, build, fail_reason, actions
+
+        with patch.object(
+            _engine, "_perform_staged_execution", side_effect=_empty_diff_staged
+        ):
+            result = bridge_gateway(governance_result=gov, simulation_result=sim)
+
+        assert result.status == BRIDGE_STATUS_BLOCKED
+        assert "artifact_inconsistency" in result.blocked_reason
+
+    # ------------------------------------------------------------------
+    # Override audit — override must appear in audit record and summary
+    # ------------------------------------------------------------------
+
+    def test_override_details_in_audit_record(self):
+        """When override is used, override_details must be stored in audit record."""
+        gov = _make_governance_result()
+        sim = _make_simulation_result(risk_level="high")
+        ov = _make_valid_override()
+
+        captured: list = []
+
+        def _capture_audit(record):
+            captured.append(record)
+
+        with patch(
+            "backend.app.mutation_bridge.engine.persist_bridge_audit_record",
+            side_effect=_capture_audit,
+        ):
+            result = bridge_gateway(
+                governance_result=gov, simulation_result=sim, override=ov
+            )
+
+        assert result.status == BRIDGE_STATUS_EXECUTED
+        assert len(captured) == 1
+        record = captured[0]
+        assert record.override_used is True
+        assert record.override_details is not None
+        assert record.override_details["explicit_approval"] is True
+        assert record.override_details["justification"] == ov["justification"]
+        assert record.override_details["accepted_risks"] == ov["accepted_risks"]
+
+    def test_no_override_details_when_not_used(self):
+        """When no override is used, override_details must be None in audit."""
+        gov = _make_governance_result()
+        sim = _make_simulation_result(risk_level="low")
+
+        captured: list = []
+
+        def _capture_audit(record):
+            captured.append(record)
+
+        with patch(
+            "backend.app.mutation_bridge.engine.persist_bridge_audit_record",
+            side_effect=_capture_audit,
+        ):
+            result = bridge_gateway(governance_result=gov, simulation_result=sim)
+
+        assert result.status == BRIDGE_STATUS_EXECUTED
+        record = captured[0]
+        assert record.override_used is False
+        assert record.override_details is None
+
+    # ------------------------------------------------------------------
+    # Execution summary content — scope, risk, decision, override
+    # ------------------------------------------------------------------
+
+    def test_mutation_scope_in_execution_summary(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result()
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert "MUTATION SCOPE" in result.execution_summary
+        assert "backend/app/example.py" in result.execution_summary
+        assert "update_file" in result.execution_summary
+
+    def test_risk_level_in_execution_summary(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result(risk_level="medium")
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert "RISK LEVEL" in result.execution_summary
+        assert "MEDIUM" in result.execution_summary
+
+    def test_decision_in_execution_summary(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result()
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert "GATE DECISION" in result.execution_summary
+        assert "EXECUTED" in result.execution_summary
+
+    def test_override_details_in_execution_summary(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result(risk_level="high")
+        ov = _make_valid_override()
+        result = bridge_gateway(
+            governance_result=gov, simulation_result=sim, override=ov
+        )
+        assert result.override_used is True
+        assert "OVERRIDE" in result.execution_summary
+        assert "applied: True" in result.execution_summary
+        assert ov["justification"] in result.execution_summary
+        assert ov["accepted_risks"][0] in result.execution_summary
+
+    def test_no_override_section_shows_false(self, no_audit):
+        gov = _make_governance_result()
+        sim = _make_simulation_result(risk_level="low")
+        result = bridge_gateway(governance_result=gov, simulation_result=sim)
+        assert "applied: False" in result.execution_summary
+
 
 # ===========================================================================
 # _verify_governance_authenticity — unit tests
@@ -881,6 +1151,13 @@ class TestVerifySimulationIntegrity:
         sim["audit_id"] = ""
         error = _verify_simulation_integrity(sim)
         assert error is not None
+
+    def test_missing_source_governance_audit_id_returns_error(self):
+        sim = _make_simulation_result()
+        del sim["source_governance_audit_id"]
+        error = _verify_simulation_integrity(sim)
+        assert error is not None
+        assert "simulation_not_verified" in error
 
     def test_all_valid_risk_levels(self):
         for level in ("low", "medium", "high"):

@@ -208,6 +208,7 @@ class BridgeAuditRecord:
     status: str = BRIDGE_STATUS_BLOCKED
     blocked_reason: str | None = None
     override_used: bool = False
+    override_details: dict[str, Any] | None = None
     created_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
