@@ -77,9 +77,9 @@ def _build_ai_call() -> Any:
     api_key = os.environ.get("OPENAI_API_KEY")
 
     if not api_key:
-        # Stub: returns a well-formed hybrid text+JSON that will be blocked by
-        # stage_1 validation (empty target_files), exercising the governance
-        # pipeline even without an AI backend.
+        # Stub: returns the correct hybrid text+JSON format.
+        # target_files is intentionally empty so the proposal is blocked by
+        # stage_1 structural validation, exercising the full governance pipeline.
         def _stub(system_prompt: str) -> str:  # noqa: ARG001
             contract_json = json.dumps(
                 {
@@ -100,11 +100,13 @@ def _build_ai_call() -> Any:
                 indent=2,
             )
             return (
+                "SECTION_INTENT_ANALYSIS:\n"
                 "ASSUMPTIONS: OPENAI_API_KEY is not set on this server\n"
                 "ALTERNATIVES: Configure OPENAI_API_KEY to enable AI mutation proposals\n"
                 "CONFIDENCE: low\n"
                 "MISSING_DATA: OPENAI_API_KEY required\n"
-                "SECTION_MUTATION_CONTRACT: mutation_proposal\n\n"
+                "\n"
+                "SECTION_MUTATION_CONTRACT:\n"
                 + contract_json
             )
 

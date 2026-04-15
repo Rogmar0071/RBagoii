@@ -69,27 +69,25 @@ class MutationContract:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MutationContract":
-        """Construct from raw dict (AI JSON output).
+        """Construct from raw dict parsed from a JSON mutation contract block.
 
-        Accepts both lowercase field names (canonical) and uppercase aliases
-        produced by the mode engine marker convention
-        (e.g. ``"ASSUMPTIONS"`` → ``assumptions``).
-        Unknown keys (e.g. ``SECTION_MUTATION_CONTRACT``) are silently ignored.
-        Does not perform validation — call the validation pipeline separately.
+        Only canonical lowercase field names are accepted.  The JSON produced
+        by the AI must use the exact field names defined in ``REQUIRED_FIELDS``.
+        Mode engine marker names (e.g. ``ASSUMPTIONS``, ``CONFIDENCE``) appear
+        only as plain-text labels in the AI output and are never present in the
+        JSON block — the two validation pipelines are fully independent.
+
+        Does not validate — call the 3-stage pipeline separately.
         """
-
-        def _get(lower: str, upper: str, default: Any) -> Any:
-            return data.get(lower, data.get(upper, default))
-
         return cls(
-            target_files=_get("target_files", "TARGET_FILES", []),
-            operation_type=_get("operation_type", "OPERATION_TYPE", ""),
-            proposed_changes=_get("proposed_changes", "PROPOSED_CHANGES", ""),
-            assumptions=_get("assumptions", "ASSUMPTIONS", []),
-            alternatives=_get("alternatives", "ALTERNATIVES", []),
-            confidence=_get("confidence", "CONFIDENCE", ""),
-            risks=_get("risks", "RISKS", []),
-            missing_data=_get("missing_data", "MISSING_DATA", []),
+            target_files=data.get("target_files", []),
+            operation_type=data.get("operation_type", ""),
+            proposed_changes=data.get("proposed_changes", ""),
+            assumptions=data.get("assumptions", []),
+            alternatives=data.get("alternatives", []),
+            confidence=data.get("confidence", ""),
+            risks=data.get("risks", []),
+            missing_data=data.get("missing_data", []),
         )
 
     def to_dict(self) -> dict[str, Any]:

@@ -78,48 +78,57 @@ You are MUTATION_GOVERNANCE_EXECUTION_V1.
 ROLE: Generate structured mutation proposals ONLY. You NEVER execute code,
 write files, commit to version control, or trigger deployments.
 
-OUTPUT FORMAT (MANDATORY — follow exactly):
+OUTPUT FORMAT — two independent sections (follow exactly):
 
-ASSUMPTIONS: <comma-separated list of explicit assumptions>
-ALTERNATIVES: <comma-separated list of alternative approaches>
-CONFIDENCE: <number 0–1, or "low" / "medium" / "high">
-MISSING_DATA: <comma-separated list, or "none">
-SECTION_MUTATION_CONTRACT: mutation_proposal
+SECTION_INTENT_ANALYSIS:
+ASSUMPTIONS: <explicit assumption 1>; <assumption 2>; ...
+ALTERNATIVES: <alternative approach 1>; <alternative approach 2>; ...
+CONFIDENCE: <number 0-1, or "low" / "medium" / "high">
+MISSING_DATA: <missing item>; ... (or "none")
 
+SECTION_MUTATION_CONTRACT:
 {
   "target_files": ["<path under backend/, android/, or scripts/>"],
   "operation_type": "<create_file | update_file | delete_file>",
-  "proposed_changes": "<non-empty description of the exact changes>",
+  "proposed_changes": "<non-empty description of exact changes>",
   "assumptions": ["<assumption 1>"],
   "alternatives": ["<alternative 1>", "<alternative 2>"],
-  "confidence": <0–1 or "low"/"medium"/"high">,
+  "confidence": <0.0-1.0>,
   "risks": ["<risk 1>"],
   "missing_data": ["<item>"]
 }
+
+LAYER INDEPENDENCE RULE:
+- SECTION_INTENT_ANALYSIS text is validated by the mode engine (text markers).
+- SECTION_MUTATION_CONTRACT JSON is validated by the mutation governance pipeline.
+- These are completely separate validation layers. Use ONLY lowercase field names
+  in the JSON block. Do NOT put mode engine marker names as JSON keys.
 
 SCOPE RULES:
 - target_files MUST only reference paths under: backend/, android/, or scripts/
 - NEVER reference .env, secrets/, or infra/credentials/
 
 INVARIANTS:
-- No guessing. If information is missing, declare it in MISSING_DATA.
-- ASSUMPTIONS must list every assumption explicitly (no_undeclared_assumptions).
+- No guessing. Declare all unknowns in MISSING_DATA.
+- ASSUMPTIONS must be fully explicit (no_undeclared_assumptions).
 - ALTERNATIVES must offer at least one genuine alternative (no_single_path_bias).
-- If you cannot produce a valid proposal, output INSUFFICIENT_DATA: <reason>.
+- If a valid proposal cannot be generated, write INSUFFICIENT_DATA: <reason>
+  in the SECTION_INTENT_ANALYSIS and omit the JSON block.
 
 EXAMPLE:
+SECTION_INTENT_ANALYSIS:
 ASSUMPTIONS: The process() function exists and accepts a dict argument
-ALTERNATIVES: Validate at the API layer, Add a separate validator class
+ALTERNATIVES: Validate at the API layer instead; Add a separate validator class
 CONFIDENCE: 0.85
 MISSING_DATA: none
-SECTION_MUTATION_CONTRACT: mutation_proposal
 
+SECTION_MUTATION_CONTRACT:
 {
   "target_files": ["backend/app/example.py"],
   "operation_type": "update_file",
   "proposed_changes": "Add input validation to the process() function.",
   "assumptions": ["The process() function exists and accepts a dict argument"],
-  "alternatives": ["Validate at the API layer", "Add a separate validator class"],
+  "alternatives": ["Validate at the API layer instead", "Add a separate validator class"],
   "confidence": 0.85,
   "risks": ["Existing callers may fail with new validation"],
   "missing_data": ["none"]
@@ -174,37 +183,48 @@ class MutationGovernanceResult:
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
-    """Extract the first JSON object from *text*.
+    """Extract the mutation contract JSON block from *text*.
 
-    Handles:
-    - Pure JSON output.
-    - JSON wrapped in ```json … ``` fences.
-    - JSON embedded after a ``SECTION_MUTATION_CONTRACT:`` label.
+    Strict extraction rules (enforce strict JSON parsing):
+    - The JSON block MUST follow a ``SECTION_MUTATION_CONTRACT:`` label.
+    - The block must be a brace-balanced, fully parseable JSON object.
+    - Any output that does not contain the label, or whose JSON is malformed
+      or incomplete, returns ``None`` — resulting in an immediate blocked result.
+    - Mode engine marker text (ASSUMPTIONS:, CONFIDENCE:, etc.) and the JSON
+      block are entirely independent; this function only touches the JSON block.
     """
-    # Strip markdown code fences.
-    cleaned = re.sub(r"```(?:json)?\s*", "", text).strip()
+    _LABEL = "SECTION_MUTATION_CONTRACT:"
+    idx = text.find(_LABEL)
+    if idx == -1:
+        return None
 
-    # Attempt direct parse of the full cleaned text first.
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
-        pass
+    # Take only the text after the label.
+    after = text[idx + len(_LABEL):]
 
-    # Extract the outermost JSON object by brace matching.
-    first = cleaned.find("{")
-    last = cleaned.rfind("}")
-    if first != -1 and last != -1 and last > first:
-        candidate = cleaned[first : last + 1]
-        try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
+    # Strip optional markdown code fences (```json … ```).
+    after = re.sub(r"```(?:json)?\s*", "", after).strip()
 
-    return None
+    # Locate the opening brace of the JSON object.
+    brace_start = after.find("{")
+    if brace_start == -1:
+        return None
+
+    # Walk the string tracking brace depth to find the balanced closing brace.
+    depth = 0
+    for i, ch in enumerate(after[brace_start:], start=brace_start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = after[brace_start : i + 1]
+                try:
+                    parsed = json.loads(candidate)
+                    return parsed if isinstance(parsed, dict) else None
+                except json.JSONDecodeError:
+                    return None  # brace-balanced but invalid JSON → reject
+
+    return None  # unbalanced braces → reject
 
 
 # ---------------------------------------------------------------------------
@@ -289,16 +309,18 @@ def mutation_governance_gateway(
         parse_failure = MutationValidationResult(
             stage="structural",
             passed=False,
-            failed_rules=["parse_failure:no_json_object_in_output"],
+            failed_rules=["parse_failure:no_section_mutation_contract_label_or_invalid_json"],
             correction_instructions=[
-                "AI output did not contain a valid JSON mutation contract object"
+                "Output must contain a SECTION_MUTATION_CONTRACT: label followed by "
+                "a valid, brace-balanced JSON object with all required fields. "
+                "Mode engine text markers and the JSON block are independent layers."
             ],
         )
         return _build_blocked_result(
             result=result,
             audit=audit,
             validation_results=[parse_failure],
-            blocked_reason="parse_failure:output_not_parseable_as_mutation_contract",
+            blocked_reason="parse_failure:missing_section_mutation_contract_or_malformed_json",
         )
 
     contract = MutationContract.from_dict(raw_data)
