@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mutation_simulation")
 
+from backend.app.main import app
 from backend.app.mutation_simulation import (
     FAILURE_BUILD,
     FAILURE_CONTRACT_VIOLATION,
@@ -55,8 +56,6 @@ from backend.app.mutation_simulation import (
     simulation_decision_gate,
     simulation_gateway,
 )
-from backend.app.mutation_simulation.gate import SimulationGateResult
-from backend.app.main import app
 
 TOKEN = "test-simulation-key"
 
@@ -173,13 +172,13 @@ class TestDependencySurfaceMapping:
         surface = map_dependency_surface(contract)
         assert surface.complete is True
         assert "backend/app/database.py" in surface.impacted_files
-        direct_links = [l for l in surface.dependency_links if l["type"] == "direct"]
-        assert any(l["target"] == "backend/app/database.py" for l in direct_links)
+        direct_links = [link for link in surface.dependency_links if link["type"] == "direct"]
+        assert any(link["target"] == "backend/app/database.py" for link in direct_links)
 
     def test_indirect_dependencies_resolved(self):
         contract = dict(_APPROVED_CONTRACT, target_files=["backend/app/main.py"])
         surface = map_dependency_surface(contract)
-        indirect_links = [l for l in surface.dependency_links if l["type"] == "indirect"]
+        indirect_links = [link for link in surface.dependency_links if link["type"] == "indirect"]
         assert len(indirect_links) > 0
 
     def test_empty_target_files_returns_incomplete(self):
@@ -403,9 +402,7 @@ class TestRiskScoring:
             impact = analyze_impact(contract, surface)
             failures = predict_failures(contract, impact, surface)
             risk = score_risk(surface, impact, failures)
-            assert risk.level in ("low", "medium", "high"), (
-                f"Invalid risk level: {risk.level!r}"
-            )
+            assert risk.level in ("low", "medium", "high"), f"Invalid risk level: {risk.level!r}"
 
     def test_medium_risk_limited_deps(self):
         contract = dict(_APPROVED_CONTRACT, target_files=["backend/app/models.py"])
@@ -437,15 +434,11 @@ class TestSimulationOverride:
 
     def test_justification_too_short_raises(self):
         with pytest.raises(ValueError, match="justification"):
-            SimulationOverride.from_dict(
-                {"justification": "short", "accepted_risks": ["risk"]}
-            )
+            SimulationOverride.from_dict({"justification": "short", "accepted_risks": ["risk"]})
 
     def test_empty_justification_raises(self):
         with pytest.raises(ValueError):
-            SimulationOverride.from_dict(
-                {"justification": "", "accepted_risks": ["risk"]}
-            )
+            SimulationOverride.from_dict({"justification": "", "accepted_risks": ["risk"]})
 
     def test_empty_accepted_risks_raises(self):
         with pytest.raises(ValueError, match="accepted_risks"):
@@ -464,9 +457,7 @@ class TestSimulationOverride:
 
     def test_missing_accepted_risks_raises(self):
         with pytest.raises((ValueError, TypeError)):
-            SimulationOverride.from_dict(
-                {"justification": "This justification is long enough"}
-            )
+            SimulationOverride.from_dict({"justification": "This justification is long enough"})
 
     def test_min_justification_length_constant_is_positive(self):
         assert OVERRIDE_MIN_JUSTIFICATION_LENGTH > 0
@@ -586,7 +577,10 @@ class TestSimulationDecisionGate:
         gate = simulation_decision_gate(risk, failures, surface, override=None)
         assert gate.safe_to_execute is False
         # Either "no override provided" or similar language must appear.
-        assert "no override" in gate.blocked_reason.lower() or "override" in gate.blocked_reason.lower()
+        assert (
+            "no override" in gate.blocked_reason.lower()
+            or "override" in gate.blocked_reason.lower()
+        )  # noqa: E501
 
 
 # ---------------------------------------------------------------------------
@@ -608,8 +602,7 @@ class TestSimulationGateway:
         assert result.risk_level == RISK_HIGH
 
     def test_missing_contract_id_blocked(self):
-        governance = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
-                      if k != "contract_id"}
+        governance = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items() if k != "contract_id"}
         result = simulation_gateway(governance_result=governance)
         assert result.safe_to_execute is False
         assert "contract_id" in result.blocked_reason
@@ -646,15 +639,21 @@ class TestSimulationGateway:
     def test_all_required_output_fields_present(self):
         result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
         d = result.to_dict()
-        for field in ("impacted_files", "risk_level", "predicted_failures",
-                      "safe_to_execute", "reasoning_summary"):
+        for field in (
+            "impacted_files",
+            "risk_level",
+            "predicted_failures",
+            "safe_to_execute",
+            "reasoning_summary",
+        ):
             assert field in d, f"Missing required output field: {field}"
 
     def test_reasoning_summary_contains_decision_label(self):
         """reasoning_summary must clearly state BLOCKED or SAFE_TO_PROCEED."""
         result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
-        assert ("BLOCKED" in result.reasoning_summary
-                or "SAFE_TO_PROCEED" in result.reasoning_summary)
+        assert (
+            "BLOCKED" in result.reasoning_summary or "SAFE_TO_PROCEED" in result.reasoning_summary
+        )
 
     def test_reasoning_summary_contains_risk_level(self):
         result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
@@ -720,6 +719,7 @@ class TestSimulationGateway:
 
     def test_audit_id_is_valid_uuid(self):
         import uuid as _uuid
+
         result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
         _uuid.UUID(result.audit_id)
 
@@ -733,7 +733,6 @@ class TestSimulationGateway:
     def test_audit_failure_raises_runtime_error(self):
         """Audit failure must propagate (block_if_log_not_written)."""
         from unittest.mock import patch as _patch
-        from backend.app.mutation_simulation.audit import persist_simulation_audit_record
 
         def _failing_audit(record):
             raise RuntimeError("SIMULATION_AUDIT_LOG_FAILURE: test injection")
@@ -768,8 +767,13 @@ class TestSimulationAPI:
             )
         assert resp.status_code == 200
         body = resp.json()
-        for field in ("safe_to_execute", "risk_level", "impacted_files",
-                      "predicted_failures", "reasoning_summary"):
+        for field in (
+            "safe_to_execute",
+            "risk_level",
+            "impacted_files",
+            "predicted_failures",
+            "reasoning_summary",
+        ):
             assert field in body
 
     def test_post_simulate_blocked_governance_result(self, client):
@@ -922,24 +926,21 @@ class TestGovernanceAuthenticity:
 
     def test_reject_missing_governance_contract_field(self):
         """Missing governance_contract must be rejected as unauthenticated."""
-        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
-               if k != "governance_contract"}
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items() if k != "governance_contract"}
         result = simulation_gateway(governance_result=gov)
         assert result.safe_to_execute is False
         assert "governance_authenticity_failed" in result.blocked_reason
 
     def test_reject_wrong_governance_contract_value(self):
         """Invalid governance_contract string must be rejected."""
-        gov = dict(_APPROVED_GOVERNANCE_RESULT,
-                   governance_contract="SOME_EXTERNAL_SYSTEM_V1")
+        gov = dict(_APPROVED_GOVERNANCE_RESULT, governance_contract="SOME_EXTERNAL_SYSTEM_V1")
         result = simulation_gateway(governance_result=gov)
         assert result.safe_to_execute is False
         assert "governance_authenticity_failed" in result.blocked_reason
 
     def test_reject_missing_audit_id(self):
         """Missing audit_id must be rejected — proves governance audit did not run."""
-        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
-               if k != "audit_id"}
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items() if k != "audit_id"}
         result = simulation_gateway(governance_result=gov)
         assert result.safe_to_execute is False
         assert "governance_authenticity_failed" in result.blocked_reason
@@ -953,24 +954,23 @@ class TestGovernanceAuthenticity:
 
     def test_reject_gate_result_not_passed(self):
         """gate_result.passed != True must be rejected."""
-        gov = dict(_APPROVED_GOVERNANCE_RESULT,
-                   gate_result={"passed": False, "reason": "something"})
+        gov = dict(
+            _APPROVED_GOVERNANCE_RESULT, gate_result={"passed": False, "reason": "something"}
+        )
         result = simulation_gateway(governance_result=gov)
         assert result.safe_to_execute is False
         assert "governance_authenticity_failed" in result.blocked_reason
 
     def test_reject_missing_gate_result(self):
         """Missing gate_result must be rejected."""
-        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
-               if k != "gate_result"}
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items() if k != "gate_result"}
         result = simulation_gateway(governance_result=gov)
         assert result.safe_to_execute is False
         assert "governance_authenticity_failed" in result.blocked_reason
 
     def test_reject_missing_execution_boundary(self):
         """Missing execution_boundary must be rejected — governance always stamps it."""
-        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items()
-               if k != "execution_boundary"}
+        gov = {k: v for k, v in _APPROVED_GOVERNANCE_RESULT.items() if k != "execution_boundary"}
         result = simulation_gateway(governance_result=gov)
         assert result.safe_to_execute is False
         assert "governance_authenticity_failed" in result.blocked_reason
@@ -1041,8 +1041,7 @@ class TestDependencyCompleteness:
     def test_partially_resolved_surface_yields_at_least_medium_risk(self):
         """A partially resolved surface must result in risk ≥ medium (not low)."""
         # Use a file that has no known dependency record to trigger partial resolution.
-        contract = dict(_APPROVED_CONTRACT,
-                        target_files=["backend/app/unknown_module_xyz.py"])
+        contract = dict(_APPROVED_CONTRACT, target_files=["backend/app/unknown_module_xyz.py"])
         surface = map_dependency_surface(contract)
         if not surface.partially_resolved:
             pytest.skip("surface fully resolved for this file — cannot test partial")
@@ -1103,10 +1102,9 @@ class TestReasoningSummaryValidation:
 
     def test_reasoning_summary_states_gate_decision(self):
         result = simulation_gateway(governance_result=_APPROVED_GOVERNANCE_RESULT)
-        assert ("BLOCKED" in result.reasoning_summary
-                or "SAFE_TO_PROCEED" in result.reasoning_summary), (
-            "reasoning_summary must state BLOCKED or SAFE_TO_PROCEED"
-        )
+        assert (
+            "BLOCKED" in result.reasoning_summary or "SAFE_TO_PROCEED" in result.reasoning_summary
+        ), "reasoning_summary must state BLOCKED or SAFE_TO_PROCEED"
 
     def test_reasoning_summary_blocked_contains_block_reason(self):
         """Blocked summary must explain why."""
