@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import uuid
 from typing import Any
 
 from .audit import persist_bridge_audit_record
@@ -253,7 +252,7 @@ def _generate_diff_patch(
     proposed_changes: str = str(mutation_proposal.get("proposed_changes", ""))
 
     lines: list[str] = [
-        f"# MUTATION_BRIDGE_EXECUTION_V1 — Simulated Diff",
+        "# MUTATION_BRIDGE_EXECUTION_V1 — Simulated Diff",
         f"# bridge_id: {bridge_id}",
         f"# operation: {operation_type}",
         "",
@@ -266,7 +265,7 @@ def _generate_diff_patch(
             f"diff --git a/{fpath} b/{fpath}",
             f"--- a/{fpath}",
             f"+++ b/{fpath}",
-            f"@@ -1,0 +1,1 @@",
+            "@@ -1,0 +1,1 @@",
             f"+# [bridge:{content_hash}] {proposed_changes[:120]}",
             "",
         ]

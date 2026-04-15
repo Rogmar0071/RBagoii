@@ -24,7 +24,8 @@ Input enforcement:
   - governance_result.status MUST be "approved"
   - governance_result.mutation_proposal MUST be a non-empty dict
   - governance_result.contract_id MUST be present
-  - Rejected contracts receive risk_level=RISK_HIGH (conservative default for unverifiable contracts)
+  - Rejected contracts receive risk_level=RISK_HIGH
+    (conservative default for unverifiable contracts)
 
 Execution boundary (enforced constants - never relaxed):
   - no_file_write

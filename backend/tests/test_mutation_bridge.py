@@ -35,11 +35,11 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mutation_bridge")
 
+from backend.app.main import app
 from backend.app.mutation_bridge import (
     BRIDGE_OVERRIDE_MIN_JUSTIFICATION_LENGTH,
     BRIDGE_STATUS_BLOCKED,
     BRIDGE_STATUS_EXECUTED,
-    BUILD_STATUS_FAILED,
     BUILD_STATUS_PASSED,
     CHECK_DEPENDENCY_GRAPH,
     CHECK_FILE_HASH_INTEGRITY,
@@ -47,8 +47,6 @@ from backend.app.mutation_bridge import (
     CHECK_NO_CONFLICTS,
     CHECK_TARGET_FILES,
     BridgeExecutionOverride,
-    BridgeGateResult,
-    BridgeResult,
     RuntimeRevalidationResult,
     bridge_execution_gate,
     bridge_gateway,
@@ -61,7 +59,6 @@ from backend.app.mutation_bridge.engine import (
 from backend.app.mutation_bridge.revalidation import (
     _compute_proposal_file_hash,
 )
-from backend.app.main import app
 
 TOKEN = "test-bridge-key"
 
@@ -297,7 +294,9 @@ class TestRevalidateRuntimeState:
 
     def test_target_files_empty_in_proposal_passes_check1(self):
         # If proposal has no target_files, check 1 trivially passes (nothing to verify).
-        gov = _make_governance_result(proposal={"target_files": [], "operation_type": "update_file", "proposed_changes": "x"})
+        gov = _make_governance_result(
+            proposal={"target_files": [], "operation_type": "update_file", "proposed_changes": "x"}
+        )
         sim = _make_simulation_result()
         result = revalidate_runtime_state(gov, sim)
         # Checks 1 passes (no files to match), check 2 depends on contract_id
@@ -885,7 +884,6 @@ class TestBridgeGateway:
 
         gov = _make_governance_result()
         sim = _make_simulation_result()
-        original_run = _sp.run
 
         def _forbid_run(*args, **kwargs):  # pragma: no cover
             raise AssertionError(

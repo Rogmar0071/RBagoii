@@ -1,7 +1,8 @@
-import cv2
-import os
-import json
 import argparse
+import json
+import os
+
+import cv2
 
 
 def analyze_image(image_path):
@@ -41,8 +42,12 @@ def main(input_folder, output_file):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze frames for UI elements")
-    parser.add_argument("--input-folder", required=True, dest="input_folder", help="Folder with extracted frames")
-    parser.add_argument("--output-file", required=True, dest="output_file", help="Output JSON file path")
+    parser.add_argument(
+        "--input-folder", required=True, dest="input_folder", help="Folder with extracted frames"
+    )
+    parser.add_argument(
+        "--output-file", required=True, dest="output_file", help="Output JSON file path"
+    )
     args = parser.parse_args()
 
     main(args.input_folder, args.output_file)

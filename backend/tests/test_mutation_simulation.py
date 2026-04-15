@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mutation_simulation")
 
+from backend.app.main import app
 from backend.app.mutation_simulation import (
     FAILURE_BUILD,
     FAILURE_CONTRACT_VIOLATION,
@@ -55,8 +56,6 @@ from backend.app.mutation_simulation import (
     simulation_decision_gate,
     simulation_gateway,
 )
-from backend.app.mutation_simulation.gate import SimulationGateResult
-from backend.app.main import app
 
 TOKEN = "test-simulation-key"
 
@@ -173,13 +172,13 @@ class TestDependencySurfaceMapping:
         surface = map_dependency_surface(contract)
         assert surface.complete is True
         assert "backend/app/database.py" in surface.impacted_files
-        direct_links = [l for l in surface.dependency_links if l["type"] == "direct"]
-        assert any(l["target"] == "backend/app/database.py" for l in direct_links)
+        direct_links = [link for link in surface.dependency_links if link["type"] == "direct"]
+        assert any(link["target"] == "backend/app/database.py" for link in direct_links)
 
     def test_indirect_dependencies_resolved(self):
         contract = dict(_APPROVED_CONTRACT, target_files=["backend/app/main.py"])
         surface = map_dependency_surface(contract)
-        indirect_links = [l for l in surface.dependency_links if l["type"] == "indirect"]
+        indirect_links = [link for link in surface.dependency_links if link["type"] == "indirect"]
         assert len(indirect_links) > 0
 
     def test_empty_target_files_returns_incomplete(self):
@@ -586,7 +585,10 @@ class TestSimulationDecisionGate:
         gate = simulation_decision_gate(risk, failures, surface, override=None)
         assert gate.safe_to_execute is False
         # Either "no override provided" or similar language must appear.
-        assert "no override" in gate.blocked_reason.lower() or "override" in gate.blocked_reason.lower()
+        assert (
+            "no override" in gate.blocked_reason.lower()
+            or "override" in gate.blocked_reason.lower()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +735,7 @@ class TestSimulationGateway:
     def test_audit_failure_raises_runtime_error(self):
         """Audit failure must propagate (block_if_log_not_written)."""
         from unittest.mock import patch as _patch
-        from backend.app.mutation_simulation.audit import persist_simulation_audit_record
+
 
         def _failing_audit(record):
             raise RuntimeError("SIMULATION_AUDIT_LOG_FAILURE: test injection")
