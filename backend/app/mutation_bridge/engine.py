@@ -493,7 +493,7 @@ def _build_execution_summary(
         "  execution_scope: simulated (no real git ops, no file writes)",
         "",
         "EXECUTION MODE: SIMULATED_EXECUTION_ONLY",
-        "NO_REAL_MUTATION: true — all outputs are artifacts for human review only",
+        "NO_REAL_MUTATION: TRUE — all outputs are artifacts for human review only",
     ]
     return "\n".join(lines)
 
