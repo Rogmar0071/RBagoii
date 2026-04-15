@@ -491,6 +491,9 @@ def _build_execution_summary(
         "  no_auto_merge: enforced",
         "  no_deployment_trigger: enforced",
         "  execution_scope: simulated (no real git ops, no file writes)",
+        "",
+        "EXECUTION MODE: SIMULATED_EXECUTION_ONLY",
+        "NO_REAL_MUTATION: TRUE — all outputs are artifacts for human review only",
     ]
     return "\n".join(lines)
 

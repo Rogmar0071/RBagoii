@@ -779,52 +779,53 @@ class TestAnalyzeOptions:
 
         token = "test-secret-key"
         m.API_KEY = token
-        client = TestClient(app, raise_server_exceptions=True)
+        with patch.dict(os.environ, {"API_KEY": token}):
+            client = TestClient(app, raise_server_exceptions=True)
 
-        folder_resp = client.post(
-            "/v1/folders",
-            json={"title": "Test folder"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert folder_resp.status_code == 201
-        folder_id = folder_resp.json()["id"]
+            folder_resp = client.post(
+                "/v1/folders",
+                json={"title": "Test folder"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert folder_resp.status_code == 201
+            folder_id = folder_resp.json()["id"]
 
-        # Enqueue an analyze job WITH options (all 5 toggles).
-        job_resp = client.post(
-            f"/v1/folders/{folder_id}/jobs",
-            json={
-                "type": "analyze",
-                "options": {
-                    "additional_analysis": {
-                        "enabled": True,
-                        "keyframes": True,
-                        "ocr": False,
-                        "transcript": True,
-                        "events": True,
-                        "segment_summaries": False,
-                    }
+            # Enqueue an analyze job WITH options (all 5 toggles).
+            job_resp = client.post(
+                f"/v1/folders/{folder_id}/jobs",
+                json={
+                    "type": "analyze",
+                    "options": {
+                        "additional_analysis": {
+                            "enabled": True,
+                            "keyframes": True,
+                            "ocr": False,
+                            "transcript": True,
+                            "events": True,
+                            "segment_summaries": False,
+                        }
+                    },
                 },
-            },
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert job_resp.status_code == 202, job_resp.text
-        body = job_resp.json()
-        assert "job" in body
-        returned_options = body["job"]["options"]
-        assert returned_options is not None, "options not returned in response"
-        aa = returned_options["additional_analysis"]
-        assert aa["enabled"] is True
-        assert aa["keyframes"] is True
-        assert aa["transcript"] is True
-        assert aa["events"] is True
-        assert aa["segment_summaries"] is False
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert job_resp.status_code == 202, job_resp.text
+            body = job_resp.json()
+            assert "job" in body
+            returned_options = body["job"]["options"]
+            assert returned_options is not None, "options not returned in response"
+            aa = returned_options["additional_analysis"]
+            assert aa["enabled"] is True
+            assert aa["keyframes"] is True
+            assert aa["transcript"] is True
+            assert aa["events"] is True
+            assert aa["segment_summaries"] is False
 
-        # Verify options are persisted in DB.
-        job_id = body["job"]["id"]
-        loaded = _get_job(job_id)
-        assert loaded.analyze_options is not None
-        assert loaded.analyze_options["additional_analysis"]["enabled"] is True
-        assert loaded.analyze_options["additional_analysis"]["events"] is True
+            # Verify options are persisted in DB.
+            job_id = body["job"]["id"]
+            loaded = _get_job(job_id)
+            assert loaded.analyze_options is not None
+            assert loaded.analyze_options["additional_analysis"]["enabled"] is True
+            assert loaded.analyze_options["additional_analysis"]["events"] is True
 
     def test_unknown_options_key_returns_400(self):
         """POSTing an unknown key inside options must return 400."""
@@ -835,26 +836,27 @@ class TestAnalyzeOptions:
 
         token = "test-secret-key"
         m.API_KEY = token
-        client = TestClient(app, raise_server_exceptions=True)
+        with patch.dict(os.environ, {"API_KEY": token}):
+            client = TestClient(app, raise_server_exceptions=True)
 
-        folder_resp = client.post(
-            "/v1/folders",
-            json={"title": "Test"},
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        folder_id = folder_resp.json()["id"]
+            folder_resp = client.post(
+                "/v1/folders",
+                json={"title": "Test"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            folder_id = folder_resp.json()["id"]
 
-        resp = client.post(
-            f"/v1/folders/{folder_id}/jobs",
-            json={
-                "type": "analyze",
-                "options": {
-                    "unknown_option": True,
+            resp = client.post(
+                f"/v1/folders/{folder_id}/jobs",
+                json={
+                    "type": "analyze",
+                    "options": {
+                        "unknown_option": True,
+                    },
                 },
-            },
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 400, f"Expected 400, got {resp.status_code}: {resp.text}"
 
 
 # ---------------------------------------------------------------------------

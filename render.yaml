@@ -1,0 +1,56 @@
+---
+# render.yaml — SYSTEM_BOUNDARY_HARDENING_V1
+# Deterministic deployment manifest for the RecoBlue project on Render.
+# All execution parameters are declared here; no implicit defaults are allowed.
+#
+# Governance invariants enforced:
+#   - deployment_is_deterministic (all services declared; no implicit config)
+#   - auto_deploy: false — deploys are manually triggered, not pushed automatically
+#     (set per-service via the Render dashboard; not a YAML field on Render)
+#
+# Note on `sync: false`: these env vars must be set manually in the Render
+# dashboard (or via Render's secret management). They are NOT committed to
+# source control because they contain secrets or environment-specific values.
+# `sync: false` instructs Render not to auto-populate them from this file.
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Backend — FastAPI web service
+  # ---------------------------------------------------------------------------
+  - type: web
+    name: backend
+    runtime: docker
+    plan: starter
+    dockerfilePath: backend/Dockerfile
+    startCommand: bash backend/entrypoint.sh
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: API_KEY
+        sync: false
+
+  # ---------------------------------------------------------------------------
+  # Worker — RQ background job processor
+  # ---------------------------------------------------------------------------
+  - type: worker
+    name: worker
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    startCommand: python -m rq worker --url $REDIS_URL default
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+
+# ---------------------------------------------------------------------------
+# Databases — audit spine (postgres)
+# ---------------------------------------------------------------------------
+databases:
+  - name: postgres
+    plan: starter
+
+envVarGroups: []
