@@ -23,7 +23,14 @@ RISK_LOW = "low"
 RISK_MEDIUM = "medium"
 RISK_HIGH = "high"
 
+# Sentinel used when a contract is rejected at the intake gate before scoring
+# can run.  safe_to_execute will always be False when this is set.
+RISK_INTAKE_BLOCKED = "intake_blocked"
+
 _VALID_RISK_LEVELS: frozenset[str] = frozenset({RISK_LOW, RISK_MEDIUM, RISK_HIGH})
+
+# Minimum meaningful length for override justification strings.
+OVERRIDE_MIN_JUSTIFICATION_LENGTH = 10
 
 # ---------------------------------------------------------------------------
 # Failure types
@@ -155,10 +162,43 @@ class SimulationOverride:
     """Optional override for high-risk simulations.
 
     Required when risk_level == high.
+
+    Enforcement rules:
+      - justification must be a non-empty string of at least
+        OVERRIDE_MIN_JUSTIFICATION_LENGTH characters.
+      - accepted_risks must be a non-empty list of non-empty strings.
+
+    Raises
+    ------
+    ValueError
+        If either field does not satisfy its constraint.
     """
 
     justification: str
     accepted_risks: list[str]
+
+    def __post_init__(self) -> None:
+        self._validate()
+
+    def _validate(self) -> None:
+        jstr = self.justification.strip() if isinstance(self.justification, str) else ""
+        if len(jstr) < OVERRIDE_MIN_JUSTIFICATION_LENGTH:
+            raise ValueError(
+                f"override.justification must be at least "
+                f"{OVERRIDE_MIN_JUSTIFICATION_LENGTH} characters; "
+                f"got {len(jstr)!r}"
+            )
+        if (
+            not isinstance(self.accepted_risks, list)
+            or not self.accepted_risks
+            or not all(
+                isinstance(r, str) and r.strip() for r in self.accepted_risks
+            )
+        ):
+            raise ValueError(
+                "override.accepted_risks must be a non-empty list of "
+                "non-empty strings"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -168,6 +208,10 @@ class SimulationOverride:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SimulationOverride":
+        """Construct and validate a SimulationOverride from a raw dict.
+
+        Raises ValueError if constraints are not satisfied.
+        """
         return cls(
             justification=str(data.get("justification", "")),
             accepted_risks=list(data.get("accepted_risks", [])),

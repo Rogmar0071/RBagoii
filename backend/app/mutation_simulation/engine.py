@@ -1,26 +1,32 @@
 """
 backend.app.mutation_simulation.engine
 ========================================
-MUTATION_SIMULATION_EXECUTION_V1 — main simulation gateway.
+MUTATION_SIMULATION_EXECUTION_V1 - main simulation gateway.
 
 System pipeline:
   receive_validated_mutation_contract
-    → dependency_surface_mapping
-    → impact_analysis
-    → failure_prediction
-    → risk_scoring
-    → simulation_decision_gate
-    → audit_log                (mandatory, blocking on DB failure)
-    → return_simulation_result (structured object ONLY — no execution)
+    -> dependency_surface_mapping
+    -> impact_analysis
+    -> failure_prediction
+    -> risk_scoring
+    -> simulation_decision_gate
+    -> audit_log                (mandatory - BLOCKING; raises on DB failure)
+    -> return_simulation_result (structured object ONLY - no execution)
 
 Governance invariants enforced:
   - simulation_precedes_execution       Simulation layer does NOT execute mutations.
   - all_mutations_must_be_scored        Every simulation run produces a risk_level.
-  - high_risk_requires_override         High-risk simulations blocked without override.
+  - high_risk_requires_override         High-risk simulations blocked without valid override.
   - no_unanalyzed_mutation_passes       All mutations go through the full pipeline.
-  - audit_is_mandatory                  block_if_log_not_written.
+  - audit_is_mandatory                  block_if_log_not_written - audit errors propagate.
 
-Execution boundary (enforced constants):
+Input enforcement:
+  - governance_result.status MUST be "approved"
+  - governance_result.mutation_proposal MUST be a non-empty dict
+  - governance_result.contract_id MUST be present
+  - Rejected contracts receive risk_level=RISK_INTAKE_BLOCKED (not "unknown")
+
+Execution boundary (enforced constants - never relaxed):
   - no_file_write
   - no_git_commit
   - no_deployment_trigger
@@ -37,20 +43,22 @@ from typing import Any
 
 from .audit import persist_simulation_audit_record
 from .contract import (
+    RISK_HIGH,
+    RISK_INTAKE_BLOCKED,
     SimulationAuditRecord,
     SimulationOverride,
     SimulationResult,
 )
 from .dependency_surface import map_dependency_surface
 from .failure_prediction import predict_failures
-from .gate import simulation_decision_gate
+from .gate import SimulationGateResult, simulation_decision_gate
 from .impact_analysis import analyze_impact
 from .risk_scoring import score_risk
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Execution boundary constants (simulation layer — no execution allowed)
+# Execution boundary constants (simulation layer - no execution allowed)
 # ---------------------------------------------------------------------------
 
 _EXECUTION_BOUNDARY: dict[str, bool] = {
@@ -59,11 +67,65 @@ _EXECUTION_BOUNDARY: dict[str, bool] = {
     "no_deployment_trigger": True,
 }
 
-# ---------------------------------------------------------------------------
-# Enforced modes (alignment with MODE_ENGINE_EXECUTION_V2)
-# ---------------------------------------------------------------------------
+# Required fields that a governance_result dict must contain.
+_REQUIRED_GOVERNANCE_FIELDS: tuple[str, ...] = (
+    "contract_id",
+    "status",
+    "mutation_proposal",
+)
 
-_ENFORCED_MODES: list[str] = ["strict_mode", "prediction_mode", "audit_mode"]
+# Required fields that must be present and non-empty in mutation_proposal.
+_REQUIRED_PROPOSAL_FIELDS: tuple[str, ...] = (
+    "target_files",
+    "operation_type",
+    "proposed_changes",
+)
+
+
+def _validate_governance_result(
+    governance_result: dict[str, Any],
+) -> str | None:
+    """Validate the incoming governance_result dict.
+
+    Returns None on success, or an error string describing the first
+    validation failure (used as blocked_reason).
+
+    Checks (in order):
+      1. All required top-level fields are present.
+      2. status == "approved" (rejects blocked, pending, or unknown status).
+      3. mutation_proposal is a non-empty dict.
+      4. mutation_proposal contains the required proposal fields.
+    """
+    for field_name in _REQUIRED_GOVERNANCE_FIELDS:
+        if field_name not in governance_result:
+            return (
+                "block_if:mutation_contract_not_validated - "
+                f"missing required field '{field_name}' in governance_result"
+            )
+
+    status = governance_result.get("status", "")
+    if status != "approved":
+        return (
+            "block_if:mutation_contract_not_validated - "
+            f"governance_result.status={status!r}; must be 'approved'"
+        )
+
+    proposal = governance_result.get("mutation_proposal")
+    if not isinstance(proposal, dict) or not proposal:
+        return (
+            "block_if:mutation_contract_not_validated - "
+            "mutation_proposal is absent or empty"
+        )
+
+    for field_name in _REQUIRED_PROPOSAL_FIELDS:
+        value = proposal.get(field_name)
+        if value is None or (isinstance(value, (str, list)) and not value):
+            return (
+                "block_if:mutation_contract_not_validated - "
+                f"mutation_proposal.{field_name} is missing or empty"
+            )
+
+    return None
 
 
 def simulation_gateway(
@@ -75,39 +137,44 @@ def simulation_gateway(
     """Single mandatory entry/exit point for the simulation pipeline.
 
     Pipeline (MUTATION_SIMULATION_EXECUTION_V1):
-      1. receive_validated_mutation_contract — verify governance_result is approved.
-      2. dependency_surface_mapping          — identify all impacted components.
-      3. impact_analysis                     — structural/behavioral/data-flow effects.
-      4. failure_prediction                  — possible failure modes.
-      5. risk_scoring                        — deterministic low/medium/high level.
-      6. simulation_decision_gate            — block if any blocking rule fires.
-      7. audit_log                           — mandatory write (raises on DB failure).
-      8. return_simulation_result            — structured SimulationResult only.
+      1. receive_validated_mutation_contract - structured validation of
+         governance_result (status, fields, proposal completeness).
+      2. dependency_surface_mapping          - identify all impacted components;
+         block if mapping is incomplete.
+      3. impact_analysis                     - structural/behavioral/data-flow effects.
+      4. failure_prediction                  - possible failure modes.
+      5. risk_scoring                        - deterministic low/medium/high level.
+         risk_level is ALWAYS assigned; intake-blocked contracts receive
+         RISK_INTAKE_BLOCKED, not "unknown".
+      6. simulation_decision_gate            - HARD BLOCK if any rule fires.
+         safe_to_execute=False is absolute; the engine never overrides the gate.
+      7. audit_log                           - mandatory write; audit exceptions
+         propagate without being caught (block_if_log_not_written).
+      8. return_simulation_result            - structured SimulationResult only.
 
     Parameters
     ----------
     governance_result:
-        The dict output of ``MutationGovernanceResult.to_dict()``.
-        ``status`` MUST be ``"approved"`` — blocked/pending contracts are
-        rejected at step 1 (``block_if:mutation_contract_not_validated``).
+        The dict output of MutationGovernanceResult.to_dict().
+        status MUST be "approved" - any other status causes rejection.
     override:
-        Optional dict ``{"justification": str, "accepted_risks": [str, ...]}``.
-        Required (and validated) when risk_level turns out to be high.
+        Optional dict {"justification": str, "accepted_risks": [str, ...]}.
+        Required (and validated) when risk turns out to be high.
+        An override that fails protocol validation is treated as absent.
     system_context:
-        Optional ambient context (ignored in this version but accepted for
-        future extension without breaking the call-site contract).
+        Optional ambient context (accepted for future extension).
 
     Returns
     -------
     SimulationResult
-        Always structured.  ``safe_to_execute=True`` means no blockers found.
-        ``safe_to_execute=False`` means execution MUST NOT proceed.
+        Always structured.  safe_to_execute=True means no blockers found.
+        safe_to_execute=False means execution MUST NOT proceed.
 
     Raises
     ------
     RuntimeError
         If the database is configured and the audit write fails
-        (``block_if_log_not_written``).
+        (block_if_log_not_written - propagates unhandled).
     """
     # ------------------------------------------------------------------
     # Step 1: validate the incoming governance result
@@ -115,20 +182,15 @@ def simulation_gateway(
     result = SimulationResult()
     result.source_contract_id = str(governance_result.get("contract_id", ""))
 
-    status = governance_result.get("status", "")
-    mutation_proposal: dict[str, Any] = governance_result.get("mutation_proposal") or {}
-
-    if status != "approved" or not mutation_proposal:
-        return _build_blocked_result(
+    validation_error = _validate_governance_result(governance_result)
+    if validation_error:
+        return _build_intake_blocked_result(
             result=result,
-            mutation_proposal=mutation_proposal,
-            blocked_reason=(
-                "block_if:mutation_contract_not_validated — "
-                f"governance status={status!r}; mutation_proposal present="
-                f"{bool(mutation_proposal)}"
-            ),
-            override=None,
+            mutation_proposal=governance_result.get("mutation_proposal") or {},
+            blocked_reason=validation_error,
         )
+
+    mutation_proposal: dict[str, Any] = governance_result["mutation_proposal"]
 
     # ------------------------------------------------------------------
     # Step 2: dependency surface mapping
@@ -147,20 +209,40 @@ def simulation_gateway(
 
     # ------------------------------------------------------------------
     # Step 5: risk scoring
+    #   risk_level is ALWAYS assigned (governance invariant:
+    #   all_mutations_must_be_scored).
     # ------------------------------------------------------------------
     risk = score_risk(surface, impact, failures)
+    assert risk.level in ("low", "medium", "high"), (
+        f"risk_scoring invariant violated: level={risk.level!r}"
+    )
 
     # ------------------------------------------------------------------
     # Step 6: build override object if provided
     # ------------------------------------------------------------------
     sim_override: SimulationOverride | None = None
     if override:
-        sim_override = SimulationOverride.from_dict(override)
+        try:
+            sim_override = SimulationOverride.from_dict(override)
+        except ValueError as exc:
+            # Invalid override treated as absent - gate will block if needed.
+            logger.warning(
+                "mutation_simulation: override rejected - %s; "
+                "treating as no-override",
+                exc,
+            )
+            sim_override = None
 
     # ------------------------------------------------------------------
-    # Step 7: simulation decision gate
+    # Step 7: simulation decision gate (HARD BLOCK)
     # ------------------------------------------------------------------
     gate = simulation_decision_gate(risk, failures, surface, sim_override)
+
+    # Invariant: the engine NEVER returns safe_to_execute=True when the
+    # gate says safe_to_execute=False.
+    assert gate.blocking_mode is True, (
+        "simulation_gate invariant violated: blocking_mode must be True"
+    )
 
     # ------------------------------------------------------------------
     # Populate result fields
@@ -175,6 +257,7 @@ def simulation_gateway(
     result.predicted_failures = [f.to_dict() for f in failures.predicted_failures]
     result.risk_level = risk.level
     result.risk_criteria_matched = risk.criteria_matched
+    # Hard-bind safe_to_execute to the gate result - no override possible here.
     result.safe_to_execute = gate.safe_to_execute
     result.blocked_reason = gate.blocked_reason
     result.override_used = gate.override_used
@@ -189,7 +272,7 @@ def simulation_gateway(
     )
 
     # ------------------------------------------------------------------
-    # Step 8: audit log (mandatory — raises if DB write fails)
+    # Step 8: audit log (MANDATORY - exceptions propagate unhandled)
     # ------------------------------------------------------------------
     audit = SimulationAuditRecord(
         audit_id=result.audit_id,
@@ -210,6 +293,8 @@ def simulation_gateway(
         override_used=result.override_used,
         blocked_reason=result.blocked_reason,
     )
+    # Do NOT wrap in try/except - audit failure must propagate
+    # (block_if_log_not_written invariant).
     persist_simulation_audit_record(audit)
 
     # ------------------------------------------------------------------
@@ -223,18 +308,26 @@ def simulation_gateway(
 # ---------------------------------------------------------------------------
 
 
-def _build_blocked_result(
+def _build_intake_blocked_result(
     *,
     result: SimulationResult,
     mutation_proposal: dict[str, Any],
     blocked_reason: str,
-    override: SimulationOverride | None,
 ) -> SimulationResult:
-    """Populate *result* as a blocked simulation and persist audit record."""
+    """Populate *result* as an intake-blocked simulation and persist audit.
+
+    Uses RISK_INTAKE_BLOCKED (not "unknown") so callers always receive a
+    meaningful risk_level value (governance invariant: all_mutations_must_be_scored).
+    """
     result.safe_to_execute = False
     result.blocked_reason = blocked_reason
-    result.risk_level = "unknown"
-    result.reasoning_summary = f"Simulation blocked at intake gate: {blocked_reason}"
+    result.risk_level = RISK_INTAKE_BLOCKED
+    result.reasoning_summary = (
+        "BLOCKED at intake validation.\n"
+        f"Reason: {blocked_reason}\n"
+        "The mutation contract was not approved by the governance pipeline or "
+        "is structurally incomplete. No simulation analysis was performed."
+    )
 
     audit = SimulationAuditRecord(
         audit_id=result.audit_id,
@@ -246,6 +339,7 @@ def _build_blocked_result(
         override_used=False,
         blocked_reason=blocked_reason,
     )
+    # Do NOT wrap in try/except - audit failure must propagate.
     persist_simulation_audit_record(audit)
     return result
 
@@ -259,9 +353,17 @@ def _build_reasoning_summary(
     risk: object,
     gate: object,
 ) -> str:
-    """Produce a concise human-readable reasoning summary."""
+    """Produce a detailed human-readable reasoning summary.
+
+    The summary explicitly covers:
+      - What is being mutated (operation, target files)
+      - What was impacted (files, modules)
+      - Why the risk level was assigned (criteria)
+      - What failures were predicted (types, severities)
+      - The gate decision and the exact reason for blocking or passing
+      - Override details if applied
+    """
     from .contract import DependencySurface, FailurePrediction, ImpactAnalysis, RiskScore
-    from .gate import SimulationGateResult
 
     assert isinstance(surface, DependencySurface)
     assert isinstance(impact, ImpactAnalysis)
@@ -271,22 +373,59 @@ def _build_reasoning_summary(
 
     op = mutation_proposal.get("operation_type", "unknown")
     targets = mutation_proposal.get("target_files", [])
-    n_files = len(surface.impacted_files)
+    proposed = mutation_proposal.get("proposed_changes", "")[:200]
+
+    n_impacted_files = len(surface.impacted_files)
     n_modules = len(surface.impacted_modules)
-    n_failures = len(failures.predicted_failures)
-    high_count = sum(1 for f in failures.predicted_failures if f.severity == "high")
-    decision_str = "SAFE_TO_PROCEED" if gate.safe_to_execute else "BLOCKED"
+    n_direct = sum(1 for lnk in surface.dependency_links if lnk.get("type") == "direct")
+    n_indirect = sum(1 for lnk in surface.dependency_links if lnk.get("type") == "indirect")
 
-    parts = [
-        f"Operation: {op} on {len(targets)} target file(s).",
-        f"Dependency surface: {n_files} impacted file(s) across {n_modules} module(s).",
-        f"Risk level: {risk.level.upper()} (criteria: {', '.join(risk.criteria_matched)}).",
-        f"Predicted failures: {n_failures} total, {high_count} high-severity.",
-        f"Decision: {decision_str}.",
+    high_failures = [f for f in failures.predicted_failures if f.severity == "high"]
+    med_failures = [f for f in failures.predicted_failures if f.severity == "medium"]
+
+    decision_label = "SAFE_TO_PROCEED" if gate.safe_to_execute else "BLOCKED"
+
+    lines: list[str] = [
+        f"=== MUTATION SIMULATION RESULT: {decision_label} ===",
+        "",
+        f"OPERATION: {op} on {len(targets)} target file(s): {', '.join(targets[:5])}",
+        f"PROPOSED CHANGE: {proposed}",
+        "",
+        f"DEPENDENCY SURFACE ({n_impacted_files} impacted file(s), "
+        f"{n_modules} module(s)):",
     ]
-    if gate.blocked_reason:
-        parts.append(f"Blocked because: {gate.blocked_reason}")
-    if gate.override_used:
-        parts.append("Override was accepted for this simulation.")
+    if surface.impacted_files:
+        for f in sorted(surface.impacted_files)[:10]:
+            lines.append(f"  - {f}")
+        if n_impacted_files > 10:
+            lines.append(f"  ... and {n_impacted_files - 10} more")
+    lines += [
+        f"  Direct dependency links: {n_direct}",
+        f"  Indirect dependency links: {n_indirect}",
+        "",
+        f"STRUCTURAL IMPACT: {'; '.join(impact.structural_impact[:5])}",
+        f"BEHAVIORAL IMPACT: {'; '.join(impact.behavioral_impact[:5])}",
+        f"DATA FLOW IMPACT:  {'; '.join(impact.data_flow_impact[:3])}",
+        "",
+        f"RISK LEVEL: {risk.level.upper()}",
+        f"  Criteria matched: {', '.join(risk.criteria_matched)}",
+        "",
+        f"PREDICTED FAILURES ({len(failures.predicted_failures)} total, "
+        f"{len(high_failures)} high-severity, {len(med_failures)} medium-severity):",
+    ]
+    for f in failures.predicted_failures[:8]:
+        lines.append(
+            f"  [{f.severity.upper()}] {f.failure_type}: {f.description[:150]}"
+        )
+    if len(failures.predicted_failures) > 8:
+        lines.append(f"  ... and {len(failures.predicted_failures) - 8} more")
 
-    return " ".join(parts)
+    lines += ["", f"GATE DECISION: {decision_label}"]
+    if gate.blocked_reason:
+        lines.append(f"  Blocked because: {gate.blocked_reason}")
+    if gate.override_used:
+        lines.append("  Override was accepted and applied.")
+    if gate.gate_notes:
+        lines.append(f"  Gate notes: {'; '.join(gate.gate_notes[:4])}")
+
+    return "\n".join(lines)

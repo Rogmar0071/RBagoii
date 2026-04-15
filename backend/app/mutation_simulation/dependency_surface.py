@@ -11,8 +11,10 @@ Execution boundary:
   - no_git_commit
   - no_deployment_trigger
 
-Block condition:
-  - dependency_graph_unavailable (target_files empty or unresolvable)
+Block conditions (``block_if:dependency_graph_unavailable``):
+  - target_files is absent or empty
+  - any target_file is a blank or non-string entry
+  - any target_file is outside the allowed path scope
 """
 
 from __future__ import annotations
@@ -27,6 +29,11 @@ from .contract import DependencySurface
 # ---------------------------------------------------------------------------
 
 _MODULE_ROOTS: tuple[str, ...] = ("backend/", "android/", "scripts/")
+
+# Paths that are explicitly blocked from appearing in target_files.
+_RESTRICTED_PATH_SEGMENTS: frozenset[str] = frozenset(
+    {".env", "secrets", "infra/credentials"}
+)
 
 # Map file extensions to a language label used in dependency link descriptions.
 _LANG_MAP: dict[str, str] = {
@@ -75,19 +82,40 @@ _KNOWN_BACKEND_DEPS: dict[str, list[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
 def _infer_module(file_path: str) -> str:
     """Convert a file path to a Python module identifier."""
     norm = file_path.replace("\\", "/").lstrip("/")
-    # Strip known roots and convert separators to dots.
     for root in _MODULE_ROOTS:
         if norm.startswith(root):
             relative = norm[len(root):]
             break
     else:
         relative = norm
-    # Remove extension.
     base, _ = os.path.splitext(relative)
     return base.replace("/", ".")
+
+
+def _is_within_allowed_scope(path: str) -> bool:
+    """Return True when *path* starts with one of the allowed module roots."""
+    norm = path.replace("\\", "/").lstrip("/")
+    return any(norm.startswith(root) for root in _MODULE_ROOTS)
+
+
+def _is_restricted(path: str) -> bool:
+    """Return True when *path* contains a restricted segment."""
+    norm = path.replace("\\", "/").lstrip("/")
+    for segment in norm.split("/"):
+        if segment in _RESTRICTED_PATH_SEGMENTS:
+            return True
+    for restricted in _RESTRICTED_PATH_SEGMENTS:
+        if restricted in norm:
+            return True
+    return False
 
 
 def _direct_dependencies(file_path: str) -> list[str]:
@@ -98,6 +126,11 @@ def _direct_dependencies(file_path: str) -> list[str]:
     """
     norm = file_path.replace("\\", "/").lstrip("/")
     return list(_KNOWN_BACKEND_DEPS.get(norm, []))
+
+
+# ---------------------------------------------------------------------------
+# Public surface mapper
+# ---------------------------------------------------------------------------
 
 
 def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
@@ -111,22 +144,66 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
     Returns
     -------
     DependencySurface
-        ``complete=False`` when target_files is absent or empty, which triggers
-        a simulation block (``block_if:dependency_graph_unavailable``).
+        ``complete=False`` in any of these cases (triggers a simulation block):
+          - target_files is absent, empty, or contains non-string entries
+          - any target file path is outside the allowed scope
+          - any target file path is on the restricted list
     """
-    target_files: list[str] = contract_dict.get("target_files") or []
+    raw: Any = contract_dict.get("target_files")
+    target_files: list[str] = raw if isinstance(raw, list) else []
 
+    # -----------------------------------------------------------------------
+    # Guard 1: target_files must be a non-empty list
+    # -----------------------------------------------------------------------
     if not target_files:
         return DependencySurface(
             complete=False,
             incomplete_reason="dependency_graph_unavailable:target_files_empty",
         )
 
+    # -----------------------------------------------------------------------
+    # Guard 2: each entry must be a non-blank string
+    # -----------------------------------------------------------------------
+    blank_entries = [e for e in target_files if not (isinstance(e, str) and e.strip())]
+    if blank_entries:
+        return DependencySurface(
+            complete=False,
+            incomplete_reason=(
+                "dependency_graph_unavailable:target_files_contains_blank_entries"
+            ),
+        )
+
+    # -----------------------------------------------------------------------
+    # Guard 3: restricted paths must never be in the surface
+    # -----------------------------------------------------------------------
+    restricted = [p for p in target_files if _is_restricted(p)]
+    if restricted:
+        return DependencySurface(
+            complete=False,
+            incomplete_reason=(
+                f"dependency_graph_unavailable:restricted_paths={restricted}"
+            ),
+        )
+
+    # -----------------------------------------------------------------------
+    # Guard 4: all paths must be within the allowed scope
+    # -----------------------------------------------------------------------
+    out_of_scope = [p for p in target_files if not _is_within_allowed_scope(p)]
+    if out_of_scope:
+        return DependencySurface(
+            complete=False,
+            incomplete_reason=(
+                f"dependency_graph_unavailable:out_of_scope_paths={out_of_scope}"
+            ),
+        )
+
+    # -----------------------------------------------------------------------
+    # Build the full dependency surface
+    # -----------------------------------------------------------------------
     all_files: set[str] = set()
     all_modules: set[str] = set()
     dependency_links: list[dict[str, str]] = []
 
-    # Collect direct dependencies for each target file.
     seen: set[str] = set(target_files)
     all_files.update(target_files)
 

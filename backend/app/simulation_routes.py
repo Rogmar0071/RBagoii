@@ -77,13 +77,22 @@ class SimulationRequest(BaseModel):
     def _validate_override(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         if value is None:
             return None
-        if not isinstance(value.get("justification"), str) or not value["justification"].strip():
+        from backend.app.mutation_simulation.contract import OVERRIDE_MIN_JUSTIFICATION_LENGTH
+
+        justification = value.get("justification", "")
+        if not isinstance(justification, str) or len(justification.strip()) < OVERRIDE_MIN_JUSTIFICATION_LENGTH:
             raise ValueError(
-                "override.justification must be a non-empty string."
+                f"override.justification must be a non-empty string of at least "
+                f"{OVERRIDE_MIN_JUSTIFICATION_LENGTH} characters."
             )
-        if not isinstance(value.get("accepted_risks"), list):
+        accepted_risks = value.get("accepted_risks")
+        if not isinstance(accepted_risks, list) or not accepted_risks:
             raise ValueError(
-                "override.accepted_risks must be a list of strings."
+                "override.accepted_risks must be a non-empty list of strings."
+            )
+        if not all(isinstance(r, str) and r.strip() for r in accepted_risks):
+            raise ValueError(
+                "override.accepted_risks entries must all be non-empty strings."
             )
         return value
 
