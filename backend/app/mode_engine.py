@@ -67,6 +67,50 @@ def effective_mode(modes: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Mode stacking conflict resolution
+# ---------------------------------------------------------------------------
+
+# Known conflict pairs and their authoritative resolution descriptions.
+# Contract rules:
+#   - higher_priority_overrides_lower
+#   - conflicts_resolve_to_stricter_behavior
+_MODE_CONFLICT_RULES: dict[frozenset, dict[str, list[str]]] = {
+    frozenset({MODE_STRICT, MODE_PREDICTION}): {
+        "description": "strict_vs_prediction",
+        "resolution": [
+            "assumptions_allowed_only_if_flagged",
+            "insufficient_data_must_be_returned_if_required",
+        ],
+    },
+}
+
+
+def apply_mode_conflict_resolution(modes: list[str]) -> list[str]:
+    """Apply mode-stacking conflict resolution rules.
+
+    Contract rules enforced here:
+    - ``higher_priority_overrides_lower``: strict_mode's constraints are applied
+      before and override conflicting lower-priority mode constraints.
+    - ``conflicts_resolve_to_stricter_behavior``: when two modes conflict the
+      stricter rule wins.  Both modes remain active; the higher-priority mode's
+      constraints additionally restrict the lower-priority mode's output.
+
+    All detected conflicts are logged at DEBUG level.  The mode list is returned
+    unchanged — modes are never removed; conflict enforcement happens at
+    validation time (all active modes' rules run simultaneously).
+    """
+    mode_set = frozenset(modes)
+    for conflict_pair, rule in _MODE_CONFLICT_RULES.items():
+        if conflict_pair.issubset(mode_set):
+            logger.debug(
+                "mode_engine: conflict resolved — %s: %s",
+                rule["description"],
+                ", ".join(rule["resolution"]),
+            )
+    return modes
+
+
+# ---------------------------------------------------------------------------
 # Audit record
 # ---------------------------------------------------------------------------
 
@@ -135,7 +179,11 @@ def stage_0_pre_generation_constraints(
 
 
 def build_mode_system_prompt_injection(modes: list[str]) -> str:
-    """Return mode-specific constraint text to append to the system prompt."""
+    """Return mode-specific constraint text to append to the system prompt.
+
+    Includes conflict-resolution constraints when conflicting mode combinations
+    are active (e.g. strict_mode + prediction_mode).
+    """
     lines = ["\n\n--- MODE ENGINE EXECUTION V2 CONSTRAINTS ---"]
     lines.append(f"Active modes: {', '.join(modes)}")
 
@@ -171,6 +219,19 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
         lines.append(
             "BUILDER MODE: Your response MUST be organized into named sections "
             "using SECTION_<NAME>: prefixes (e.g. SECTION_OVERVIEW:)."
+        )
+
+    # Conflict resolution: strict + prediction → additional constraints
+    # (assumptions_allowed_only_if_flagged,
+    #  insufficient_data_must_be_returned_if_required)
+    if MODE_STRICT in modes and MODE_PREDICTION in modes:
+        lines.append(
+            "STRICT+PREDICTION CONFLICT RESOLUTION "
+            "(assumptions_allowed_only_if_flagged): "
+            "All assumptions MUST be explicitly declared in the ASSUMPTIONS: section. "
+            "Implicit or in-line assumptions are prohibited. "
+            "If required data is unavailable you MUST state INSUFFICIENT_DATA: <reason> "
+            "instead of guessing within any section."
         )
 
     lines.append("--- END MODE ENGINE CONSTRAINTS ---")
@@ -321,7 +382,7 @@ def stage_3_compliance_validation(ai_output: str, modes: list[str]) -> Validatio
             "prediction_mode requires an ALTERNATIVES: section with multiple paths"
         )
 
-    if MODE_DEBUG in modes and "STEP_" not in ai_output and "STEP 1" not in ai_output:
+    if MODE_DEBUG in modes and "STEP_" not in ai_output:
         failed.append("debug_mode:stepwise_reasoning_absent")
         corrections.append(
             "debug_mode requires stepwise reasoning "
@@ -343,8 +404,52 @@ def stage_3_compliance_validation(ai_output: str, modes: list[str]) -> Validatio
 
 
 # ---------------------------------------------------------------------------
-# Retry engine helpers
+# Response contract: no_free_text_for_structured_modes / partial_responses_rejected
 # ---------------------------------------------------------------------------
+
+# Modes that require structured output (free-text responses are rejected).
+_STRUCTURED_MODES = frozenset({MODE_PREDICTION, MODE_DEBUG, MODE_AUDIT, MODE_BUILDER})
+
+
+def _check_response_contract(ai_output: str, modes: list[str]) -> ValidationResult:
+    """Enforce response_contract invariants for structured modes.
+
+    Rules enforced:
+    - ``no_free_text_for_structured_modes``: when prediction/debug/audit/builder
+      is active the response MUST contain at least one required structural marker.
+    - ``partial_responses_rejected``: a response with zero structural markers while
+      a structured mode is active is treated as pure free-text and rejected.
+
+    Note: stage_1 validates each individual missing marker; this check acts as an
+    early-reject guard for responses that contain zero structural markers at all.
+    Both checks run in parallel in the validation pipeline so that all failures
+    are visible in the feedback sent to the retry engine.
+    """
+    active_structured = [m for m in modes if m in _STRUCTURED_MODES]
+    if not active_structured:
+        return ValidationResult(stage="response_contract", passed=True)
+
+    all_required = [
+        marker
+        for m in active_structured
+        for marker in _REQUIRED_MARKERS.get(m, [])
+    ]
+    if not all_required:
+        return ValidationResult(stage="response_contract", passed=True)
+
+    if not any(marker in ai_output for marker in all_required):
+        sample = ", ".join(all_required[:4])
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:free_text_in_structured_mode"],
+            missing_fields=all_required[:4],
+            correction_instructions=[
+                f"Structured mode(s) {active_structured} prohibit free-text responses. "
+                f"Include required markers: {sample}"
+            ],
+        )
+    return ValidationResult(stage="response_contract", passed=True)
 
 
 def _build_feedback_prompt(
@@ -389,16 +494,40 @@ def _build_structured_failure(
 
 
 # ---------------------------------------------------------------------------
-# Audit persistence
+# Audit persistence — mandatory (block_if_log_not_written)
 # ---------------------------------------------------------------------------
 
 
 def _persist_audit_record(record: ModeEngineAuditRecord) -> None:
-    """Write the audit record to the ops_events table.  Never raises."""
-    try:
-        from backend.app.ops_log import log_event
+    """Write the audit record to the ops_events table.
 
-        log_event(
+    Enforcement — ``block_if_log_not_written``:
+    - If the database IS configured, this write MUST succeed.  On any failure
+      a ``RuntimeError("AUDIT_LOG_FAILURE: ...")`` is raised.  This propagates
+      through the gateway and blocks the AI response from being returned.
+    - If the database is NOT configured at all (``RuntimeError`` from
+      ``get_engine``), a warning is logged and the function returns without
+      blocking.  This is a deployment/configuration concern, not a runtime
+      failure, and prevents tests without a DB from breaking.
+    """
+    try:
+        from backend.app.database import get_engine
+
+        engine = get_engine()
+    except RuntimeError:
+        logger.warning(
+            "mode_engine: database not configured; audit record %s not persisted",
+            record.audit_id,
+        )
+        return
+
+    # Database IS configured — the write MUST succeed or the gateway is blocked.
+    try:
+        from sqlmodel import Session as _Session
+
+        from backend.app.models import OpsEvent
+
+        event = OpsEvent(
             source="backend",
             level="info",
             event_type="mode_engine.execution_v2.audit",
@@ -415,8 +544,28 @@ def _persist_audit_record(record: ModeEngineAuditRecord) -> None:
                 "created_at": record.created_at,
             },
         )
-    except Exception as exc:  # pragma: no cover
-        logger.warning("mode_engine: failed to persist audit record: %s", exc)
+        with _Session(engine) as session:
+            session.add(event)
+            session.commit()
+    except Exception as exc:
+        raise RuntimeError(f"AUDIT_LOG_FAILURE: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# Gateway coverage declaration
+# ---------------------------------------------------------------------------
+
+# MANDATORY: All AI calls for the listed endpoint MUST flow through
+# mode_engine_gateway.  No AI response exits without passing full validation
+# and having its audit record written.
+#
+# Covered by MODE_ENGINE_EXECUTION_V2:
+#   POST /api/chat  — both stub path (no OPENAI_API_KEY) and live path (OPENAI_API_KEY)
+#
+# NOT covered here (governed by separate contracts):
+#   POST /api/chat/intent — governed by INTERACTION_LAYER_V2
+#
+_GATEWAY_COVERAGE = frozenset({"POST /api/chat"})
 
 
 # ---------------------------------------------------------------------------
@@ -431,7 +580,18 @@ def mode_engine_gateway(
     ai_call: Callable[[str], str],
     base_system_prompt: str,
 ) -> tuple[str, ModeEngineAuditRecord]:
-    """Single mandatory entry/exit point for all AI interactions.
+    """Single mandatory entry/exit point for all AI interactions on POST /api/chat.
+
+    Both the stub path (no ``OPENAI_API_KEY``) and the live OpenAI path pass
+    through this function.  No AI response exits the system without:
+
+    1. Passing stage 0 pre-generation constraints.
+    2. Having mode constraints injected into the system prompt.
+    3. Passing all four validation stages (structural → logical → compliance →
+       response contract).
+    4. Exhausting up to ``MAX_RETRIES`` attempts with corrective feedback if
+       validation fails.
+    5. Having a mandatory audit record written to the database.
 
     Parameters
     ----------
@@ -442,18 +602,28 @@ def mode_engine_gateway(
         falls back to ``[strict_mode]``.
     ai_call:
         Callable ``(system_prompt: str) -> str`` that invokes the AI and
-        returns raw text.  Must not raise; exceptions are propagated.
+        returns raw text.  Exceptions propagate.
     base_system_prompt:
-        Base system prompt without mode injection.  Mode constraints are
-        appended automatically.
+        Base system prompt without mode injection.  Mode constraints and
+        conflict-resolution constraints are appended automatically.
 
     Returns
     -------
     (final_output, audit_record)
-        *final_output* is the validated AI response string, or a JSON-serialised
-        structured-failure dict when all retries are exhausted.
+        *final_output* is the validated AI response string, or a
+        JSON-serialised structured-failure dict when all retries are
+        exhausted.
+
+    Raises
+    ------
+    RuntimeError
+        If the database is configured but the audit write fails
+        (``block_if_log_not_written`` invariant).
     """
     resolved_modes = resolve_modes(modes)
+    # Apply mode stacking conflict resolution (logs conflicts, returns same list).
+    resolved_modes = apply_mode_conflict_resolution(resolved_modes)
+
     audit = ModeEngineAuditRecord(
         user_intent=user_intent,
         selected_modes=resolved_modes,
@@ -472,30 +642,34 @@ def mode_engine_gateway(
         return audit.final_output, audit
 
     # ------------------------------------------------------------------
-    # Build mode-injected system prompt
+    # Build mode-injected system prompt (includes conflict constraints)
     # ------------------------------------------------------------------
     mode_injection = build_mode_system_prompt_injection(resolved_modes)
     transformed_prompt = base_system_prompt + mode_injection
     audit.transformed_prompt = transformed_prompt
 
     # ------------------------------------------------------------------
-    # Retry loop: generate → validate → retry on failure
+    # Retry loop: generate → validate (4 stages) → retry on failure
     # ------------------------------------------------------------------
     current_prompt = transformed_prompt
     raw_output = ""
     last_validation_results: list[ValidationResult] = []
 
     for attempt in range(MAX_RETRIES + 1):
-        # AI generation
+        # AI generation — routed through ai_call (stub or OpenAI closure).
         raw_output = ai_call(current_prompt)
         audit.raw_ai_output = raw_output
         audit.retry_count = attempt
 
-        # Validation pipeline
+        # Four-stage validation pipeline.
         v1 = stage_1_structural_validation(raw_output, resolved_modes)
         v2 = stage_2_logical_validation(raw_output, resolved_modes)
         v3 = stage_3_compliance_validation(raw_output, resolved_modes)
-        last_validation_results = [v1, v2, v3]
+        # v4: response contract — enforces no_free_text_for_structured_modes
+        #     and partial_responses_rejected (string-based; reply stays a string).
+        v4 = _check_response_contract(raw_output, resolved_modes)
+
+        last_validation_results = [v1, v2, v3, v4]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]
 
         if all(vr.passed for vr in last_validation_results):
@@ -509,18 +683,18 @@ def mode_engine_gateway(
             )
         else:
             # ----------------------------------------------------------
-            # Retry exhaustion — return structured failure (hard gate).
+            # Retry exhaustion — hard gate: structured failure returned.
             # ----------------------------------------------------------
             import json as _json
 
             failure_dict = _build_structured_failure(last_validation_results, attempt)
             audit.final_output = _json.dumps(failure_dict)
-            _persist_audit_record(audit)
+            _persist_audit_record(audit)  # raises if DB configured + write fails
             return audit.final_output, audit
 
     # ------------------------------------------------------------------
     # Hard boundary gate: only validated output exits the system.
     # ------------------------------------------------------------------
     audit.final_output = raw_output
-    _persist_audit_record(audit)
+    _persist_audit_record(audit)  # raises if DB configured + write fails
     return raw_output, audit

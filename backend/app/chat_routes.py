@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 from backend.app.auth import require_auth
 from backend.app.mode_engine import (
     MODE_STRICT,
+    apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     build_mode_system_prompt_injection,
     mode_engine_gateway,
     resolve_modes,
@@ -859,8 +860,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
         if not openai_api_key:
-            # No OpenAI key — pass stub through the mode engine gateway so that
-            # audit logging, pre-generation constraints, and validation still run.
+            # No OpenAI key — the stub reply still flows through mode_engine_gateway
+            # so that pre-generation constraints, all four validation stages, and
+            # mandatory audit logging run.  The stub path is NOT a bypass.
             def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
                 return _stub_reply(message)
 
@@ -901,6 +903,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 )
 
             # Build the ai_call closure; mode constraints are injected by the gateway.
+            # This is the ONLY path through which _call_openai_chat is reached for
+            # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
             def _openai_ai_call(system_prompt: str) -> str:
                 return _call_openai_chat(
                     message,

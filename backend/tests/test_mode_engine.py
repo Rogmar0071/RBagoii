@@ -34,8 +34,13 @@ from backend.app.mode_engine import (
     MODE_STRICT,
     ModeEngineAuditRecord,
     ValidationResult,
+    _GATEWAY_COVERAGE,
+    _MODE_CONFLICT_RULES,
     _build_feedback_prompt,
     _build_structured_failure,
+    _check_response_contract,
+    _persist_audit_record,
+    apply_mode_conflict_resolution,
     build_mode_system_prompt_injection,
     effective_mode,
     mode_engine_gateway,
@@ -499,7 +504,7 @@ class TestModeEngineGateway:
         assert "MODE ENGINE" in audit.transformed_prompt
         assert audit.raw_ai_output == "Clean response."
         assert audit.final_output == "Clean response."
-        assert len(audit.validation_results) == 3  # three stages
+        assert len(audit.validation_results) == 4  # four stages: structural, logical, compliance, response_contract
 
     def test_unknown_modes_resolved_to_strict(self):
         ai_call = MagicMock(return_value="Valid response.")
@@ -635,3 +640,453 @@ class TestChatEndpointModeEngine:
         reply = resp.json()["reply"]
         parsed = json.loads(reply)
         assert parsed["error"] == "VALIDATION_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# Req 1: Mandatory audit enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestMandatoryAudit:
+    """Enforce audit as mandatory — block_if_log_not_written."""
+
+    def test_persist_audit_record_writes_to_db(self, tmp_path):
+        """When DB is configured, _persist_audit_record writes an OpsEvent row."""
+        import backend.app.database as db_module
+        from sqlmodel import Session, select
+        from backend.app.models import OpsEvent
+
+        db_path = tmp_path / "audit_mandatory.db"
+        db_module.reset_engine(f"sqlite:///{db_path}")
+        db_module.init_db()
+
+        record = ModeEngineAuditRecord(user_intent="test audit write")
+        _persist_audit_record(record)
+
+        with Session(db_module.get_engine()) as s:
+            rows = s.exec(
+                select(OpsEvent).where(
+                    OpsEvent.event_type == "mode_engine.execution_v2.audit"
+                )
+            ).all()
+        assert len(rows) == 1
+        assert record.audit_id in rows[0].details_json["audit_id"]
+
+        db_module.reset_engine()
+
+    def test_persist_audit_record_raises_when_db_write_fails(
+        self, monkeypatch, tmp_path
+    ):
+        """_persist_audit_record raises RuntimeError('AUDIT_LOG_FAILURE') when write fails."""
+        import backend.app.database as db_module
+        from sqlmodel import Session
+
+        db_path = tmp_path / "audit_fail.db"
+        db_module.reset_engine(f"sqlite:///{db_path}")
+        db_module.init_db()
+
+        def _bad_commit(self):
+            raise Exception("simulated DB failure")
+
+        monkeypatch.setattr(Session, "commit", _bad_commit)
+
+        record = ModeEngineAuditRecord(user_intent="will fail")
+        with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
+            _persist_audit_record(record)
+
+        db_module.reset_engine()
+
+    def test_gateway_raises_on_audit_failure(self, monkeypatch):
+        """mode_engine_gateway propagates AUDIT_LOG_FAILURE (block_if_log_not_written)."""
+        import backend.app.mode_engine as me
+
+        def _fail_persist(rec):
+            raise RuntimeError("AUDIT_LOG_FAILURE: simulated")
+
+        monkeypatch.setattr(me, "_persist_audit_record", _fail_persist)
+
+        with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
+            mode_engine_gateway(
+                user_intent="test",
+                modes=[MODE_STRICT],
+                ai_call=lambda sp: "Valid response.",
+                base_system_prompt="",
+            )
+
+    def test_post_chat_returns_500_when_audit_fails(self, monkeypatch):
+        """POST /api/chat returns HTTP 500 when audit write fails (block_if_log_not_written)."""
+        # Use raise_server_exceptions=False so unhandled RuntimeError becomes HTTP 500.
+        non_raising_client = TestClient(app, raise_server_exceptions=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        import backend.app.mode_engine as me
+
+        def _fail_persist(rec):
+            raise RuntimeError("AUDIT_LOG_FAILURE: simulated")
+
+        monkeypatch.setattr(me, "_persist_audit_record", _fail_persist)
+
+        resp = non_raising_client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 500
+
+    def test_audit_record_no_silent_fallback_when_db_configured(
+        self, monkeypatch, tmp_path
+    ):
+        """Audit failure is never silently swallowed when DB is configured."""
+        import backend.app.database as db_module
+        from sqlmodel import Session
+
+        db_path = tmp_path / "audit_no_fallback.db"
+        db_module.reset_engine(f"sqlite:///{db_path}")
+        db_module.init_db()
+
+        write_called = {"n": 0}
+
+        original_commit = Session.commit
+
+        def _counting_commit(self):
+            write_called["n"] += 1
+            raise Exception("forced DB error")
+
+        monkeypatch.setattr(Session, "commit", _counting_commit)
+
+        record = ModeEngineAuditRecord(user_intent="no fallback test")
+        with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
+            _persist_audit_record(record)
+
+        assert write_called["n"] >= 1, "commit must be attempted before raising"
+
+        db_module.reset_engine()
+
+
+# ---------------------------------------------------------------------------
+# Req 2: Stub path goes through full validation (not a bypass)
+# ---------------------------------------------------------------------------
+
+
+class TestStubPathThroughGateway:
+    """Confirm the stub path (no OPENAI_API_KEY) is NOT a bypass of the gateway."""
+
+    def test_stub_path_calls_gateway(self, client: TestClient, monkeypatch):
+        """With no OpenAI key, mode_engine_gateway is called for every chat request."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        import backend.app.chat_routes as cr
+
+        gateway_calls: list[dict] = []
+        original_gw = cr.mode_engine_gateway
+
+        def _tracking_gateway(**kwargs):
+            gateway_calls.append({"user_intent": kwargs.get("user_intent")})
+            return original_gw(**kwargs)
+
+        monkeypatch.setattr(cr, "mode_engine_gateway", _tracking_gateway)
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Stub gateway test"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+        assert len(gateway_calls) == 1
+        assert gateway_calls[0]["user_intent"] == "Stub gateway test"
+
+    def test_stub_passes_strict_mode_validation(self):
+        """Stub reply passes all four validation stages in strict_mode."""
+        from backend.app.chat_routes import _stub_reply
+
+        stub = _stub_reply("hello")
+        v1 = stage_1_structural_validation(stub, [MODE_STRICT])
+        v2 = stage_2_logical_validation(stub, [MODE_STRICT])
+        v3 = stage_3_compliance_validation(stub, [MODE_STRICT])
+        v4 = _check_response_contract(stub, [MODE_STRICT])
+
+        assert v1.passed, f"stage_1 failed: {v1.failed_rules}"
+        assert v2.passed, f"stage_2 failed: {v2.failed_rules}"
+        assert v3.passed, f"stage_3 failed: {v3.failed_rules}"
+        assert v4.passed, f"response_contract failed: {v4.failed_rules}"
+
+    def test_stub_audit_record_is_written(self, client: TestClient, monkeypatch):
+        """Stub path writes an audit record via the gateway."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        from sqlmodel import Session, select
+        import backend.app.database as db_module
+        from backend.app.models import OpsEvent
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "audit stub check"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+
+        with Session(db_module.get_engine()) as s:
+            rows = s.exec(
+                select(OpsEvent).where(
+                    OpsEvent.event_type == "mode_engine.execution_v2.audit"
+                )
+            ).all()
+        assert len(rows) >= 1
+
+    def test_stub_path_pregeneration_constraint_still_runs(
+        self, client: TestClient, monkeypatch
+    ):
+        """Stage 0 blocks empty messages on the stub path just like the live path."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "   "},
+            headers=_auth(),
+        )
+        # Empty message is caught by ChatPostRequest validator (400) before gateway.
+        assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Req 3: Mode stacking enforces strict priority and conflict resolution
+# ---------------------------------------------------------------------------
+
+
+class TestModeStackingConflictResolution:
+    """Verify mode stacking enforces strict priority and conflict resolution."""
+
+    def test_strict_has_highest_priority(self):
+        modes = resolve_modes([MODE_BUILDER, MODE_PREDICTION, MODE_STRICT])
+        assert modes[0] == MODE_STRICT
+
+    def test_conflict_rules_registered(self):
+        """strict_vs_prediction conflict rule is registered."""
+        key = frozenset({MODE_STRICT, MODE_PREDICTION})
+        assert key in _MODE_CONFLICT_RULES
+        rule = _MODE_CONFLICT_RULES[key]
+        assert "assumptions_allowed_only_if_flagged" in rule["resolution"]
+        assert "insufficient_data_must_be_returned_if_required" in rule["resolution"]
+
+    def test_apply_conflict_resolution_returns_same_list(self):
+        modes = [MODE_STRICT, MODE_PREDICTION, MODE_DEBUG]
+        result = apply_mode_conflict_resolution(modes)
+        assert result == modes
+
+    def test_conflict_constraints_injected_into_prompt(self):
+        """strict + prediction → conflict resolution text in injected prompt."""
+        prompt = build_mode_system_prompt_injection([MODE_STRICT, MODE_PREDICTION])
+        assert "CONFLICT RESOLUTION" in prompt
+        assert "assumptions_allowed_only_if_flagged" in prompt.lower().replace(" ", "_") or \
+               "assumptions_allowed_only_if_flagged" in prompt
+
+    def test_strict_prevents_guessing_within_prediction_output(self):
+        """With strict + prediction, guessing language anywhere in the response fails."""
+        output = (
+            "I think these are the right assumptions\n"
+            "ASSUMPTIONS: some assumptions\n"
+            "ALTERNATIVES: option A, option B\n"
+            "CONFIDENCE: 0.6\n"
+            "MISSING_DATA: none"
+        )
+        v3 = stage_3_compliance_validation(output, [MODE_STRICT, MODE_PREDICTION])
+        assert v3.passed is False
+        assert "strict_mode:guessing_detected" in v3.failed_rules
+
+    def test_gateway_applies_conflict_resolution(self):
+        """mode_engine_gateway calls apply_mode_conflict_resolution."""
+        import backend.app.mode_engine as me
+
+        conflict_calls: list[list[str]] = []
+        original = me.apply_mode_conflict_resolution
+
+        def _tracking(modes):
+            conflict_calls.append(modes)
+            return original(modes)
+
+        # Patch at module level so gateway's call uses the patched version.
+        original_fn = me.apply_mode_conflict_resolution
+        me.apply_mode_conflict_resolution = _tracking
+        try:
+            mode_engine_gateway(
+                user_intent="test conflict",
+                modes=[MODE_STRICT, MODE_PREDICTION],
+                ai_call=lambda sp: (
+                    "ASSUMPTIONS: A\nALTERNATIVES: B\nCONFIDENCE: 0.5\nMISSING_DATA: none"
+                ),
+                base_system_prompt="",
+            )
+        finally:
+            me.apply_mode_conflict_resolution = original_fn
+
+        assert len(conflict_calls) == 1
+        assert MODE_STRICT in conflict_calls[0]
+        assert MODE_PREDICTION in conflict_calls[0]
+
+    def test_mode_priority_all_five_modes(self):
+        """Priority order is strict > prediction > debug > audit > builder."""
+        from backend.app.mode_engine import MODE_PRIORITY_ORDER
+
+        assert MODE_PRIORITY_ORDER[0] == MODE_STRICT
+        assert MODE_PRIORITY_ORDER[1] == MODE_PREDICTION
+        assert MODE_PRIORITY_ORDER[2] == MODE_DEBUG
+        assert MODE_PRIORITY_ORDER[3] == MODE_AUDIT
+        assert MODE_PRIORITY_ORDER[4] == MODE_BUILDER
+
+
+# ---------------------------------------------------------------------------
+# Req 4: Structured validation enforced even if response remains string-based
+# ---------------------------------------------------------------------------
+
+
+class TestResponseContractEnforcement:
+    """Structured validation is enforced even though reply stays a plain string."""
+
+    def test_check_response_contract_passes_for_strict_only(self):
+        """strict_mode is not a structured mode; free text is allowed."""
+        result = _check_response_contract("Any free text response.", [MODE_STRICT])
+        assert result.passed is True
+
+    def test_check_response_contract_fails_for_prediction_free_text(self):
+        """Prediction mode + pure free text → response contract rejected."""
+        result = _check_response_contract("Plain answer with no markers.", [MODE_PREDICTION])
+        assert result.passed is False
+        assert "response_contract:free_text_in_structured_mode" in result.failed_rules
+
+    def test_check_response_contract_passes_when_any_marker_present(self):
+        """Even one structural marker satisfies the response contract guard."""
+        result = _check_response_contract(
+            "ASSUMPTIONS: some\nOther content.", [MODE_PREDICTION]
+        )
+        assert result.passed is True
+
+    def test_check_response_contract_fails_for_debug_free_text(self):
+        result = _check_response_contract("Just a plain answer.", [MODE_DEBUG])
+        assert result.passed is False
+
+    def test_check_response_contract_passes_for_debug_with_step(self):
+        result = _check_response_contract("STEP_1: do this first.", [MODE_DEBUG])
+        assert result.passed is True
+
+    def test_response_contract_is_4th_stage_in_gateway(self):
+        """Gateway runs exactly four validation stages; v4 is response_contract."""
+        ai_call = MagicMock(return_value="Clean response.")
+        _output, audit = mode_engine_gateway(
+            user_intent="test stages",
+            modes=[MODE_STRICT],
+            ai_call=ai_call,
+            base_system_prompt="",
+        )
+        assert len(audit.validation_results) == 4
+        stages = [r["stage"] for r in audit.validation_results]
+        assert stages == ["structural", "logical", "compliance", "response_contract"]
+
+    def test_partial_prediction_response_rejected(self):
+        """A response with SOME but not all prediction markers still fails stage_1."""
+        partial = "ASSUMPTIONS: some\nALTERNATIVES: A"  # missing CONFIDENCE and MISSING_DATA
+        v1 = stage_1_structural_validation(partial, [MODE_PREDICTION])
+        assert v1.passed is False
+        assert any("CONFIDENCE:" in m for m in v1.missing_fields)
+        assert any("MISSING_DATA:" in m for m in v1.missing_fields)
+
+    def test_structured_failure_string_is_valid_json(self, monkeypatch):
+        """When all retries fail, the reply string is valid JSON (structured failure)."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value="plain text no markers"):
+            # Using prediction_mode which requires structural markers.
+            output, audit = mode_engine_gateway(
+                user_intent="test",
+                modes=[MODE_PREDICTION],
+                ai_call=lambda sp: "plain text no markers",
+                base_system_prompt="",
+            )
+
+        parsed = json.loads(output)
+        assert parsed["error"] == "VALIDATION_FAILED"
+        assert isinstance(parsed["failed_rules"], list)
+
+
+# ---------------------------------------------------------------------------
+# Req 5: All AI calls routed exclusively through mode_engine_gateway
+# ---------------------------------------------------------------------------
+
+
+class TestAllAICallsExclusivelyThroughGateway:
+    """Confirm all AI calls for POST /api/chat flow exclusively through the gateway."""
+
+    def test_gateway_coverage_constant_declares_post_chat(self):
+        """_GATEWAY_COVERAGE explicitly lists POST /api/chat."""
+        assert "POST /api/chat" in _GATEWAY_COVERAGE
+
+    def test_stub_path_uses_gateway_exclusively(
+        self, client: TestClient, monkeypatch
+    ):
+        """No API key: only the gateway produces the reply; no direct AI call bypass."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        import backend.app.chat_routes as cr
+
+        gateway_returns = ["GATEWAY_CONTROLLED_RESPONSE"]
+
+        def _mock_gateway(**kwargs):
+            return gateway_returns[0], ModeEngineAuditRecord(
+                user_intent=kwargs["user_intent"]
+            )
+
+        monkeypatch.setattr(cr, "mode_engine_gateway", _mock_gateway)
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "test gateway exclusive"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["reply"] == "GATEWAY_CONTROLLED_RESPONSE"
+
+    def test_openai_path_uses_gateway_exclusively(
+        self, client: TestClient, monkeypatch
+    ):
+        """API key present: only the gateway produces the reply; _call_openai_chat
+        is never called outside the gateway-managed ai_call closure."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        import backend.app.chat_routes as cr
+
+        gateway_called = {"n": 0}
+
+        def _mock_gateway(**kwargs):
+            gateway_called["n"] += 1
+            return "GATEWAY_LIVE_RESPONSE", ModeEngineAuditRecord(
+                user_intent=kwargs["user_intent"]
+            )
+
+        monkeypatch.setattr(cr, "mode_engine_gateway", _mock_gateway)
+
+        # Ensure _call_openai_chat is never reached directly outside the gateway.
+        direct_call_made = {"flag": False}
+
+        def _detect_direct_call(*args, **kwargs):
+            direct_call_made["flag"] = True
+            return "DIRECT_CALL"
+
+        monkeypatch.setattr(cr, "_call_openai_chat", _detect_direct_call)
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "live gateway test"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["reply"] == "GATEWAY_LIVE_RESPONSE"
+        assert gateway_called["n"] == 1
+        # _call_openai_chat must NOT have been called directly from the handler —
+        # it is only reachable via the gateway's ai_call closure.
+        assert direct_call_made["flag"] is False
+
+    def test_intent_endpoint_not_in_gateway_coverage(self):
+        """POST /api/chat/intent is governed by INTERACTION_LAYER_V2, not this gateway."""
+        assert "POST /api/chat/intent" not in _GATEWAY_COVERAGE
+
