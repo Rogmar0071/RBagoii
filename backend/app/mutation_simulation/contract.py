@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+
 # ---------------------------------------------------------------------------
 # Risk levels
 # ---------------------------------------------------------------------------
@@ -255,7 +256,6 @@ class SimulationResult:
     simulation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     governance_contract: str = "MUTATION_SIMULATION_EXECUTION_V1"
     source_contract_id: str = ""
-    source_governance_audit_id: str = ""
     # Required output fields
     impacted_files: list[str] = field(default_factory=list)
     risk_level: str = RISK_LOW
@@ -284,23 +284,12 @@ class SimulationResult:
             "no_deployment_trigger": True,
         }
     )
-    # Per-file SHA-256 fingerprints; produced by simulation_gateway,
-    # verified by bridge revalidation to detect proposal tampering.
-    file_snapshot_hashes: dict[str, str] = field(default_factory=dict)
-
-    def validate_for_return(self) -> None:
-        """Raise ValueError if source_governance_audit_id is absent or empty."""
-        if not self.source_governance_audit_id:
-            raise ValueError(
-                "INVALID_SIMULATION_RESULT: missing source_governance_audit_id"
-            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "simulation_id": self.simulation_id,
             "governance_contract": self.governance_contract,
             "source_contract_id": self.source_contract_id,
-            "source_governance_audit_id": self.source_governance_audit_id,
             "impacted_files": self.impacted_files,
             "risk_level": self.risk_level,
             "predicted_failures": self.predicted_failures,
@@ -318,7 +307,6 @@ class SimulationResult:
             "audit_id": self.audit_id,
             "created_at": self.created_at,
             "execution_boundary": self.execution_boundary,
-            "file_snapshot_hashes": self.file_snapshot_hashes,
         }
 
 

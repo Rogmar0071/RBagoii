@@ -35,7 +35,9 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.mode_engine import (
+    MODE_STRICT,
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
+    build_mode_system_prompt_injection,
     mode_engine_gateway,
     resolve_modes,
 )

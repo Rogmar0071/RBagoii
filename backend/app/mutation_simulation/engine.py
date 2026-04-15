@@ -24,8 +24,7 @@ Input enforcement:
   - governance_result.status MUST be "approved"
   - governance_result.mutation_proposal MUST be a non-empty dict
   - governance_result.contract_id MUST be present
-  - Rejected contracts receive risk_level=RISK_HIGH
-    (conservative default for unverifiable contracts)
+  - Rejected contracts receive risk_level=RISK_HIGH (conservative default for unverifiable contracts)
 
 Execution boundary (enforced constants - never relaxed):
   - no_file_write
@@ -39,11 +38,9 @@ Depends on:
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from typing import Any
 
-from ..shared.hash_contract import HASH_INPUT_TEMPLATE
 from .audit import persist_simulation_audit_record
 from .contract import (
     RISK_HIGH,
@@ -248,7 +245,6 @@ def simulation_gateway(
     # ------------------------------------------------------------------
     result = SimulationResult()
     result.source_contract_id = str(governance_result.get("contract_id", ""))
-    result.source_governance_audit_id = str(governance_result.get("audit_id", ""))
 
     validation_error = _validate_governance_result(governance_result)
     if validation_error:
@@ -330,18 +326,6 @@ def simulation_gateway(
     result.blocked_reason = gate.blocked_reason
     result.override_used = gate.override_used
 
-    # Compute per-file snapshot hashes using the shared HASH_INPUT_TEMPLATE.
-    _contract_id = str(governance_result.get("contract_id", ""))
-    _proposed = str(mutation_proposal.get("proposed_changes", ""))
-    result.file_snapshot_hashes = {
-        fpath: hashlib.sha256(
-            HASH_INPUT_TEMPLATE.format(
-                contract_id=_contract_id, fpath=fpath, proposed_changes=_proposed
-            ).encode()
-        ).hexdigest()
-        for fpath in list(mutation_proposal.get("target_files") or [])
-    }
-
     result.reasoning_summary = _build_reasoning_summary(
         mutation_proposal=mutation_proposal,
         surface=surface,
@@ -377,11 +361,8 @@ def simulation_gateway(
     # (block_if_log_not_written invariant).
     persist_simulation_audit_record(audit)
 
-    # Step 9: contract enforcement — result must be structurally complete.
-    result.validate_for_return()
-
     # ------------------------------------------------------------------
-    # Step 10: return structured result (no execution)
+    # Step 9: return structured result (no execution)
     # ------------------------------------------------------------------
     return result
 

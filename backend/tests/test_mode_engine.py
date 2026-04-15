@@ -25,10 +25,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mode_engine")
 
-from backend.app.main import app  # noqa: E402
 from backend.app.mode_engine import (
-    _GATEWAY_COVERAGE,
-    _MODE_CONFLICT_RULES,
     MAX_RETRIES,
     MODE_AUDIT,
     MODE_BUILDER,
@@ -37,6 +34,8 @@ from backend.app.mode_engine import (
     MODE_STRICT,
     ModeEngineAuditRecord,
     ValidationResult,
+    _GATEWAY_COVERAGE,
+    _MODE_CONFLICT_RULES,
     _build_feedback_prompt,
     _build_structured_failure,
     _check_response_contract,
@@ -51,6 +50,8 @@ from backend.app.mode_engine import (
     stage_2_logical_validation,
     stage_3_compliance_validation,
 )
+
+from backend.app.main import app  # noqa: E402
 
 TOKEN = "test-secret-key"
 
@@ -503,8 +504,7 @@ class TestModeEngineGateway:
         assert "MODE ENGINE" in audit.transformed_prompt
         assert audit.raw_ai_output == "Clean response."
         assert audit.final_output == "Clean response."
-        # four stages: structural, logical, compliance, response_contract
-        assert len(audit.validation_results) == 4
+        assert len(audit.validation_results) == 4  # four stages: structural, logical, compliance, response_contract
 
     def test_unknown_modes_resolved_to_strict(self):
         ai_call = MagicMock(return_value="Valid response.")
@@ -652,9 +652,8 @@ class TestMandatoryAudit:
 
     def test_persist_audit_record_writes_to_db(self, tmp_path):
         """When DB is configured, _persist_audit_record writes an OpsEvent row."""
-        from sqlmodel import Session, select
-
         import backend.app.database as db_module
+        from sqlmodel import Session, select
         from backend.app.models import OpsEvent
 
         db_path = tmp_path / "audit_mandatory.db"
@@ -679,9 +678,8 @@ class TestMandatoryAudit:
         self, monkeypatch, tmp_path
     ):
         """_persist_audit_record raises RuntimeError('AUDIT_LOG_FAILURE') when write fails."""
-        from sqlmodel import Session
-
         import backend.app.database as db_module
+        from sqlmodel import Session
 
         db_path = tmp_path / "audit_fail.db"
         db_module.reset_engine(f"sqlite:///{db_path}")
@@ -739,15 +737,16 @@ class TestMandatoryAudit:
         self, monkeypatch, tmp_path
     ):
         """Audit failure is never silently swallowed when DB is configured."""
-        from sqlmodel import Session
-
         import backend.app.database as db_module
+        from sqlmodel import Session
 
         db_path = tmp_path / "audit_no_fallback.db"
         db_module.reset_engine(f"sqlite:///{db_path}")
         db_module.init_db()
 
         write_called = {"n": 0}
+
+        original_commit = Session.commit
 
         def _counting_commit(self):
             write_called["n"] += 1
@@ -816,7 +815,6 @@ class TestStubPathThroughGateway:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         from sqlmodel import Session, select
-
         import backend.app.database as db_module
         from backend.app.models import OpsEvent
 

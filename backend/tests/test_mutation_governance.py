@@ -19,11 +19,13 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mutation_governance")
 
-from backend.app.main import app
 from backend.app.mutation_governance import (
     ALLOWED_PATH_PREFIXES,
+    GateResult,
     MutationContract,
+    MutationGovernanceResult,
     MutationValidationResult,
+    RESTRICTED_PATHS,
     mutation_enforcement_gate,
     mutation_governance_gateway,
     stage_1_structural_validation,
@@ -34,6 +36,7 @@ from backend.app.mutation_governance.audit import persist_mutation_audit_record
 from backend.app.mutation_governance.contract import MutationGovernanceAuditRecord
 from backend.app.mutation_governance.engine import _extract_json
 from backend.app.mutation_governance.validation import _is_allowed, _is_restricted
+from backend.app.main import app
 
 TOKEN = "test-governance-key"
 
@@ -596,11 +599,9 @@ class TestMutationGovernanceGateway:
         assert result.status == "blocked" and isinstance(result.to_dict(), dict)
 
     def test_audit_written_for_approved(self):
-        from sqlmodel import Session as S
-        from sqlmodel import select
-
-        import backend.app.database as db
         from backend.app.models import OpsEvent
+        from sqlmodel import Session as S, select
+        import backend.app.database as db
 
         mutation_governance_gateway(
             user_intent="audit test", ai_call=_make_ai_call(_VALID_OUTPUT)
@@ -614,11 +615,9 @@ class TestMutationGovernanceGateway:
         assert len(events) >= 1
 
     def test_audit_written_for_blocked(self):
-        from sqlmodel import Session as S
-        from sqlmodel import select
-
-        import backend.app.database as db
         from backend.app.models import OpsEvent
+        from sqlmodel import Session as S, select
+        import backend.app.database as db
 
         mutation_governance_gateway(
             user_intent="blocked", ai_call=_make_ai_call("no label")

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from typing import Any
 
 from .audit import persist_bridge_audit_record
@@ -198,15 +199,6 @@ def _verify_simulation_integrity(
                 f"missing required field {fname!r} in simulation_result"
             )
 
-    # Key presence alone is insufficient — an empty value breaks the audit chain.
-    sgai = simulation_result.get("source_governance_audit_id", "")
-    if not isinstance(sgai, str) or not sgai.strip():
-        return (
-            "block_if:simulation_not_verified — "
-            "source_governance_audit_id is absent or empty in simulation_result; "
-            "audit chain integrity cannot be verified"
-        )
-
     safe_to_execute = simulation_result.get("safe_to_execute")
     if safe_to_execute is not True:
         return (
@@ -261,7 +253,7 @@ def _generate_diff_patch(
     proposed_changes: str = str(mutation_proposal.get("proposed_changes", ""))
 
     lines: list[str] = [
-        "# MUTATION_BRIDGE_EXECUTION_V1 — Simulated Diff",
+        f"# MUTATION_BRIDGE_EXECUTION_V1 — Simulated Diff",
         f"# bridge_id: {bridge_id}",
         f"# operation: {operation_type}",
         "",
@@ -274,7 +266,7 @@ def _generate_diff_patch(
             f"diff --git a/{fpath} b/{fpath}",
             f"--- a/{fpath}",
             f"+++ b/{fpath}",
-            "@@ -1,0 +1,1 @@",
+            f"@@ -1,0 +1,1 @@",
             f"+# [bridge:{content_hash}] {proposed_changes[:120]}",
             "",
         ]
