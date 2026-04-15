@@ -1337,3 +1337,77 @@ class TestBridgeApiEndpoint:
             "execution_boundary",
         }
         assert set(data.keys()) == expected_keys
+
+    def test_manual_bypass_payload_is_blocked(self, client):
+        """A manually crafted payload that bypasses the real pipeline must be blocked.
+
+        No bypass path: sending a governance_result or simulation_result that was
+        not produced by the real pipeline (wrong contract identifier, missing required
+        fields, or mismatched audit linkage) must be rejected and the status must be
+        blocked.  This verifies there is no way to reach execution status with a
+        forged or hand-constructed payload.
+        """
+        # Completely hand-crafted payload — not from any real governance or
+        # simulation run, just a dict with plausible-looking content.
+        forged_gov = {
+            "contract_id": "forged-contract-id",
+            "governance_contract": "MUTATION_GOVERNANCE_EXECUTION_V1",
+            "status": "approved",
+            "mutation_proposal": {
+                "target_files": ["backend/app/example.py"],
+                "operation_type": "update_file",
+                "proposed_changes": "Bypass attempt",
+                "assumptions": [],
+                "alternatives": [],
+                "confidence": 1.0,
+                "risks": [],
+                "missing_data": [],
+            },
+            "validation_results": [],
+            "gate_result": {"passed": True, "blocked_reason": None, "failed_stages": []},
+            "blocked_reason": None,
+            "audit_id": "forged-audit-id",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "execution_boundary": {
+                "no_git_commit": True,
+                "no_file_write": True,
+                "no_deployment_trigger": True,
+            },
+        }
+        forged_sim = {
+            "simulation_id": "forged-sim-id",
+            "governance_contract": "MUTATION_SIMULATION_EXECUTION_V1",
+            "source_contract_id": "forged-contract-id",
+            # source_governance_audit_id deliberately omitted (as a real bypass would be)
+            "impacted_files": ["backend/app/example.py"],
+            "risk_level": "low",
+            "predicted_failures": [],
+            "safe_to_execute": True,
+            "reasoning_summary": "Bypass.",
+            "impacted_modules": [],
+            "dependency_links": [],
+            "structural_impact": [],
+            "behavioral_impact": [],
+            "data_flow_impact": [],
+            "failure_types": [],
+            "risk_criteria_matched": [],
+            "blocked_reason": None,
+            "override_used": False,
+            "audit_id": "forged-sim-audit-id",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "execution_boundary": {
+                "no_file_write": True,
+                "no_git_commit": True,
+                "no_deployment_trigger": True,
+            },
+        }
+        resp = client.post(
+            "/api/mutations/execute",
+            json={"governance_result": forged_gov, "simulation_result": forged_sim},
+            headers=self._headers(),
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        # The bridge must detect the missing source_governance_audit_id and block.
+        assert data["status"] == BRIDGE_STATUS_BLOCKED
+        assert data["blocked_reason"] is not None
