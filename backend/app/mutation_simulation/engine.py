@@ -246,6 +246,7 @@ def simulation_gateway(
     # ------------------------------------------------------------------
     result = SimulationResult()
     result.source_contract_id = str(governance_result.get("contract_id", ""))
+    result.source_governance_audit_id = str(governance_result.get("audit_id", ""))
 
     validation_error = _validate_governance_result(governance_result)
     if validation_error:

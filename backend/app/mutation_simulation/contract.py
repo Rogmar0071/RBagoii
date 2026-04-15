@@ -255,6 +255,7 @@ class SimulationResult:
     simulation_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     governance_contract: str = "MUTATION_SIMULATION_EXECUTION_V1"
     source_contract_id: str = ""
+    source_governance_audit_id: str = ""
     # Required output fields
     impacted_files: list[str] = field(default_factory=list)
     risk_level: str = RISK_LOW
@@ -289,6 +290,7 @@ class SimulationResult:
             "simulation_id": self.simulation_id,
             "governance_contract": self.governance_contract,
             "source_contract_id": self.source_contract_id,
+            "source_governance_audit_id": self.source_governance_audit_id,
             "impacted_files": self.impacted_files,
             "risk_level": self.risk_level,
             "predicted_failures": self.predicted_failures,
