@@ -4,11 +4,12 @@ backend.app.mutation_governance.audit
 Mandatory audit persistence for MUTATION_GOVERNANCE_EXECUTION_V1.
 
 Enforcement — ``block_if_log_not_written``:
-  - If the database IS configured: the write MUST succeed.  On any failure a
+  - The database MUST be configured and the write MUST succeed.  On any
+    failure (including DATABASE_URL not configured) a
     ``RuntimeError("AUDIT_LOG_FAILURE: ...")`` is raised, which propagates
     through the gateway and blocks the proposal from being returned.
-  - If the database is NOT configured: a warning is logged and the function
-    returns without blocking (deployment/configuration concern).
+
+Contract invariant: ``audit_is_mandatory`` — no execution without audit.
 
 Audit log fields (mandatory per contract):
   - user_intent
@@ -20,11 +21,7 @@ Audit log fields (mandatory per contract):
 
 from __future__ import annotations
 
-import logging
-
 from .contract import MutationGovernanceAuditRecord
-
-logger = logging.getLogger(__name__)
 
 
 def persist_mutation_audit_record(record: MutationGovernanceAuditRecord) -> None:
@@ -33,20 +30,18 @@ def persist_mutation_audit_record(record: MutationGovernanceAuditRecord) -> None
     Raises
     ------
     RuntimeError
-        If the database is configured and the write fails
-        (``block_if_log_not_written`` invariant).
+        If the database is not configured or the write fails
+        (``block_if_log_not_written`` invariant — audit is mandatory).
     """
     try:
         from backend.app.database import get_engine
 
         engine = get_engine()
-    except RuntimeError:
-        logger.warning(
-            "mutation_governance: database not configured; "
-            "audit record %s not persisted",
-            record.audit_id,
-        )
-        return
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"AUDIT_SYSTEM_UNAVAILABLE: DATABASE_URL is not configured — "
+            f"audit cannot be persisted (record {record.audit_id}): {exc}"
+        ) from exc
 
     try:
         from sqlmodel import Session as _Session

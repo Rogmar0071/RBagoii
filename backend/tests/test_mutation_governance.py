@@ -443,32 +443,20 @@ class TestAuditPersistence:
             with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
                 m(record)
 
-    def test_no_db_configured_logs_warning_no_raise(self, caplog):
-        import logging
+    def test_no_db_configured_raises_audit_unavailable(self):
         record = MutationGovernanceAuditRecord(user_intent="test", status="approved")
         import backend.app.database as db_module
         original = db_module.get_engine
 
-        # Re-enable the logger in case Alembic's logging.config.fileConfig has
-        # set its .disabled flag to True (fileConfig disable_existing_loggers
-        # defaults to True, which affects all non-listed loggers including ours).
-        audit_logger = logging.getLogger("backend.app.mutation_governance.audit")
-        was_disabled = audit_logger.disabled
-        audit_logger.disabled = False
-
         def _raise():
-            raise RuntimeError("not configured")
+            raise RuntimeError("DATABASE_URL not configured")
 
         db_module.get_engine = _raise
         try:
-            with caplog.at_level(
-                logging.WARNING, logger="backend.app.mutation_governance.audit"
-            ):
+            with pytest.raises(RuntimeError, match="AUDIT_SYSTEM_UNAVAILABLE"):
                 persist_mutation_audit_record(record)
-            assert any("not persisted" in msg for msg in caplog.messages)
         finally:
             db_module.get_engine = original
-            audit_logger.disabled = was_disabled
 
     def test_governance_audit_failure_propagates_through_gateway(self):
         """Audit write failure must propagate through mutation_governance_gateway.
