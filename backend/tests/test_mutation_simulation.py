@@ -733,7 +733,6 @@ class TestSimulationGateway:
     def test_audit_failure_raises_runtime_error(self):
         """Audit failure must propagate (block_if_log_not_written)."""
         from unittest.mock import patch as _patch
-        from backend.app.mutation_simulation.audit import persist_simulation_audit_record
 
         def _failing_audit(record):
             raise RuntimeError("SIMULATION_AUDIT_LOG_FAILURE: test injection")
