@@ -39,6 +39,9 @@ class GlobalChatMessage(SQLModel, table=True):
     # user / assistant / system
     role: str
     content: str = Field(sa_column=Column(sa.Text))
+    # CONVERSATION_LIFECYCLE_V1: every message belongs to a conversation.
+    # Defaults to "default" for backward compatibility with existing messages.
+    conversation_id: str = Field(default="default", index=True)
     session_id: Optional[str] = Field(default=None, index=True)
     domain_profile_id: Optional[str] = Field(default=None, index=True)
     created_at: Optional[datetime] = Field(
