@@ -109,7 +109,7 @@ class MainActivity : AppCompatActivity(),
         private const val PREF_ACTIVE_HOME_CONVERSATION_ID = "active_home_conversation_id"
         private const val PREF_NEXT_HOME_CHAT_NUMBER = "next_home_chat_number"
         private const val DEFAULT_NEXT_HOME_CHAT_NUMBER = 1
-        private const val MAX_AUTO_CHAT_LABEL_LENGTH = 24
+        private const val MAX_AUTO_CHAT_LABEL_CHARS = 24
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -491,14 +491,17 @@ class MainActivity : AppCompatActivity(),
         activeConversationId = prefs.getString(PREF_ACTIVE_HOME_CONVERSATION_ID, null)
             ?.takeIf { savedId -> homeConversations.any { it.id == savedId } }
             ?: homeConversations.firstOrNull()?.id
-        if (!prefs.contains(PREF_NEXT_HOME_CHAT_NUMBER)) {
-            prefs.edit().putInt(
-                PREF_NEXT_HOME_CHAT_NUMBER,
-                (homeConversations.maxOfOrNull { it.order } ?: 0) + 1,
-            ).apply()
-        }
+        ensureNextHomeChatNumberInitialized()
         sortHomeConversations()
         renderHomeConversationChips()
+    }
+
+    private fun ensureNextHomeChatNumberInitialized() {
+        if (prefs.contains(PREF_NEXT_HOME_CHAT_NUMBER)) return
+        prefs.edit().putInt(
+            PREF_NEXT_HOME_CHAT_NUMBER,
+            (homeConversations.maxOfOrNull { it.order } ?: 0) + 1,
+        ).apply()
     }
 
     private fun persistHomeConversations() {
@@ -718,17 +721,21 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun maybeUpdateConversationLabel(conversation: HomeConversation, initialMessage: String) {
-        val updatedLabel = initialMessage.lines()
-            .firstOrNull()
-            .orEmpty()
-            .trim()
-            .take(MAX_AUTO_CHAT_LABEL_LENGTH)
-            .ifBlank { conversation.label }
-        if (!conversation.isAutoLabel || updatedLabel == conversation.label) return
+        if (!conversation.isAutoLabel) return
+        val updatedLabel = deriveAutoConversationLabel(initialMessage, conversation.label)
+        if (updatedLabel == conversation.label) return
         updateHomeConversation(conversation.id) {
             it.copy(label = updatedLabel, isAutoLabel = false)
         }
     }
+
+    private fun deriveAutoConversationLabel(initialMessage: String, fallbackLabel: String): String =
+        initialMessage.lineSequence()
+            .firstOrNull()
+            .orEmpty()
+            .trim()
+            .take(MAX_AUTO_CHAT_LABEL_CHARS)
+            .ifBlank { fallbackLabel }
 
     private fun deleteHomeConversation(conversationId: String) {
         val conversation = homeConversations.firstOrNull { it.id == conversationId } ?: return
