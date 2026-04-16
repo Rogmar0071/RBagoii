@@ -1000,7 +1000,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
     message = request.message
     context = request.context
-    agent_mode = request.agent_mode is True
+    agent_mode = request.agent_mode
     active_modes = ["strict_mode"] if agent_mode else []
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []

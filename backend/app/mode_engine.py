@@ -59,10 +59,10 @@ def resolve_modes(requested: list[str]) -> list[str]:
     return valid
 
 
-def effective_mode(modes: list[str]) -> str:
+def effective_mode(modes: list[str]) -> str | None:
     """Return the highest-priority active mode from *modes*, if any."""
     resolved = resolve_modes(modes)
-    return resolved[0] if resolved else ""
+    return resolved[0] if resolved else None
 
 
 # ---------------------------------------------------------------------------
@@ -638,7 +638,7 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    resolved_modes = list(modes)
+    resolved_modes = modes
     if MODE_STRICT in resolved_modes:
         # Apply mode stacking conflict resolution (logs conflicts, returns same list).
         resolved_modes = apply_mode_conflict_resolution(resolved_modes)
