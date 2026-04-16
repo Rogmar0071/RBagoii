@@ -43,7 +43,6 @@ from backend.app.auth import require_auth
 from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
-    resolve_modes,
 )
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
@@ -249,8 +248,8 @@ class ChatPostRequest(BaseModel):
     message: str
     context: ChatContext = Field(default_factory=ChatContext)
     agent_mode: bool = False
-    # MODE_ENGINE_EXECUTION_V2: active modes for this request.
-    # Defaults to [strict_mode] when omitted or empty.
+    # MODE_ENGINE_EXECUTION_V2: retained for request compatibility only.
+    # POST /api/chat resolves active modes exclusively from agent_mode.
     modes: list[str] | None = None
     # ARTIFACT_INGESTION_PIPELINE_V1: user-provided artifacts for this request.
     # Artifacts are passed verbatim into the system prompt; no preprocessing.
@@ -968,7 +967,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
     Agent mode can be enabled via:
     - Body field: ``agent_mode: true``
-    - Header: ``X-Agent-Mode: 1``
 
     When enabled, the assistant is instructed to respond using ARTIFACT_*
     structured output sections.
@@ -1002,14 +1000,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
     message = request.message
     context = request.context
-    # Agent mode: body field takes precedence; header is a fallback.
-    agent_mode = request.agent_mode or (
-        http_request.headers.get("X-Agent-Mode", "0") == "1"
-    )
-    # MODE_ENGINE_EXECUTION_V2: resolve active modes (defaults to strict_mode).
-    # resolve_modes([]) already falls back to [MODE_STRICT], so passing an empty
-    # list or None both produce the same default behaviour.
-    active_modes = resolve_modes(request.modes or [])
+    agent_mode = request.agent_mode is True
+    active_modes = ["strict_mode"] if agent_mode else []
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
