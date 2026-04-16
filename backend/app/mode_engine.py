@@ -189,13 +189,10 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
 
     # Data sovereignty — always enforced regardless of active modes.
     lines.append(
-        "DATA SOVEREIGNTY (always enforced): You MUST NOT claim or imply access to "
-        "system logs, job statuses, internal pipelines, or any files that were not "
-        "explicitly provided in this conversation. "
-        "If data you need is absent, state what is missing and request the relevant "
-        "artifact or context from the user. "
-        "Default response when data is absent: "
-        "'I only operate on data explicitly provided to me — please share the relevant artifact.'"
+        "DATA SOVEREIGNTY (NON-NEGOTIABLE): "
+        "You must not claim access to any system or data not explicitly provided. "
+        "If required data is missing, request it. "
+        "Default: 'I only operate on provided data.'"
     )
 
     if MODE_STRICT in modes:
