@@ -910,14 +910,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     )
     resolved_artifacts = context_surface["resolved_artifacts"]
 
+    # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines both read and write isolation.
+    is_stateless = request.force_new_session is True
+
     db = _db_session()
     try:
-        user_message = _persist_message(db, "user", message, context)
-        # CONVERSATION_BOUNDARY_CONTROL_V1: skip history when force_new_session is True.
-        if request.force_new_session is True:
-            logger.debug("force_new_session=True: bypassing conversation history")
+        if is_stateless:
+            # Stateless mode: no DB read, no DB write — fully ephemeral execution.
+            logger.debug("force_new_session=True: bypassing persistence and conversation history")
+            user_message = _new_ephemeral_message("user", message, context)
             history = []
         else:
+            user_message = _persist_message(db, "user", message, context)
             history = _load_recent_history(db)
 
         # Read OPENAI_API_KEY at call time -- never returned or logged.
@@ -1017,7 +1021,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             if search_results:
                 reply += _format_citations(search_results)
 
-        assistant_message = _persist_message(db, "assistant", reply, context)
+        assistant_message = (
+            _new_ephemeral_message("assistant", reply, context)
+            if is_stateless
+            else _persist_message(db, "assistant", reply, context)
+        )
         return _json_response(
             ChatPostResponse(
                 reply=reply,

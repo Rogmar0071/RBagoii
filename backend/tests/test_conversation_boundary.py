@@ -113,8 +113,6 @@ class TestLegacyPathUnchanged:
 
         captured_histories: list[list] = []
 
-        original_call = cr._call_openai_chat
-
         def _capturing_call(msg, key, history=None, system_prompt=None):
             captured_histories.append(list(history or []))
             return "stub"
@@ -217,19 +215,68 @@ class TestNoHistoryLeakage:
             "force_new_session=True must not receive any prior conversation history"
         )
 
-    def test_persistence_unaffected(self, client: TestClient, monkeypatch):
+    def test_persistence_unaffected_for_legacy_path(self, client: TestClient, monkeypatch):
         """
-        Messages are still persisted even when force_new_session=True.
-        The flag controls context isolation, NOT storage.
+        Messages ARE persisted on the legacy path (no flag).
+        The stateless flag does not affect the default write behavior.
         """
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         _post_chat(client, "Message A")
-        _post_chat(client, "Message B", force_new_session=True)
 
         hist = client.get("/api/chat", headers=_auth())
         assert hist.status_code == 200
         messages = hist.json()["messages"]
         contents = [m["content"] for m in messages]
         assert "Message A" in contents
-        assert "Message B" in contents
+
+
+# ---------------------------------------------------------------------------
+# Test 4 — Stateless mode does not write to DB
+# ---------------------------------------------------------------------------
+
+
+class TestStatelessNoPersistence:
+    def test_stateless_does_not_persist_messages(self, client: TestClient, monkeypatch):
+        """
+        DB message count must be unchanged after a force_new_session=True request.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        import backend.app.database as db_module
+        from backend.app.models import GlobalChatMessage
+        from sqlmodel import Session, select
+
+        def _count_messages() -> int:
+            with Session(db_module.get_engine()) as s:
+                return len(s.exec(select(GlobalChatMessage)).all())
+
+        before = _count_messages()
+        _post_chat(client, "Stateless message", force_new_session=True)
+        after = _count_messages()
+
+        assert after == before, (
+            f"Stateless execution must not write to DB; before={before} after={after}"
+        )
+
+    def test_stateless_response_shape_complete(self, client: TestClient, monkeypatch):
+        """Response still contains user_message and assistant_message (ephemeral)."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resp = _post_chat(client, "Ephemeral request", force_new_session=True)
+        assert "user_message" in resp
+        assert "assistant_message" in resp
+        assert resp["user_message"]["content"] == "Ephemeral request"
+
+    def test_stateless_not_visible_in_history(self, client: TestClient, monkeypatch):
+        """Messages sent with force_new_session=True must not appear in GET /api/chat."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        _post_chat(client, "Should be in history")
+        _post_chat(client, "Should NOT be in history", force_new_session=True)
+
+        hist = client.get("/api/chat", headers=_auth())
+        assert hist.status_code == 200
+        contents = [m["content"] for m in hist.json()["messages"]]
+        assert "Should be in history" in contents
+        assert "Should NOT be in history" not in contents
