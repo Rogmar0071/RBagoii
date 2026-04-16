@@ -51,6 +51,9 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "ChatActivity-worker") }
     private lateinit var adapter: ChatMessageAdapter
 
+    // GLOBAL_CONVERSATION_ACTIVATION_V1: single active conversation per session.
+    @Volatile private var conversationId: String? = null
+
     private val speechInputLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
