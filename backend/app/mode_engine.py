@@ -787,6 +787,30 @@ def mode_engine_gateway(
     contract_obj = construct_contract(intent_obj)
 
     # ------------------------------------------------------------------
+    # CONTRACT BOUNDARY — Contract Validation Gate (MANDATORY)
+    # CONTRACT_EXECUTION_BOUNDARY_LOCK_V1
+    # ------------------------------------------------------------------
+    from backend.app.contract_construction import validate_contract
+    
+    contract_validation = validate_contract(contract_obj)
+    
+    if not contract_validation.passed:
+        # BLOCK execution at boundary — invalid contract
+        import json as _json
+        
+        failure: dict[str, Any] = {
+            "error": "VALIDATION_FAILED",
+            "stage": "contract_boundary",
+            "failed_rules": contract_validation.failed_rules,
+            "missing_fields": contract_validation.missing_fields,
+            "correction_instructions": contract_validation.correction_instructions,
+        }
+        audit.final_output = _json.dumps(failure)
+        audit.validation_results = [contract_validation.to_dict()]
+        _persist_audit_record(audit)
+        return audit.final_output, audit
+
+    # ------------------------------------------------------------------
     # Stage 0: pre-generation constraints
     # ------------------------------------------------------------------
     ok, reason = stage_0_pre_generation_constraints(user_intent, active_modes)
