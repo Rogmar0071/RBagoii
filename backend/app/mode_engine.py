@@ -23,6 +23,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from backend.app.contract_construction import ContractObject, construct_contract
+from backend.app.intent_extraction import IntentObject, extract_intent
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -141,15 +144,19 @@ class ValidationResult:
     failed_rules: list[str] = field(default_factory=list)
     missing_fields: list[str] = field(default_factory=list)
     correction_instructions: list[str] = field(default_factory=list)
+    contract_reference: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "stage": self.stage,
             "passed": self.passed,
             "failed_rules": self.failed_rules,
             "missing_fields": self.missing_fields,
             "correction_instructions": self.correction_instructions,
         }
+        if self.contract_reference:
+            result["contract_reference"] = self.contract_reference
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -273,43 +280,70 @@ def _strict_mode_artifact_lines(ai_output: str) -> list[str]:
     ]
 
 
-def stage_1_structural_validation(ai_output: str, modes: list[str]) -> ValidationResult:
-    """Validate that required fields are present in *ai_output*."""
+def stage_1_structural_validation(
+    ai_output: str, modes: list[str], contract: ContractObject | None = None
+) -> ValidationResult:
+    """Validate that required fields are present in *ai_output*.
+    
+    CONTRACT-DRIVEN VALIDATION (DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1):
+    - When modes == []: skip validation completely
+    - When modes == ["strict_mode"] and contract exists: validate against contract
+    - When modes == ["strict_mode"] without contract: block (invalid state)
+    """
+    # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="structural", passed=True)
+    
+    # STRICT MODE WITHOUT CONTRACT: invalid state, block
+    if contract is None:
+        return ValidationResult(
+            stage="structural",
+            passed=False,
+            failed_rules=["strict_mode_without_contract"],
+            correction_instructions=[
+                "strict_mode requires a contract to be generated for this request"
+            ],
+        )
+    
+    # STRICT MODE WITH CONTRACT: validate against contract
     missing: list[str] = []
     failed: list[str] = []
     corrections: list[str] = []
-    artifact_lines = _strict_mode_artifact_lines(ai_output)
-    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
-
-    for mode in modes:
-        for marker in _REQUIRED_MARKERS.get(mode, []):
-            if marker not in ai_output:
-                missing.append(marker)
-                failed.append(f"{mode}:missing_field:{marker}")
-                corrections.append(f"Include a {marker} section in your response")
-
-    if MODE_STRICT in modes and not ai_output.strip():
+    
+    # Check required sections from contract
+    for section in contract.required_sections:
+        if section not in ai_output:
+            missing.append(section)
+            failed.append(f"missing_required_section:{section}")
+            corrections.append(
+                f"Contract requires section '{section}' to be present in response"
+            )
+    
+    # Check for empty output
+    if not ai_output.strip():
         failed.append("strict_mode:empty_output")
         missing.append("non_empty_output")
         corrections.append(
             "Provide a non-empty response or state INSUFFICIENT_DATA: <reason>"
         )
-    elif not artifact_lines and not uses_insufficient_data:
-        failed.append("strict_mode:structured_output_required")
-        missing.append("ARTIFACT_<NAME>")
-        corrections.append(
-            "Respond using at least one ARTIFACT_<NAME>: <value> section or "
-            "INSUFFICIENT_DATA: <reason>"
+    
+    # Special handling: allow INSUFFICIENT_DATA as valid response
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+    if uses_insufficient_data:
+        # INSUFFICIENT_DATA is always valid in strict mode
+        return ValidationResult(
+            stage="structural",
+            passed=True,
+            contract_reference=contract.to_dict(),
         )
-
+    
     return ValidationResult(
         stage="structural",
         passed=len(failed) == 0,
         failed_rules=failed,
         missing_fields=missing,
         correction_instructions=corrections,
+        contract_reference=contract.to_dict(),
     )
 
 
@@ -318,39 +352,53 @@ def stage_1_structural_validation(ai_output: str, modes: list[str]) -> Validatio
 # ---------------------------------------------------------------------------
 
 
-def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationResult:
-    """Validate logical consistency of *ai_output*."""
+def stage_2_logical_validation(
+    ai_output: str, modes: list[str], contract: ContractObject | None = None
+) -> ValidationResult:
+    """Validate logical consistency of *ai_output*.
+    
+    CONTRACT-DRIVEN VALIDATION:
+    - When modes == []: skip validation
+    - When modes == ["strict_mode"] with contract: validate required elements
+    """
+    # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="logical", passed=True)
+    
+    # STRICT MODE WITHOUT CONTRACT: invalid state
+    if contract is None:
+        return ValidationResult(
+            stage="logical",
+            passed=False,
+            failed_rules=["strict_mode_without_contract"],
+            correction_instructions=["strict_mode requires a contract"],
+        )
+    
+    # Allow INSUFFICIENT_DATA to bypass logical validation
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+    if uses_insufficient_data:
+        return ValidationResult(
+            stage="logical",
+            passed=True,
+            contract_reference=contract.to_dict(),
+        )
+    
     failed: list[str] = []
     corrections: list[str] = []
-    artifact_lines = _strict_mode_artifact_lines(ai_output)
-    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
-
-    if artifact_lines and not uses_insufficient_data:
-        malformed = []
-        for line in artifact_lines:
-            match = _STRICT_ARTIFACT_LINE.fullmatch(line)
-            if match is None or not match.group(2).strip():
-                malformed.append(line)
-        if malformed:
-            failed.append("strict_mode:malformed_artifact_section")
-            corrections.append(
-                "Each structured line must match ARTIFACT_<NAME>: <value>"
-            )
-
-    if MODE_PREDICTION in modes:
-        # Assumptions must be explicit (non-empty after the label).
-        if "ASSUMPTIONS:" in ai_output:
+    
+    # Validate based on contract validation rules
+    for rule in contract.validation_rules:
+        if rule == "assumptions_explicit" and "ASSUMPTIONS:" in ai_output:
             assumptions_text = (
                 ai_output.split("ASSUMPTIONS:", 1)[1].split("\n")[0].strip()
             )
             if not assumptions_text:
                 failed.append("undeclared_assumptions")
-                corrections.append("ASSUMPTIONS: section must contain explicit content")
-
-        # Confidence must be numeric [0,1] or a recognised categorical value.
-        if "CONFIDENCE:" in ai_output:
+                corrections.append(
+                    "Contract requires ASSUMPTIONS: section to contain explicit content"
+                )
+        
+        elif rule == "confidence_valid" and "CONFIDENCE:" in ai_output:
             conf_text = (
                 ai_output.split("CONFIDENCE:", 1)[1].split("\n")[0].strip().lower()
             )
@@ -365,12 +413,10 @@ def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationRe
             if not is_numeric and not is_categorical:
                 failed.append("invalid_confidence")
                 corrections.append(
-                    "CONFIDENCE: must be a number between 0 and 1, or "
-                    "one of: low / medium / high"
+                    "Contract requires CONFIDENCE: to be 0-1 or low/medium/high"
                 )
-
-        # Alternatives section must be non-empty.
-        if "ALTERNATIVES:" in ai_output:
+        
+        elif rule == "alternatives_present" and "ALTERNATIVES:" in ai_output:
             alt_section = ai_output.split("ALTERNATIVES:", 1)[1]
             alt_lines = [
                 ln.strip()
@@ -380,7 +426,7 @@ def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationRe
             if not alt_lines:
                 failed.append("alternatives_not_distinct")
                 corrections.append(
-                    "ALTERNATIVES: must list at least one distinct alternative"
+                    "Contract requires ALTERNATIVES: to list at least one alternative"
                 )
 
     return ValidationResult(
@@ -388,6 +434,7 @@ def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationRe
         passed=len(failed) == 0,
         failed_rules=failed,
         correction_instructions=corrections,
+        contract_reference=contract.to_dict(),
     )
 
 
@@ -409,48 +456,57 @@ _GUESSING_INDICATORS = frozenset(
 )
 
 
-def stage_3_compliance_validation(ai_output: str, modes: list[str]) -> ValidationResult:
-    """Validate mode-specific compliance rules on *ai_output*."""
+def stage_3_compliance_validation(
+    ai_output: str, modes: list[str], contract: ContractObject | None = None
+) -> ValidationResult:
+    """Validate mode-specific compliance rules on *ai_output*.
+    
+    CONTRACT-DRIVEN VALIDATION:
+    - When modes == []: skip validation
+    - When modes == ["strict_mode"] with contract: validate compliance per contract
+    """
+    # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="compliance", passed=True)
+    
+    # STRICT MODE WITHOUT CONTRACT: invalid state
+    if contract is None:
+        return ValidationResult(
+            stage="compliance",
+            passed=False,
+            failed_rules=["strict_mode_without_contract"],
+            correction_instructions=["strict_mode requires a contract"],
+        )
+    
+    # Allow INSUFFICIENT_DATA to bypass compliance validation
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+    if uses_insufficient_data:
+        return ValidationResult(
+            stage="compliance",
+            passed=True,
+            contract_reference=contract.to_dict(),
+        )
+    
     failed: list[str] = []
     corrections: list[str] = []
 
+    # Check for guessing indicators in strict mode
     if MODE_STRICT in modes:
         lower = ai_output.lower()
-        has_insufficient_data = "INSUFFICIENT_DATA:" in ai_output
         guesses = [ind for ind in _GUESSING_INDICATORS if ind in lower]
-        if guesses and not has_insufficient_data:
+        if guesses:
             failed.append("strict_mode:guessing_detected")
             corrections.append(
-                "Strict mode prohibits guessing. "
+                "Contract prohibits guessing. "
                 "Replace uncertain statements with INSUFFICIENT_DATA: <reason>"
             )
-
-    if MODE_PREDICTION in modes and "ALTERNATIVES:" not in ai_output:
-        failed.append("prediction_mode:multiple_paths_absent")
-        corrections.append(
-            "prediction_mode requires an ALTERNATIVES: section with multiple paths"
-        )
-
-    if MODE_DEBUG in modes and "STEP_" not in ai_output:
-        failed.append("debug_mode:stepwise_reasoning_absent")
-        corrections.append(
-            "debug_mode requires stepwise reasoning "
-            "(e.g. STEP_1: …, STEP_2: …)"
-        )
-
-    if MODE_AUDIT in modes and "RISK_IDENTIFICATION:" not in ai_output:
-        failed.append("audit_mode:risk_identification_absent")
-        corrections.append(
-            "audit_mode requires a RISK_IDENTIFICATION: section"
-        )
 
     return ValidationResult(
         stage="compliance",
         passed=len(failed) == 0,
         failed_rules=failed,
         correction_instructions=corrections,
+        contract_reference=contract.to_dict(),
     )
 
 
@@ -462,92 +518,66 @@ def stage_3_compliance_validation(ai_output: str, modes: list[str]) -> Validatio
 _STRUCTURED_MODES = frozenset({MODE_PREDICTION, MODE_DEBUG, MODE_AUDIT, MODE_BUILDER})
 
 
-def _check_response_contract(ai_output: str, modes: list[str]) -> ValidationResult:
-    """Enforce response_contract invariants for structured modes.
-
-    Rules enforced:
-    - ``no_free_text_for_structured_modes``: when prediction/debug/audit/builder
-      is active the response MUST contain at least one required structural marker.
-    - ``partial_responses_rejected``: a response with zero structural markers while
-      a structured mode is active is treated as pure free-text and rejected.
-
-    Note: stage_1 validates each individual missing marker; this check acts as an
-    early-reject guard for responses that contain zero structural markers at all.
-    Both checks run in parallel in the validation pipeline so that all failures
-    are visible in the feedback sent to the retry engine.
+def _check_response_contract(
+    ai_output: str, modes: list[str], contract: ContractObject | None = None
+) -> ValidationResult:
+    """Enforce response_contract invariants based on contract.
+    
+    CONTRACT-DRIVEN VALIDATION:
+    - When modes == []: skip validation
+    - When modes == ["strict_mode"] with contract: check output_format compliance
     """
+    # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="response_contract", passed=True)
-    lines = [line.strip() for line in ai_output.splitlines() if line.strip()]
+    
+    # STRICT MODE WITHOUT CONTRACT: invalid state
+    if contract is None:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["strict_mode_without_contract"],
+            correction_instructions=["strict_mode requires a contract"],
+        )
+    
+    # Allow INSUFFICIENT_DATA as valid response
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
-    artifact_lines = _strict_mode_artifact_lines(ai_output)
-
-    if not artifact_lines and not uses_insufficient_data:
+    if uses_insufficient_data:
         return ValidationResult(
             stage="response_contract",
-            passed=False,
-            failed_rules=["response_contract:free_text_in_strict_mode"],
-            missing_fields=["ARTIFACT_<NAME>"],
-            correction_instructions=[
-                "AGOII strict mode rejects free-text responses. "
-                "Respond with ARTIFACT_<NAME>: <value> sections or "
-                "INSUFFICIENT_DATA: <reason>"
-            ],
+            passed=True,
+            contract_reference=contract.to_dict(),
         )
+    
+    failed: list[str] = []
+    corrections: list[str] = []
+    
+    # Check output format compliance per contract
+    if contract.output_format == "structured_json":
+        # For JSON output, check if required sections are present
+        for section in contract.required_sections:
+            if section not in ai_output:
+                failed.append(f"missing_required_section:{section}")
+                corrections.append(
+                    f"Contract requires {section} section in output"
+                )
+    
+    elif contract.output_format == "labeled_sections":
+        # For labeled sections, check if required sections are present
+        for section in contract.required_sections:
+            if section not in ai_output:
+                failed.append(f"missing_required_section:{section}")
+                corrections.append(
+                    f"Contract requires {section} section in output"
+                )
 
-    invalid_lines = [
-        line
-        for line in lines
-        if not line.startswith(STRICT_MODE_ARTIFACT_PREFIX)
-        and not line.startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX)
-    ]
-    if artifact_lines and invalid_lines:
-        return ValidationResult(
-            stage="response_contract",
-            passed=False,
-            failed_rules=["response_contract:mixed_free_text_and_structured_output"],
-            correction_instructions=[
-                "When using ARTIFACT sections, every non-empty line must be "
-                "an ARTIFACT_<NAME>: <value> entry."
-            ],
-        )
-
-    if uses_insufficient_data and len(lines) > 1:
-        return ValidationResult(
-            stage="response_contract",
-            passed=False,
-            failed_rules=["response_contract:insufficient_data_must_stand_alone"],
-            correction_instructions=[
-                "If you return INSUFFICIENT_DATA: <reason>, do not include "
-                "additional free-text or ARTIFACT sections."
-            ],
-        )
-
-    active_structured = [m for m in modes if m in _STRUCTURED_MODES]
-    if not active_structured:
-        return ValidationResult(stage="response_contract", passed=True)
-
-    all_required = [
-        marker
-        for m in active_structured
-        for marker in _REQUIRED_MARKERS.get(m, [])
-    ]
-    if not all_required:
-        return ValidationResult(stage="response_contract", passed=True)
-
-    if not any(marker in ai_output for marker in all_required):
-        sample = ", ".join(all_required[:4])
-        return ValidationResult(
-            stage="response_contract",
-            passed=False,
-            failed_rules=["response_contract:free_text_in_structured_mode"],
-            missing_fields=all_required[:4],
-            correction_instructions=[
-                f"Structured mode(s) {active_structured} prohibit free-text responses. "
-                f"Include required markers: {sample}"
-            ],
-        )
-    return ValidationResult(stage="response_contract", passed=True)
+    return ValidationResult(
+        stage="response_contract",
+        passed=len(failed) == 0,
+        failed_rules=failed,
+        correction_instructions=corrections,
+        contract_reference=contract.to_dict(),
+    )
 
 
 def _build_feedback_prompt(
@@ -734,6 +764,10 @@ def mode_engine_gateway(
         selected_modes=list(active_modes),
     )
 
+    # ------------------------------------------------------------------
+    # NORMAL MODE (modes == []): skip all validation, no contract
+    # PHASE 8 — NORMAL MODE GUARANTEE
+    # ------------------------------------------------------------------
     if MODE_STRICT not in active_modes:
         audit.transformed_prompt = base_system_prompt
         raw_output = ai_call(base_system_prompt)
@@ -741,6 +775,16 @@ def mode_engine_gateway(
         audit.final_output = raw_output
         _persist_audit_record(audit)
         return raw_output, audit
+
+    # ------------------------------------------------------------------
+    # PHASE 1 — Intent Extraction (for strict_mode only)
+    # ------------------------------------------------------------------
+    intent_obj = extract_intent(user_intent)
+    
+    # ------------------------------------------------------------------
+    # PHASE 2 — Contract Construction (per request, not reused)
+    # ------------------------------------------------------------------
+    contract_obj = construct_contract(intent_obj)
 
     # ------------------------------------------------------------------
     # Stage 0: pre-generation constraints
@@ -763,6 +807,7 @@ def mode_engine_gateway(
 
     # ------------------------------------------------------------------
     # Retry loop: generate → validate (4 stages) → retry on failure
+    # PHASE 3 — Contract binding to validation
     # ------------------------------------------------------------------
     current_prompt = transformed_prompt
     raw_output = ""
@@ -774,13 +819,11 @@ def mode_engine_gateway(
         audit.raw_ai_output = raw_output
         audit.retry_count = attempt
 
-        # Four-stage validation pipeline.
-        v1 = stage_1_structural_validation(raw_output, active_modes)
-        v2 = stage_2_logical_validation(raw_output, active_modes)
-        v3 = stage_3_compliance_validation(raw_output, active_modes)
-        # v4: response contract — enforces no_free_text_for_structured_modes
-        #     and partial_responses_rejected (string-based; reply stays a string).
-        v4 = _check_response_contract(raw_output, active_modes)
+        # PHASE 4 — Four-stage CONTRACT-DRIVEN validation pipeline
+        v1 = stage_1_structural_validation(raw_output, active_modes, contract_obj)
+        v2 = stage_2_logical_validation(raw_output, active_modes, contract_obj)
+        v3 = stage_3_compliance_validation(raw_output, active_modes, contract_obj)
+        v4 = _check_response_contract(raw_output, active_modes, contract_obj)
 
         last_validation_results = [v1, v2, v3, v4]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]
@@ -796,7 +839,7 @@ def mode_engine_gateway(
             )
         else:
             # ----------------------------------------------------------
-            # Retry exhaustion — hard gate: structured failure returned.
+            # PHASE 5 — Retry exhaustion: structured failure with contract reference
             # ----------------------------------------------------------
             import json as _json
 
