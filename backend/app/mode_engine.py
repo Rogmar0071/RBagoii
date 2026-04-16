@@ -187,6 +187,17 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
     lines = ["\n\n--- MODE ENGINE EXECUTION V2 CONSTRAINTS ---"]
     lines.append(f"Active modes: {', '.join(modes)}")
 
+    # Data sovereignty — always enforced regardless of active modes.
+    lines.append(
+        "DATA SOVEREIGNTY (always enforced): You MUST NOT claim or imply access to "
+        "system logs, job statuses, internal pipelines, or any files that were not "
+        "explicitly provided in this conversation. "
+        "If data you need is absent, state what is missing and request the relevant "
+        "artifact or context from the user. "
+        "Default response when data is absent: "
+        "'I only operate on data explicitly provided to me — please share the relevant artifact.'"
+    )
+
     if MODE_STRICT in modes:
         lines.append(
             "STRICT MODE: You MUST NOT guess or assume. "
