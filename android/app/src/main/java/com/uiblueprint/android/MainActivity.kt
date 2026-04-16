@@ -107,6 +107,7 @@ class MainActivity : AppCompatActivity(),
         private const val PREF_AGENT_MODE = "agent_mode"
         private const val PREF_HOME_CONVERSATIONS = "home_conversations"
         private const val PREF_ACTIVE_HOME_CONVERSATION_ID = "active_home_conversation_id"
+        private const val PREF_NEXT_HOME_CHAT_NUMBER = "next_home_chat_number"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -333,8 +334,7 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun loadGlobalChat(conversationId: String? = activeConversationId) {
-        val currentConversationId = conversationId
-        if (currentConversationId.isNullOrBlank()) {
+        if (conversationId.isNullOrBlank()) {
             renderChatMessages(null)
             return
         }
@@ -342,7 +342,7 @@ class MainActivity : AppCompatActivity(),
         val apiKey = BuildConfig.BACKEND_API_KEY
 
         val request = Request.Builder()
-            .url("$baseUrl/api/chat?conversation_id=$currentConversationId")
+            .url("$baseUrl/api/chat?conversation_id=$conversationId")
             .get()
             .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
             .build()
@@ -356,7 +356,7 @@ class MainActivity : AppCompatActivity(),
                             val messages = runCatching {
                                 JSONObject(body).getJSONArray("messages")
                             }.getOrNull()
-                            if (activeConversationId == currentConversationId) {
+                            if (activeConversationId == conversationId) {
                                 renderChatMessages(messages)
                             }
                         }
@@ -471,9 +471,9 @@ class MainActivity : AppCompatActivity(),
                     val item = array.optJSONObject(i) ?: continue
                     val id = item.optString("id")
                     val label = item.optString("label")
-                    val pinned = item.optBoolean("pinned", false)
-                    val isAutoLabel = item.optBoolean("is_auto_label", label.startsWith(defaultHomeChatLabelPrefix()))
                     if (id.isBlank() || label.isBlank()) continue
+                    val pinned = item.optBoolean("pinned", false)
+                    val isAutoLabel = item.optBoolean("is_auto_label", false)
                     homeConversations.add(
                         HomeConversation(
                             id = id,
@@ -666,14 +666,19 @@ class MainActivity : AppCompatActivity(),
                             Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
                             return@runOnUiThread
                         }
+                        val nextChatNumber = prefs.getInt(
+                            PREF_NEXT_HOME_CHAT_NUMBER,
+                            homeConversations.size + 1,
+                        )
                         val conversation = HomeConversation(
                             id = conversationId,
-                            label = getString(R.string.label_chat_number, homeConversations.size + 1),
+                            label = getString(R.string.label_chat_number, nextChatNumber),
                             pinned = false,
                             isAutoLabel = true,
                         )
                         homeConversations.add(conversation)
                         activeConversationId = conversationId
+                        prefs.edit().putInt(PREF_NEXT_HOME_CHAT_NUMBER, nextChatNumber + 1).apply()
                         persistHomeConversations()
                         renderHomeConversationChips()
                         renderChatMessages(null)
@@ -752,9 +757,6 @@ class MainActivity : AppCompatActivity(),
     private fun sortHomeConversations() {
         homeConversations.sortByDescending { it.pinned }
     }
-
-    private fun defaultHomeChatLabelPrefix(): String =
-        getString(R.string.label_chat_number, 1).substringBefore(" 1")
 
     private fun renderChatMessages(messages: JSONArray?) {
         if (messages == null || messages.length() == 0) {
