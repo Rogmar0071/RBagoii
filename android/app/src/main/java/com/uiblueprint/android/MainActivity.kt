@@ -492,14 +492,16 @@ class MainActivity : AppCompatActivity(),
             ?.takeIf { savedId -> homeConversations.any { it.id == savedId } }
             ?: homeConversations.firstOrNull()?.id
         if (!prefs.contains(PREF_NEXT_HOME_CHAT_NUMBER)) {
-            prefs.edit().putInt(PREF_NEXT_HOME_CHAT_NUMBER, homeConversations.size + 1).apply()
+            prefs.edit().putInt(
+                PREF_NEXT_HOME_CHAT_NUMBER,
+                (homeConversations.maxOfOrNull { it.order } ?: 0) + 1,
+            ).apply()
         }
         sortHomeConversations()
         renderHomeConversationChips()
     }
 
     private fun persistHomeConversations() {
-        sortHomeConversations()
         val array = JSONArray()
         homeConversations.forEach { conversation ->
             array.put(
@@ -632,6 +634,7 @@ class MainActivity : AppCompatActivity(),
         val index = homeConversations.indexOfFirst { it.id == conversationId }
         if (index < 0) return
         homeConversations[index] = transform(homeConversations[index])
+        sortHomeConversations()
         persistHomeConversations()
         renderHomeConversationChips()
     }
@@ -691,6 +694,7 @@ class MainActivity : AppCompatActivity(),
                         homeConversations.add(conversation)
                         activeConversationId = conversationId
                         prefs.edit().putInt(PREF_NEXT_HOME_CHAT_NUMBER, nextChatNumber + 1).apply()
+                        sortHomeConversations()
                         persistHomeConversations()
                         renderHomeConversationChips()
                         renderChatMessages(null)
@@ -742,6 +746,7 @@ class MainActivity : AppCompatActivity(),
                     runOnUiThread {
                         if (resp.isSuccessful || resp.code == 404) {
                             homeConversations.remove(conversation)
+                            sortHomeConversations()
                             if (activeConversationId == conversationId) {
                                 activeConversationId = homeConversations.firstOrNull()?.id
                             }
