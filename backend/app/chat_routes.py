@@ -30,9 +30,15 @@ import httpx
 from fastapi import APIRouter, Depends
 from fastapi import Request as FastAPIRequest
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlmodel import Session, select
 
+from backend.app.artifact_utils import (
+    ArtifactItem,
+    build_artifact_context_block,
+    resolve_context_origin,
+    resolve_context_surface,
+)
 from backend.app.auth import require_auth
 from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
@@ -70,35 +76,43 @@ _TOOLS_AVAILABLE = [
 ]
 
 _CHAT_SYSTEM_PROMPT = (
-    "You are UI Blueprint Assistant — a high-discipline AI that operates at system level, "
-    "not file level or feature level.\n\n"
+    "You are UI Blueprint Assistant — a high-discipline AI that reasons about system "
+    "architecture and structural behavior.\n\n"
+
+    "You operate ONLY on data explicitly provided in this conversation.\n"
+    "You do NOT have access to system logs, job execution state, internal pipelines, "
+    "files, or any external environment unless those artifacts are explicitly supplied.\n\n"
+
     "When reasoning about any codebase, media, or domain, "
     "you apply a three-pass internal model:\n\n"
+
     "PASS 1 — TOPOLOGY RECONSTRUCTION\n"
-    "Reconstruct how the system is wired: file graph, execution roots, UI mounting structure, "
-    "state ownership nodes. This is mechanical, not interpretive.\n\n"
-    "PASS 2 — BEHAVIORAL RECONSTRUCTION\n"
-    "Simulate runtime behavior: what happens on start, on user interaction, how state mutates "
-    "and propagates, what triggers re-renders. "
-    "Extend beyond static analysis into runtime reasoning.\n\n"
-    "PASS 3 — AUTHORITY MAPPING\n"
-    "Identify who is actually in control: which component truly owns layout, which layer controls "
-    "state truth, where side effects originate, where hidden authority exists (bad patterns). "
-    "This detects UI instability, state inconsistency, and architectural drift.\n\n"
-    "You guide users through the ui-blueprint pipeline — recording screen clips, deriving domain "
-    "profiles, confirming them, and compiling blueprints — using this discipline at every step.\n\n"
-    "The three principles you never violate:\n"
-    "1. Reconstruct the system as it truly behaves (not as it is described).\n"
-    "2. Define what must never break before suggesting any change.\n"
-    "3. Design only changes that respect both the topology and the invariants.\n\n"
-    "Be concise and practical. When a user reports a bug, identify structural cause "
-    "(state loop, layout conflict, ownership clash) — not surface symptoms."
+    "1. Identify system components and their relationships.\n"
+    "2. Map data flow and control flow.\n"
+    "3. Detect structural boundaries and dependencies.\n\n"
+
+    "PASS 2 — INVARIANT DETECTION\n"
+    "1. Identify constraints that must not be violated.\n"
+    "2. Detect coupling, ownership, and responsibility boundaries.\n"
+    "3. Define what must remain stable under change.\n\n"
+
+    "PASS 3 — CONTROLLED MODIFICATION\n"
+    "1. Propose only changes that preserve invariants.\n"
+    "2. Avoid surface-level fixes that break deeper structure.\n"
+    "3. Ensure changes align with system integrity.\n\n"
+
+    "If required data is missing, explicitly state what is missing and request it.\n"
+    "Default stance: "
+    "'I only operate on data explicitly provided — please supply the relevant artifact.'\n\n"
+
+    "Be concise and practical. Focus on structural causes, not surface symptoms."
 )
 
 _OPS_CONTEXT_HEADER = (
-    "\n\n--- Recent system activity (last {n} ops events) ---\n"
+    "\n\n--- Explicitly provided ops context (last {n} events) ---\n"
+    "NOTE: This data was explicitly passed to you. You did NOT retrieve it.\n"
     "{snippet}\n"
-    "--- End of system activity ---"
+    "--- End of provided ops context ---"
 )
 
 # ---------------------------------------------------------------------------
@@ -239,6 +253,14 @@ class ChatPostRequest(BaseModel):
     # MODE_ENGINE_EXECUTION_V2: active modes for this request.
     # Defaults to [strict_mode] when omitted or empty.
     modes: list[str] | None = None
+    # ARTIFACT_INGESTION_PIPELINE_V1: user-provided artifacts for this request.
+    # Artifacts are passed verbatim into the system prompt; no preprocessing.
+    artifacts: list[ArtifactItem] | None = None
+    # CONTEXT_ASSEMBLY_ALIGNMENT_V2: UI must declare execution context.
+    # Defaults to "global" for backward compatibility with existing callers.
+    context_scope: Literal["global", "project"] = "global"
+    # Required when context_scope == "project"; ignored when context_scope == "global".
+    project_id: str | None = None
 
     @field_validator("message")
     @classmethod
@@ -247,6 +269,15 @@ class ChatPostRequest(BaseModel):
         if not text:
             raise ValueError("message is required and must not be empty.")
         return text
+
+    @model_validator(mode="after")
+    def _validate_context_scope(self) -> "ChatPostRequest":
+        # CONTEXT_ASSEMBLY_ALIGNMENT_V2: project scope requires project_id.
+        if self.context_scope == "project" and not self.project_id:
+            raise ValueError(
+                "project_id is required when context_scope is 'project'."
+            )
+        return self
 
 
 class ChatPostResponse(BaseModel):
@@ -822,6 +853,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     When enabled, the assistant is instructed to respond using ARTIFACT_*
     structured output sections.
     """
+    # CONTEXT_ORIGIN_ENFORCEMENT_V1: capture raw context_scope from body before
+    # Pydantic validation so we can distinguish explicit vs implicit_legacy intent.
+    raw_context_scope: str | None = (body or {}).get("context_scope")
+
     try:
         request = ChatPostRequest.model_validate(body or {})
     except ValidationError as exc:
@@ -848,6 +883,29 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     # resolve_modes([]) already falls back to [MODE_STRICT], so passing an empty
     # list or None both produce the same default behaviour.
     active_modes = resolve_modes(request.modes or [])
+    # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
+    active_artifacts = request.artifacts or []
+    # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
+    # by the UI or implicitly defaulted by the backend.  Internal-only — never exposed
+    # to prompts, AI output, or API responses.
+    context_scope, context_origin = resolve_context_origin(
+        raw_context_scope=raw_context_scope
+    )
+    logger.debug(
+        "context_origin resolution: scope=%s origin=%s",
+        context_scope,
+        context_origin,
+    )
+    # CONTEXT_ASSEMBLY_ALIGNMENT_V2: resolve execution context surface.
+    # Uses the origin-resolved context_scope (not raw request field) so that
+    # validation operates on the resolved value, not raw input.
+    # No external I/O — deterministic pass-through only.
+    context_surface = resolve_context_surface(
+        context_scope=context_scope,
+        project_id=request.project_id,
+        artifacts=active_artifacts,
+    )
+    resolved_artifacts = context_surface["resolved_artifacts"]
 
     db = _db_session()
     try:
@@ -899,6 +957,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
                     "ARTIFACT_SOURCES, etc."
                 )
+
+            # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
+            # inject user-provided artifacts (order: after ops/retrieval, before mode injection).
+            # Artifacts are passed verbatim — no preprocessing, no summarization.
+            artifact_block = build_artifact_context_block(resolved_artifacts)
+            if artifact_block:
+                base_system_prompt += "\n\n" + artifact_block
 
             # Build the ai_call closure; mode constraints are injected by the gateway.
             # This is the ONLY path through which _call_openai_chat is reached for
