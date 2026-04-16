@@ -1009,7 +1009,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     # MODE_ENGINE_EXECUTION_V2: resolve active modes (defaults to strict_mode).
     # resolve_modes([]) already falls back to [MODE_STRICT], so passing an empty
     # list or None both produce the same default behaviour.
-    active_modes = resolve_modes(request.modes or [])
+    if agent_mode:
+        active_modes = resolve_modes(["strict_mode"])
+    else:
+        active_modes = []
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
