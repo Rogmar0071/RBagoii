@@ -5,6 +5,9 @@ Validates:
   - Test 1: Legacy path unchanged (force_new_session=None)
   - Test 2: Clean session enforcement (force_new_session=True)
   - Test 3: No history leakage when force_new_session=True follows a prior message
+  - Test 4: Stateless mode does not write to DB
+  - Test 5: Ephemeral message structure is identical to persisted message structure
+             (EPHEMERAL_MESSAGE_CONSTRAINT_V1)
 """
 
 from __future__ import annotations
@@ -280,3 +283,51 @@ class TestStatelessNoPersistence:
         contents = [m["content"] for m in hist.json()["messages"]]
         assert "Should be in history" in contents
         assert "Should NOT be in history" not in contents
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — Ephemeral message structure mirrors persisted message structure
+#           (EPHEMERAL_MESSAGE_CONSTRAINT_V1)
+# ---------------------------------------------------------------------------
+
+
+class TestEphemeralMessageStructure:
+    def test_ephemeral_and_persisted_keys_are_identical(self, client: TestClient, monkeypatch):
+        """
+        Persisted and ephemeral ChatMessageResponse objects must expose exactly
+        the same set of keys — no extra fields, no missing fields.
+
+        This guards against _new_ephemeral_message drifting into a parallel
+        message model.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        # A legacy request persists both messages — take the user_message as reference.
+        persisted_resp = _post_chat(client, "Persisted message")
+        persisted_keys = set(persisted_resp["user_message"].keys())
+
+        # A stateless request produces ephemeral messages — compare against persisted.
+        ephemeral_resp = _post_chat(client, "Ephemeral message", force_new_session=True)
+        ephemeral_keys = set(ephemeral_resp["user_message"].keys())
+
+        assert ephemeral_keys == persisted_keys, (
+            f"Ephemeral message keys differ from persisted message keys.\n"
+            f"  Missing from ephemeral : {persisted_keys - ephemeral_keys}\n"
+            f"  Extra in ephemeral     : {ephemeral_keys - persisted_keys}"
+        )
+
+    def test_ephemeral_assistant_keys_match_persisted(self, client: TestClient, monkeypatch):
+        """Same structural check for the assistant message slot."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        persisted_resp = _post_chat(client, "Persisted assistant")
+        persisted_keys = set(persisted_resp["assistant_message"].keys())
+
+        ephemeral_resp = _post_chat(client, "Ephemeral assistant", force_new_session=True)
+        ephemeral_keys = set(ephemeral_resp["assistant_message"].keys())
+
+        assert ephemeral_keys == persisted_keys, (
+            f"Ephemeral assistant message keys differ from persisted.\n"
+            f"  Missing from ephemeral : {persisted_keys - ephemeral_keys}\n"
+            f"  Extra in ephemeral     : {ephemeral_keys - persisted_keys}"
+        )
