@@ -160,9 +160,6 @@ class TestConversationIsolation:
         cid_a = _new_conversation(client)
         cid_b = _new_conversation(client)
 
-        # Seed B with a message first.
-        _post_chat(client, "Polluting message in B", conversation_id=cid_b)
-
         captured: list[list] = []
 
         def _capturing_call(msg, key, history=None, system_prompt=None):
@@ -170,13 +167,15 @@ class TestConversationIsolation:
             return "stub"
 
         with patch.object(cr, "_call_openai_chat", side_effect=_capturing_call):
-            # Now send to A — must NOT see B's history.
+            # Seed B with a message first (captured[0]).
+            _post_chat(client, "Polluting message in B", conversation_id=cid_b)
+            # Now send A's first message (captured[1]) — must NOT see B's history.
             _post_chat(client, "First message to A", conversation_id=cid_a)
 
-        assert len(captured) == 1
-        # The call for A's first message should have an empty history
-        # because A has no prior messages.
-        assert captured[0] == [], (
+        assert len(captured) == 2
+        # A's first message: history window passed to OpenAI must be empty
+        # because A has no prior messages — B's messages are invisible.
+        assert captured[1] == [], (
             "CRITICAL: A's AI call received messages from B — cross-context leakage"
         )
 
@@ -315,8 +314,6 @@ class TestStatelessOverride:
         import backend.app.chat_routes as cr
 
         cid = _new_conversation(client)
-        # Seed with a real persisted message.
-        _post_chat(client, "Persisted seed message", conversation_id=cid)
 
         captured: list[list] = []
 
@@ -325,11 +322,13 @@ class TestStatelessOverride:
             return "stub"
 
         with patch.object(cr, "_call_openai_chat", side_effect=_capturing_call):
-            # Stateless request on the same conversation — must not see prior history.
+            # Seed with a real persisted message (captured[0]).
+            _post_chat(client, "Persisted seed message", conversation_id=cid)
+            # Stateless request (captured[1]) — must not see prior history.
             _post_chat(client, "Stateless request", force_new_session=True)
 
-        assert len(captured) == 1
-        assert captured[0] == [], (
+        assert len(captured) == 2
+        assert captured[1] == [], (
             "force_new_session=True must bypass all DB reads — history must be empty"
         )
 
@@ -460,7 +459,7 @@ class TestConversationDeletion:
     def test_delete_legacy_default_explicitly_allowed(
         self, client: TestClient, monkeypatch
     ):
-        """legacy_default CAN be cleared by explicitly calling DELETE on it."""
+        """legacy_default CAN be cleared by calling DELETE with ?confirm=true."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         _post_chat(client, "Legacy message to delete")
@@ -469,10 +468,31 @@ class TestConversationDeletion:
         assert len(history_before) >= 2  # user + assistant
 
         del_resp = client.delete(
-            "/api/chat/conversation/legacy_default", headers=_auth()
+            "/api/chat/conversation/legacy_default",
+            params={"confirm": "true"},
+            headers=_auth(),
         )
         assert del_resp.status_code == 200
         assert del_resp.json()["deleted"] >= 2
 
         history_after = _get_history(client)
         assert history_after == []
+
+    def test_delete_legacy_default_without_confirm_rejected(
+        self, client: TestClient, monkeypatch
+    ):
+        """DELETE legacy_default without ?confirm=true must be rejected (RULE 4)."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        _post_chat(client, "Legacy message that must not be silently deleted")
+
+        del_resp = client.delete(
+            "/api/chat/conversation/legacy_default",
+            headers=_auth(),
+        )
+        assert del_resp.status_code == 400
+        assert del_resp.json()["error"]["code"] == "confirmation_required"
+
+        # Messages must still be present.
+        history = _get_history(client)
+        assert len(history) >= 2

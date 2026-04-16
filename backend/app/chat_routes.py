@@ -897,19 +897,35 @@ def create_conversation() -> JSONResponse:
     status_code=200,
     dependencies=[Depends(require_auth)],
 )
-def delete_conversation(conversation_id: str) -> JSONResponse:
+def delete_conversation(
+    conversation_id: str,
+    confirm: bool = Query(default=False),
+) -> JSONResponse:
     """
     Delete all messages belonging to the given conversation_id.
 
     CONVERSATION_LIFECYCLE_V1:
     - Deletes ALL messages for the specified conversation.
     - Does NOT affect any other conversation.
-    - "legacy_default" can be cleared explicitly via this endpoint.
+
+    RULE 4 — DELETE SAFETY:
+    Deleting ``"legacy_default"`` requires ``?confirm=true`` to prevent silent
+    deletion of the backward-compatibility containment zone.
 
     Response::
 
         { "deleted": <count> }
     """
+    # RULE 4: legacy_default is the backward-compatibility containment zone.
+    # Silent deletion is not allowed — caller must pass ?confirm=true.
+    if conversation_id == "legacy_default" and not confirm:
+        return _error(
+            400,
+            "confirmation_required",
+            "Deleting 'legacy_default' requires explicit confirmation. "
+            "Retry with ?confirm=true.",
+        )
+
     db = _db_session()
     if db is None:
         return _error(
