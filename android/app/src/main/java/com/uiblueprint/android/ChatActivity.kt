@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import android.view.View
 import android.widget.EditText
 import android.widget.Toast
@@ -50,6 +51,9 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     private lateinit var prefs: SharedPreferences
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "ChatActivity-worker") }
     private lateinit var adapter: ChatMessageAdapter
+
+    // GLOBAL_CONVERSATION_ACTIVATION_V1: single active conversation per session.
+    private var conversationId: String? = null
 
     private val speechInputLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -106,6 +110,12 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         }
 
         binding.btnSend.setOnClickListener { onSendClicked() }
+
+        // GLOBAL_CONVERSATION_ACTIVATION_V1: "+" button starts a new conversation.
+        binding.btnAttach.setOnClickListener {
+            conversationId = null
+            adapter.submitList(emptyList())
+        }
 
         setupMicButton()
 
@@ -218,31 +228,50 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         binding.btnSend.isEnabled = false
 
         val agentMode = binding.switchAgentMode.isChecked
-
-        val bodyJson = JSONObject().apply {
-            put("message", message)
-            put("agent_mode", agentMode)
-            put(
-                "context",
-                JSONObject().apply {
-                    put("session_id", JSONObject.NULL)
-                    put("domain_profile_id", JSONObject.NULL)
-                },
-            )
-        }.toString()
-
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
 
-        val request = Request.Builder()
-            .url("$baseUrl/api/chat")
-            .post(bodyJson.toRequestBody("application/json".toMediaType()))
-            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-            // Send X-Agent-Mode header as well so backends that read the header work.
-            .addHeader("X-Agent-Mode", if (agentMode) "1" else "0")
-            .build()
-
         executor.execute {
+            // GLOBAL_CONVERSATION_ACTIVATION_V1: lazy-init conversation on first send.
+            if (conversationId == null) {
+                Log.d("ChatActivity", "Creating new conversation...")
+                conversationId = fetchNewConversationId(baseUrl, apiKey)
+                if (conversationId != null) {
+                    Log.d("ChatActivity", "Conversation created: ${conversationId}")
+                }
+            }
+
+            val cid = conversationId
+            if (cid == null) {
+                Log.e("ChatActivity", "Conversation creation FAILED — aborting send")
+                runOnUiThread {
+                    showError("Error: conversation_id missing — initialization failure")
+                    binding.btnSend.isEnabled = true
+                }
+                return@execute
+            }
+
+            val bodyJson = JSONObject().apply {
+                put("message", message)
+                put("conversation_id", cid)
+                put("agent_mode", agentMode)
+                put(
+                    "context",
+                    JSONObject().apply {
+                        put("session_id", JSONObject.NULL)
+                        put("domain_profile_id", JSONObject.NULL)
+                    },
+                )
+            }.toString()
+
+            val request = Request.Builder()
+                .url("$baseUrl/api/chat")
+                .post(bodyJson.toRequestBody("application/json".toMediaType()))
+                .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+                // Send X-Agent-Mode header as well so backends that read the header work.
+                .addHeader("X-Agent-Mode", if (agentMode) "1" else "0")
+                .build()
+
             try {
                 val response = BackendClient.executeWithRetry(request) { attempt, total ->
                     runOnUiThread {
@@ -267,6 +296,30 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     binding.btnSend.isEnabled = true
                 }
             }
+        }
+    }
+
+    // GLOBAL_CONVERSATION_ACTIVATION_V1: called from the worker thread before the first send.
+    private fun fetchNewConversationId(baseUrl: String, apiKey: String): String? {
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/conversation/new")
+            .post("{}".toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+        return try {
+            BackendClient.executeWithRetry(request).use { resp ->
+                if (resp.isSuccessful) {
+                    JSONObject(resp.body?.string() ?: "")
+                        .optString("conversation_id")
+                        .takeIf { it.isNotEmpty() }
+                } else {
+                    Log.e("ChatActivity", "Conversation creation FAILED — HTTP ${resp.code}")
+                    null
+                }
+            }
+        } catch (e: IOException) {
+            Log.e("ChatActivity", "Conversation creation FAILED — ${e.message}")
+            null
         }
     }
 
