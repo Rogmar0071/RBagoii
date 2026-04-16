@@ -11,12 +11,13 @@ Status        : LOCKED
 Reversibility : REVERSIBLE
 Depends on    : MODE_ENGINE_ENFORCEMENT_PATCH_V1
 
-No AI response may exit the system without passing full validation.
+Strict-mode responses are validated before exit; non-strict responses pass through unchanged.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,25 +46,19 @@ _MODE_PRIORITY: dict[str, int] = {m: i for i, m in enumerate(MODE_PRIORITY_ORDER
 
 # Maximum number of validation retries before structured failure is returned.
 MAX_RETRIES = 2
+STRICT_MODE_ARTIFACT_PREFIX = "ARTIFACT_"
+STRICT_MODE_INSUFFICIENT_DATA_PREFIX = "INSUFFICIENT_DATA:"
 
 
 def resolve_modes(requested: list[str]) -> list[str]:
-    """Validate, deduplicate, and sort modes by priority.
-
-    Unknown modes are silently filtered out.  If the resulting list is empty,
-    falls back to ``[strict_mode]``.
-    """
-    valid = sorted(
-        {m for m in requested if m in SUPPORTED_MODES},
-        key=lambda m: _MODE_PRIORITY.get(m, 999),
-    )
-    return valid if valid else [MODE_STRICT]
+    """Filter modes without inserting, reordering, or deduplicating entries."""
+    return [mode for mode in requested if mode in SUPPORTED_MODES]
 
 
-def effective_mode(modes: list[str]) -> str:
-    """Return the highest-priority active mode from *modes*."""
+def effective_mode(modes: list[str]) -> str | None:
+    """Return the highest-priority active mode from *modes*, or ``None``."""
     resolved = resolve_modes(modes)
-    return resolved[0]
+    return resolved[0] if resolved else None
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +168,8 @@ def stage_0_pre_generation_constraints(
     (ok, reason)
         *ok* is ``False`` when generation must be blocked; *reason* explains why.
     """
+    if MODE_STRICT not in modes:
+        return True, ""
     if not user_intent or not user_intent.strip():
         return False, "missing_required_input: query must not be empty"
     return True, ""
@@ -201,7 +198,8 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
         lines.append(
             "STRICT MODE: You MUST NOT guess or assume. "
             "If you lack sufficient information respond with exactly: "
-            "INSUFFICIENT_DATA: <reason>. Hallucination is prohibited."
+            "INSUFFICIENT_DATA: <reason>. Otherwise respond using "
+            "ARTIFACT_<NAME>: <value> sections only. Hallucination is prohibited."
         )
 
     if MODE_PREDICTION in modes:
@@ -260,12 +258,30 @@ _REQUIRED_MARKERS: dict[str, list[str]] = {
     MODE_BUILDER: ["SECTION_"],
 }
 
+_STRICT_ARTIFACT_LINE = re.compile(r"^(ARTIFACT_[A-Z0-9_]+):\s*(.*)$")
+
+
+def _strict_mode_uses_insufficient_data(ai_output: str) -> bool:
+    return ai_output.strip().startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX)
+
+
+def _strict_mode_artifact_lines(ai_output: str) -> list[str]:
+    return [
+        line.strip()
+        for line in ai_output.splitlines()
+        if line.strip().startswith(STRICT_MODE_ARTIFACT_PREFIX)
+    ]
+
 
 def stage_1_structural_validation(ai_output: str, modes: list[str]) -> ValidationResult:
     """Validate that required fields are present in *ai_output*."""
+    if MODE_STRICT not in modes:
+        return ValidationResult(stage="structural", passed=True)
     missing: list[str] = []
     failed: list[str] = []
     corrections: list[str] = []
+    artifact_lines = _strict_mode_artifact_lines(ai_output)
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
 
     for mode in modes:
         for marker in _REQUIRED_MARKERS.get(mode, []):
@@ -279,6 +295,13 @@ def stage_1_structural_validation(ai_output: str, modes: list[str]) -> Validatio
         missing.append("non_empty_output")
         corrections.append(
             "Provide a non-empty response or state INSUFFICIENT_DATA: <reason>"
+        )
+    elif not artifact_lines and not uses_insufficient_data:
+        failed.append("strict_mode:structured_output_required")
+        missing.append("ARTIFACT_<NAME>")
+        corrections.append(
+            "Respond using at least one ARTIFACT_<NAME>: <value> section or "
+            "INSUFFICIENT_DATA: <reason>"
         )
 
     return ValidationResult(
@@ -297,8 +320,24 @@ def stage_1_structural_validation(ai_output: str, modes: list[str]) -> Validatio
 
 def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationResult:
     """Validate logical consistency of *ai_output*."""
+    if MODE_STRICT not in modes:
+        return ValidationResult(stage="logical", passed=True)
     failed: list[str] = []
     corrections: list[str] = []
+    artifact_lines = _strict_mode_artifact_lines(ai_output)
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+
+    if artifact_lines and not uses_insufficient_data:
+        malformed = []
+        for line in artifact_lines:
+            match = _STRICT_ARTIFACT_LINE.fullmatch(line)
+            if match is None or not match.group(2).strip():
+                malformed.append(line)
+        if malformed:
+            failed.append("strict_mode:malformed_artifact_section")
+            corrections.append(
+                "Each structured line must match ARTIFACT_<NAME>: <value>"
+            )
 
     if MODE_PREDICTION in modes:
         # Assumptions must be explicit (non-empty after the label).
@@ -372,6 +411,8 @@ _GUESSING_INDICATORS = frozenset(
 
 def stage_3_compliance_validation(ai_output: str, modes: list[str]) -> ValidationResult:
     """Validate mode-specific compliance rules on *ai_output*."""
+    if MODE_STRICT not in modes:
+        return ValidationResult(stage="compliance", passed=True)
     failed: list[str] = []
     corrections: list[str] = []
 
@@ -435,6 +476,53 @@ def _check_response_contract(ai_output: str, modes: list[str]) -> ValidationResu
     Both checks run in parallel in the validation pipeline so that all failures
     are visible in the feedback sent to the retry engine.
     """
+    if MODE_STRICT not in modes:
+        return ValidationResult(stage="response_contract", passed=True)
+    lines = [line.strip() for line in ai_output.splitlines() if line.strip()]
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+    artifact_lines = _strict_mode_artifact_lines(ai_output)
+
+    if not artifact_lines and not uses_insufficient_data:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:free_text_in_strict_mode"],
+            missing_fields=["ARTIFACT_<NAME>"],
+            correction_instructions=[
+                "AGOII strict mode rejects free-text responses. "
+                "Respond with ARTIFACT_<NAME>: <value> sections or "
+                "INSUFFICIENT_DATA: <reason>"
+            ],
+        )
+
+    invalid_lines = [
+        line
+        for line in lines
+        if not line.startswith(STRICT_MODE_ARTIFACT_PREFIX)
+        and not line.startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX)
+    ]
+    if artifact_lines and invalid_lines:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:mixed_free_text_and_structured_output"],
+            correction_instructions=[
+                "When using ARTIFACT sections, every non-empty line must be "
+                "an ARTIFACT_<NAME>: <value> entry."
+            ],
+        )
+
+    if uses_insufficient_data and len(lines) > 1:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:insufficient_data_must_stand_alone"],
+            correction_instructions=[
+                "If you return INSUFFICIENT_DATA: <reason>, do not include "
+                "additional free-text or ARTIFACT sections."
+            ],
+        )
+
     active_structured = [m for m in modes if m in _STRUCTURED_MODES]
     if not active_structured:
         return ValidationResult(stage="response_contract", passed=True)
@@ -491,14 +579,22 @@ def _build_structured_failure(
     retry_count: int,
 ) -> dict[str, Any]:
     """Return a structured failure dict after retry exhaustion."""
-    all_failed = [r for vr in validation_results for r in vr.failed_rules]
-    all_missing = [r for vr in validation_results for r in vr.missing_fields]
-    all_corrections = [r for vr in validation_results for r in vr.correction_instructions]
+    all_failed = list(
+        dict.fromkeys(r for vr in validation_results for r in vr.failed_rules)
+    ) or ["validation_failed:unknown"]
+    all_missing = list(
+        dict.fromkeys(r for vr in validation_results for r in vr.missing_fields)
+    )
+    all_corrections = list(
+        dict.fromkeys(r for vr in validation_results for r in vr.correction_instructions)
+    ) or [
+        "Respond with ARTIFACT_<NAME>: <value> sections or INSUFFICIENT_DATA: <reason>"
+    ]
     return {
         "error": "VALIDATION_FAILED",
         "failed_rules": all_failed,
         "missing_fields": all_missing,
-        "suggested_fix": all_corrections,
+        "correction_instructions": all_corrections,
         "retry_count": retry_count,
     }
 
@@ -593,23 +689,21 @@ def mode_engine_gateway(
     """Single mandatory entry/exit point for all AI interactions on POST /api/chat.
 
     Both the stub path (no ``OPENAI_API_KEY``) and the live OpenAI path pass
-    through this function.  No AI response exits the system without:
+    through this function.
 
-    1. Passing stage 0 pre-generation constraints.
-    2. Having mode constraints injected into the system prompt.
-    3. Passing all four validation stages (structural → logical → compliance →
-       response contract).
-    4. Exhausting up to ``MAX_RETRIES`` attempts with corrective feedback if
-       validation fails.
-    5. Having a mandatory audit record written to the database.
+    - When ``strict_mode`` is active, mode constraints are injected and the
+      full validation pipeline runs before output exits the system.
+    - When ``strict_mode`` is absent, the base prompt is passed through
+      unchanged and validation is skipped.
+    - An audit record is always written.
 
     Parameters
     ----------
     user_intent:
         The user's raw query/message.
     modes:
-        Requested mode list.  Unknown entries are filtered; empty list
-        falls back to ``[strict_mode]``.
+        Final mode list for this request. Empty or non-strict lists bypass
+        mode injection and validation.
     ai_call:
         Callable ``(system_prompt: str) -> str`` that invokes the AI and
         returns raw text.  Exceptions propagate.
@@ -630,19 +724,28 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    resolved_modes = resolve_modes(modes)
-    # Apply mode stacking conflict resolution (logs conflicts, returns same list).
-    resolved_modes = apply_mode_conflict_resolution(resolved_modes)
+    active_modes = resolve_modes(modes)
+    if MODE_STRICT in active_modes:
+        # Log any configured mode conflicts; execution continues on active_modes.
+        apply_mode_conflict_resolution(active_modes)
 
     audit = ModeEngineAuditRecord(
         user_intent=user_intent,
-        selected_modes=resolved_modes,
+        selected_modes=list(active_modes),
     )
+
+    if MODE_STRICT not in active_modes:
+        audit.transformed_prompt = base_system_prompt
+        raw_output = ai_call(base_system_prompt)
+        audit.raw_ai_output = raw_output
+        audit.final_output = raw_output
+        _persist_audit_record(audit)
+        return raw_output, audit
 
     # ------------------------------------------------------------------
     # Stage 0: pre-generation constraints
     # ------------------------------------------------------------------
-    ok, reason = stage_0_pre_generation_constraints(user_intent, resolved_modes)
+    ok, reason = stage_0_pre_generation_constraints(user_intent, active_modes)
     if not ok:
         import json as _json
 
@@ -654,7 +757,7 @@ def mode_engine_gateway(
     # ------------------------------------------------------------------
     # Build mode-injected system prompt (includes conflict constraints)
     # ------------------------------------------------------------------
-    mode_injection = build_mode_system_prompt_injection(resolved_modes)
+    mode_injection = build_mode_system_prompt_injection(active_modes)
     transformed_prompt = base_system_prompt + mode_injection
     audit.transformed_prompt = transformed_prompt
 
@@ -672,12 +775,12 @@ def mode_engine_gateway(
         audit.retry_count = attempt
 
         # Four-stage validation pipeline.
-        v1 = stage_1_structural_validation(raw_output, resolved_modes)
-        v2 = stage_2_logical_validation(raw_output, resolved_modes)
-        v3 = stage_3_compliance_validation(raw_output, resolved_modes)
+        v1 = stage_1_structural_validation(raw_output, active_modes)
+        v2 = stage_2_logical_validation(raw_output, active_modes)
+        v3 = stage_3_compliance_validation(raw_output, active_modes)
         # v4: response contract — enforces no_free_text_for_structured_modes
         #     and partial_responses_rejected (string-based; reply stays a string).
-        v4 = _check_response_contract(raw_output, resolved_modes)
+        v4 = _check_response_contract(raw_output, active_modes)
 
         last_validation_results = [v1, v2, v3, v4]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]

@@ -5,7 +5,7 @@ Tests for global chat upgrades:
   - POST /v1/global/messages/{message_id}/edit  (alias)
   - GET  /v1/global/messages  (alias)
   - Retrieval trigger detection (_needs_web_search)
-  - agent_mode flag and X-Agent-Mode header in POST /api/chat
+  - agent_mode flag in POST /api/chat
   - superseded field in GET /api/chat
 """
 
@@ -288,38 +288,52 @@ class TestNeedsWebSearch:
 
 
 # ---------------------------------------------------------------------------
-# Tests: agent_mode flag and X-Agent-Mode header
+# Tests: agent_mode flag
 # ---------------------------------------------------------------------------
 
 
 class TestChatAgentMode:
-    def test_agent_mode_body_param_accepted(self, client: TestClient, monkeypatch):
+    def test_agent_mode_false_skips_validation(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        import backend.app.mode_engine as me
+
+        calls = {"n": 0}
+        original = me.stage_1_structural_validation
+
+        def _tracking_stage_1(ai_output: str, modes: list[str]):
+            calls["n"] += 1
+            return original(ai_output, modes)
+
+        monkeypatch.setattr(me, "stage_1_structural_validation", _tracking_stage_1)
+        resp = client.post(
+            "/api/chat",
+            json=_chat_payload("Hello", agent_mode=False),
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+        assert calls["n"] == 0
+
+    def test_agent_mode_true_triggers_validation(self, client: TestClient, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        import backend.app.mode_engine as me
+
+        calls = {"n": 0}
+        original = me.stage_1_structural_validation
+
+        def _tracking_stage_1(ai_output: str, modes: list[str]):
+            calls["n"] += 1
+            return original(ai_output, modes)
+
+        monkeypatch.setattr(me, "stage_1_structural_validation", _tracking_stage_1)
         resp = client.post(
             "/api/chat",
             json=_chat_payload("Hello", agent_mode=True),
             headers=_auth(),
         )
         assert resp.status_code == 200
-
-    def test_agent_mode_header_accepted(self, client: TestClient, monkeypatch):
-        """X-Agent-Mode: 1 header activates agent mode."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json=_chat_payload("Hello"),
-            headers={**_auth(), "X-Agent-Mode": "1"},
-        )
-        assert resp.status_code == 200
-
-    def test_no_agent_mode_default(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json=_chat_payload("Hello"),
-            headers=_auth(),
-        )
-        assert resp.status_code == 200
+        assert calls["n"] >= 1
 
 
 # ---------------------------------------------------------------------------
