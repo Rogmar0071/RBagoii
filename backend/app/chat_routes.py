@@ -261,6 +261,9 @@ class ChatPostRequest(BaseModel):
     context_scope: Literal["global", "project"] = "global"
     # Required when context_scope == "project"; ignored when context_scope == "global".
     project_id: str | None = None
+    # CONVERSATION_BOUNDARY_CONTROL_V1: when True, bypass all historical messages for
+    # this request.  None/False preserves legacy behavior (history is loaded normally).
+    force_new_session: bool | None = None
 
     @field_validator("message")
     @classmethod
@@ -910,7 +913,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     db = _db_session()
     try:
         user_message = _persist_message(db, "user", message, context)
-        history = _load_recent_history(db)
+        # CONVERSATION_BOUNDARY_CONTROL_V1: skip history when force_new_session is True.
+        if request.force_new_session is True:
+            logger.debug("force_new_session=True: bypassing conversation history")
+            history = []
+        else:
+            history = _load_recent_history(db)
 
         # Read OPENAI_API_KEY at call time -- never returned or logged.
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
