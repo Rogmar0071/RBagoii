@@ -26,7 +26,6 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mode_engine")
 
 from backend.app.main import app  # noqa: E402
-from backend.tests.test_utils import _chat_payload
 from backend.app.mode_engine import (
     _GATEWAY_COVERAGE,
     _MODE_CONFLICT_RULES,
@@ -52,6 +51,7 @@ from backend.app.mode_engine import (
     stage_2_logical_validation,
     stage_3_compliance_validation,
 )
+from backend.tests.test_utils import _chat_payload
 
 TOKEN = "test-secret-key"
 

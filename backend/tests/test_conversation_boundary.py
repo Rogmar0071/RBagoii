@@ -67,7 +67,12 @@ def _auth() -> dict:
     return {"Authorization": f"Bearer {TOKEN}"}
 
 
-def _post_chat(client: TestClient, message: str, conversation_id: str = None, force_new_session=None) -> dict:
+def _post_chat(
+    client: TestClient,
+    message: str,
+    conversation_id: str = None,
+    force_new_session=None,
+) -> dict:
     kwargs: dict = {"context": {}}
     if conversation_id is not None:
         kwargs["conversation_id"] = conversation_id
@@ -164,7 +169,12 @@ class TestNoHistoryLeakage:
             # Step 1: pollute conversation.
             _post_chat(client, "Polluting message without flag", conversation_id=cid)
             # Step 2: clean request.
-            _post_chat(client, "Should not see prior message", conversation_id=cid, force_new_session=True)
+            _post_chat(
+                client,
+                "Should not see prior message",
+                conversation_id=cid,
+                force_new_session=True,
+            )
 
         assert len(second_call_history) == 1
         assert second_call_history[0] == [], (
