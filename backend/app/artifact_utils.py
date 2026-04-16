@@ -7,6 +7,7 @@ into AI system prompts.
 Contracts:
   ARTIFACT_INGESTION_PIPELINE_V1 (MQP-PHASE-B)
   CONTEXT_ASSEMBLY_ALIGNMENT_V2
+  CONTEXT_ORIGIN_ENFORCEMENT_V1
 
 Rules (non-negotiable):
 - Artifacts are NEVER summarized, truncated, or preprocessed.
@@ -105,3 +106,29 @@ def resolve_context_surface(
         "scope": context_scope,
         "project_id": project_id,
     }
+
+
+def resolve_context_origin(
+    *,
+    raw_context_scope: Optional[str],
+) -> tuple[str, str]:
+    """Classify the context origin for CONTEXT_ORIGIN_ENFORCEMENT_V1.
+
+    Separates what the system RECEIVED from what the system ASSUMED.
+    This is an internal classification — never exposed to UI or AI.
+
+    Parameters
+    ----------
+    raw_context_scope:
+        The raw value from the incoming request body, or None if omitted.
+
+    Returns
+    -------
+    (context_scope, context_origin)
+        context_scope  — resolved scope string ("global" or "project")
+        context_origin — "explicit" if the caller provided context_scope,
+                         "implicit_legacy" if it was absent (backend defaulted)
+    """
+    if raw_context_scope is None:
+        return "global", "implicit_legacy"
+    return raw_context_scope, "explicit"

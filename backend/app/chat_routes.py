@@ -36,6 +36,7 @@ from sqlmodel import Session, select
 from backend.app.artifact_utils import (
     ArtifactItem,
     build_artifact_context_block,
+    resolve_context_origin,
     resolve_context_surface,
 )
 from backend.app.auth import require_auth
@@ -852,6 +853,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     When enabled, the assistant is instructed to respond using ARTIFACT_*
     structured output sections.
     """
+    # CONTEXT_ORIGIN_ENFORCEMENT_V1: capture raw context_scope from body before
+    # Pydantic validation so we can distinguish explicit vs implicit_legacy intent.
+    raw_context_scope: str | None = (body or {}).get("context_scope")
+
     try:
         request = ChatPostRequest.model_validate(body or {})
     except ValidationError as exc:
@@ -880,10 +885,23 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     active_modes = resolve_modes(request.modes or [])
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []
+    # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
+    # by the UI or implicitly defaulted by the backend.  Internal-only — never exposed
+    # to prompts, AI output, or API responses.
+    context_scope, context_origin = resolve_context_origin(
+        raw_context_scope=raw_context_scope
+    )
+    logger.debug(
+        "context_origin resolution: scope=%s origin=%s",
+        context_scope,
+        context_origin,
+    )
     # CONTEXT_ASSEMBLY_ALIGNMENT_V2: resolve execution context surface.
+    # Uses the origin-resolved context_scope (not raw request field) so that
+    # validation operates on the resolved value, not raw input.
     # No external I/O — deterministic pass-through only.
     context_surface = resolve_context_surface(
-        context_scope=request.context_scope,
+        context_scope=context_scope,
         project_id=request.project_id,
         artifacts=active_artifacts,
     )
