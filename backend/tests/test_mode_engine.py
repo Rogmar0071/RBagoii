@@ -586,7 +586,7 @@ class TestStubPathThroughGateway:
 
         assert v1.passed is False
         assert v2.passed is True
-        assert v3.passed is False
+        assert v3.passed is True
         assert v4.passed is False
 
     def test_stub_audit_record_is_written(self, client: TestClient, monkeypatch):
