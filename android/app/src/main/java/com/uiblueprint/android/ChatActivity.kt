@@ -234,12 +234,16 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             // GLOBAL_CONVERSATION_ACTIVATION_V1: lazy-init conversation on first send.
             if (conversationId == null) {
+                Log.d("ChatActivity", "Creating new conversation...")
                 conversationId = fetchNewConversationId(baseUrl, apiKey)
+                if (conversationId != null) {
+                    Log.d("ChatActivity", "Conversation created: ${conversationId}")
+                }
             }
 
             val cid = conversationId
             if (cid == null) {
-                Log.e("ChatActivity", "conversation_id missing — initialization failure")
+                Log.e("ChatActivity", "Conversation creation FAILED — aborting send")
                 runOnUiThread {
                     showError("Error: conversation_id missing — initialization failure")
                     binding.btnSend.isEnabled = true
@@ -309,11 +313,12 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         .optString("conversation_id")
                         .takeIf { it.isNotEmpty() }
                 } else {
+                    Log.e("ChatActivity", "Conversation creation FAILED — HTTP ${resp.code}")
                     null
                 }
             }
         } catch (e: IOException) {
-            Log.e("ChatActivity", "Failed to create conversation: ${e.message}")
+            Log.e("ChatActivity", "Conversation creation FAILED — ${e.message}")
             null
         }
     }
