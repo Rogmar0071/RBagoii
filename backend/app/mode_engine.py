@@ -726,7 +726,7 @@ def mode_engine_gateway(
     """
     active_modes = resolve_modes(modes)
     if MODE_STRICT in active_modes:
-        # Apply conflict logging only; execution continues on the validated mode list.
+        # Log any configured mode conflicts; execution continues on active_modes.
         apply_mode_conflict_resolution(active_modes)
 
     audit = ModeEngineAuditRecord(
