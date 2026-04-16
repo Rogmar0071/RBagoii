@@ -320,6 +320,9 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # Step 2: mode_engine_gateway (with contract-driven validation)
+    # CONTRACT_EXECUTION_BOUNDARY_LOCK_V1:
+    # mode_engine_gateway enforces contract validation boundary.
+    # If contract is invalid, mode_output will contain structured failure.
     # ------------------------------------------------------------------
     mode_output, _mode_audit = mode_engine_gateway(
         user_intent=user_intent,
@@ -327,6 +330,33 @@ def mutation_governance_gateway(
         ai_call=ai_call,
         base_system_prompt=_MUTATION_SYSTEM_PROMPT,
     )
+
+    # ------------------------------------------------------------------
+    # Check if mode_engine returned a validation failure
+    # (including contract boundary failure)
+    # ------------------------------------------------------------------
+    import json as _json
+    
+    try:
+        mode_output_parsed = _json.loads(mode_output)
+        if isinstance(mode_output_parsed, dict) and mode_output_parsed.get("error") == "VALIDATION_FAILED":
+            # Mode engine returned a failure (could be contract boundary failure)
+            # Block this governance request
+            validation_failure = MutationValidationResult(
+                stage=mode_output_parsed.get("stage", "unknown"),
+                passed=False,
+                failed_rules=mode_output_parsed.get("failed_rules", []),
+                correction_instructions=mode_output_parsed.get("correction_instructions", []),
+            )
+            return _build_blocked_result(
+                result=result,
+                audit=audit,
+                validation_results=[validation_failure],
+                blocked_reason=f"mode_engine_validation_failure:{mode_output_parsed.get('stage', 'unknown')}",
+            )
+    except (_json.JSONDecodeError, ValueError):
+        # Not a JSON failure response, continue normal processing
+        pass
 
     # ------------------------------------------------------------------
     # Step 3: parse AI output as MutationContract JSON

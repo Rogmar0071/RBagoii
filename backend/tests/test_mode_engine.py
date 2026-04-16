@@ -878,3 +878,184 @@ class TestAllAICallsExclusivelyThroughGateway:
 
     def test_intent_endpoint_not_in_gateway_coverage(self):
         assert "POST /api/chat/intent" not in _GATEWAY_COVERAGE
+
+
+# ===========================================================================
+# CONTRACT_EXECUTION_BOUNDARY_LOCK_V1 Tests
+# ===========================================================================
+
+
+class TestContractValidationGate:
+    """Tests for contract validation boundary."""
+    
+    def test_valid_contract_passes_validation(self):
+        """Valid contract passes the validation gate"""
+        from backend.app.contract_construction import ContractObject, validate_contract
+        
+        contract = ContractObject(
+            required_sections=["ASSUMPTIONS:", "CONFIDENCE:"],
+            required_elements=[],
+            validation_rules=["assumptions_present", "confidence_present"],
+            output_format="labeled_sections",
+        )
+        
+        result = validate_contract(contract)
+        assert result.passed is True
+        assert result.stage == "contract_boundary"
+    
+    def test_none_contract_fails_validation(self):
+        """None contract is rejected at boundary"""
+        from backend.app.contract_construction import validate_contract
+        
+        result = validate_contract(None)
+        assert result.passed is False
+        assert "contract_is_none" in result.failed_rules
+        assert "contract" in result.missing_fields
+    
+    def test_empty_required_sections_fails(self):
+        """Contract with empty required_sections fails"""
+        from backend.app.contract_construction import ContractObject, validate_contract
+        
+        contract = ContractObject(
+            required_sections=[],  # Empty - invalid
+            required_elements=[],
+            validation_rules=["test"],
+            output_format="text",
+        )
+        
+        result = validate_contract(contract)
+        assert result.passed is False
+        assert "required_sections_empty" in result.failed_rules
+    
+    def test_empty_output_format_fails(self):
+        """Contract with empty output_format fails"""
+        from backend.app.contract_construction import ContractObject, validate_contract
+        
+        contract = ContractObject(
+            required_sections=["TEST:"],
+            required_elements=[],
+            validation_rules=[],
+            output_format="",  # Empty - invalid
+        )
+        
+        result = validate_contract(contract)
+        assert result.passed is False
+        assert "output_format_empty" in result.failed_rules
+    
+    def test_duplicate_sections_detected(self):
+        """Contract with duplicate sections fails"""
+        from backend.app.contract_construction import ContractObject, validate_contract
+        
+        contract = ContractObject(
+            required_sections=["TEST:", "TEST:"],  # Duplicate
+            required_elements=[],
+            validation_rules=["test"],
+            output_format="text",
+        )
+        
+        result = validate_contract(contract)
+        assert result.passed is False
+        assert any("duplicate_section" in rule for rule in result.failed_rules)
+    
+    def test_empty_validation_rule_detected(self):
+        """Contract with empty validation rules fails"""
+        from backend.app.contract_construction import ContractObject, validate_contract
+        
+        contract = ContractObject(
+            required_sections=["TEST:"],
+            required_elements=[],
+            validation_rules=["valid_rule", ""],  # Empty rule
+            output_format="text",
+        )
+        
+        result = validate_contract(contract)
+        assert result.passed is False
+        assert "empty_validation_rule" in result.failed_rules
+
+
+class TestBoundaryEnforcement:
+    """Tests for contract boundary enforcement in mode_engine."""
+    
+    def test_invalid_contract_blocks_execution(self):
+        """Invalid contract blocks execution at boundary"""
+        from backend.app.contract_construction import ContractObject, construct_contract
+        from backend.app.intent_extraction import extract_intent
+        from unittest.mock import patch
+        
+        # Mock construct_contract to return invalid contract
+        def mock_construct(intent):
+            return ContractObject(
+                required_sections=[],  # Invalid
+                validation_rules=[],
+                output_format="",  # Invalid
+            )
+        
+        ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
+        
+        with patch('backend.app.mode_engine.construct_contract', side_effect=mock_construct):
+            output, audit = mode_engine_gateway(
+                user_intent="test",
+                modes=[MODE_STRICT],
+                ai_call=ai_call,
+                base_system_prompt="",
+            )
+        
+        # Should return validation failure
+        failure = json.loads(output)
+        assert failure["error"] == "VALIDATION_FAILED"
+        assert failure["stage"] == "contract_boundary"
+        assert "failed_rules" in failure
+        
+        # AI should never be called
+        ai_call.assert_not_called()
+    
+    def test_valid_contract_allows_execution(self):
+        """Valid contract allows execution to proceed"""
+        ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
+        
+        output, audit = mode_engine_gateway(
+            user_intent="test query",
+            modes=[MODE_STRICT],
+            ai_call=ai_call,
+            base_system_prompt="",
+        )
+        
+        # Should proceed to AI call with valid contract
+        ai_call.assert_called()
+        
+        # Output should not be a boundary failure
+        try:
+            parsed = json.loads(output)
+            if isinstance(parsed, dict):
+                assert parsed.get("stage") != "contract_boundary"
+        except json.JSONDecodeError:
+            # Not JSON, which means it's normal output - that's fine
+            pass
+    
+    def test_boundary_failure_recorded_in_audit(self):
+        """Boundary failure is recorded in audit trail"""
+        from unittest.mock import patch
+        from backend.app.contract_construction import ContractObject
+        
+        def mock_construct(intent):
+            return ContractObject(
+                required_sections=[],  # Invalid
+                validation_rules=[],
+                output_format="",
+            )
+        
+        ai_call = MagicMock(return_value="test")
+        
+        with patch('backend.app.mode_engine.construct_contract', side_effect=mock_construct):
+            output, audit = mode_engine_gateway(
+                user_intent="test",
+                modes=[MODE_STRICT],
+                ai_call=ai_call,
+                base_system_prompt="",
+            )
+        
+        # Audit should record the validation failure
+        assert len(audit.validation_results) > 0
+        assert audit.validation_results[0]["stage"] == "contract_boundary"
+        assert audit.validation_results[0]["passed"] is False
+
