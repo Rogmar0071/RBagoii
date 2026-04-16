@@ -631,14 +631,20 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    selected_modes = resolve_modes(modes)
-    # Apply mode stacking conflict resolution (logs conflicts, returns same list).
-    selected_modes = apply_mode_conflict_resolution(selected_modes)
+    selected_modes = list(modes)
 
     audit = ModeEngineAuditRecord(
         user_intent=user_intent,
         selected_modes=selected_modes,
     )
+
+    if not selected_modes:
+        audit.transformed_prompt = base_system_prompt
+        raw_output = ai_call(base_system_prompt)
+        audit.raw_ai_output = raw_output
+        audit.final_output = raw_output
+        _persist_audit_record(audit)
+        return raw_output, audit
 
     # ------------------------------------------------------------------
     # Stage 0: pre-generation constraints
@@ -656,7 +662,10 @@ def mode_engine_gateway(
     # Build mode-injected system prompt (includes conflict constraints)
     # ------------------------------------------------------------------
     transformed_prompt = base_system_prompt
-    if selected_modes:
+    if MODE_STRICT in selected_modes:
+        # Apply mode stacking conflict resolution (logs conflicts, returns same list).
+        selected_modes = apply_mode_conflict_resolution(selected_modes)
+        audit.selected_modes = selected_modes
         mode_injection = build_mode_system_prompt_injection(selected_modes)
         transformed_prompt += mode_injection
     audit.transformed_prompt = transformed_prompt
