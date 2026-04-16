@@ -246,9 +246,10 @@ class TestStatelessNoPersistence:
         """
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
+        from sqlmodel import Session, select
+
         import backend.app.database as db_module
         from backend.app.models import GlobalChatMessage
-        from sqlmodel import Session, select
 
         def _count_messages() -> int:
             with Session(db_module.get_engine()) as s:
