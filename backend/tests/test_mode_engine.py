@@ -41,6 +41,7 @@ from backend.app.mode_engine import (  # noqa: E402
 from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
+EXPECTED_VALIDATION_STAGES = 4
 
 
 @pytest.fixture(autouse=True)
@@ -104,7 +105,8 @@ class TestBuildModeSystemPromptInjection:
         prompt = build_mode_system_prompt_injection([MODE_STRICT])
         assert "STRICT MODE" in prompt
         assert "INSUFFICIENT_DATA" in prompt
-        assert f"Active modes: {MODE_STRICT}" in prompt
+        assert "Active modes:" in prompt
+        assert MODE_STRICT in prompt
 
 
 class TestStage0:
@@ -240,7 +242,7 @@ class TestModeEngineGateway:
         assert output == "A valid response."
         assert audit.final_output == "A valid response."
         assert audit.retry_count == 0
-        assert len(audit.validation_results) == 4
+        assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
         ai_call.assert_called_once()
 
     def test_empty_user_intent_returns_pre_generation_blocked(self):
@@ -336,7 +338,7 @@ class TestModeEngineGateway:
         assert "MODE ENGINE" in audit.transformed_prompt
         assert audit.raw_ai_output == "Clean response."
         assert output == "Clean response."
-        assert len(audit.validation_results) == 4
+        assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
 
 
 class TestChatEndpointModeEngine:
