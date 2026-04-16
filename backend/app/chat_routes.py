@@ -33,6 +33,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlmodel import Session, select
 
+from backend.app.artifact_utils import ArtifactItem, build_artifact_context_block
 from backend.app.auth import require_auth
 from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
@@ -247,6 +248,9 @@ class ChatPostRequest(BaseModel):
     # MODE_ENGINE_EXECUTION_V2: active modes for this request.
     # Defaults to [strict_mode] when omitted or empty.
     modes: list[str] | None = None
+    # ARTIFACT_INGESTION_PIPELINE_V1: user-provided artifacts for this request.
+    # Artifacts are passed verbatim into the system prompt; no preprocessing.
+    artifacts: list[ArtifactItem] | None = None
 
     @field_validator("message")
     @classmethod
@@ -856,6 +860,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     # resolve_modes([]) already falls back to [MODE_STRICT], so passing an empty
     # list or None both produce the same default behaviour.
     active_modes = resolve_modes(request.modes or [])
+    # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
+    active_artifacts = request.artifacts or []
 
     db = _db_session()
     try:
@@ -907,6 +913,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
                     "ARTIFACT_SOURCES, etc."
                 )
+
+            # ARTIFACT_INGESTION_PIPELINE_V1: inject user-provided artifacts.
+            # Artifacts are passed verbatim — no preprocessing, no summarization.
+            artifact_block = build_artifact_context_block(active_artifacts)
+            if artifact_block:
+                base_system_prompt += "\n\n" + artifact_block
 
             # Build the ai_call closure; mode constraints are injected by the gateway.
             # This is the ONLY path through which _call_openai_chat is reached for
