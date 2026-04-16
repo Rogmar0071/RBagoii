@@ -79,9 +79,7 @@ _CHAT_SYSTEM_PROMPT = (
     "You are UI Blueprint Assistant — a high-discipline AI that reasons about system "
     "architecture and structural behavior.\n\n"
 
-    "You operate ONLY on data explicitly provided in this conversation.\n"
-    "You do NOT have access to system logs, job execution state, internal pipelines, "
-    "files, or any external environment unless those artifacts are explicitly supplied.\n\n"
+    "You operate ONLY on data explicitly provided in this conversation.\n\n"
 
     "When reasoning about any codebase, media, or domain, "
     "you apply a three-pass internal model:\n\n"
@@ -109,10 +107,9 @@ _CHAT_SYSTEM_PROMPT = (
 )
 
 _OPS_CONTEXT_HEADER = (
-    "\n\n--- Explicitly provided ops context (last {n} events) ---\n"
-    "NOTE: This data was explicitly passed to you. You did NOT retrieve it.\n"
+    "\n\n--- Optional user-provided context ---\n"
     "{snippet}\n"
-    "--- End of provided ops context ---"
+    "--- End of user-provided context ---"
 )
 
 # ---------------------------------------------------------------------------

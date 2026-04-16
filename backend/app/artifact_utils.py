@@ -55,7 +55,7 @@ def build_artifact_context_block(artifacts: list[ArtifactItem]) -> str:
     if not artifacts:
         return ""
 
-    parts = ["--- BEGIN PROVIDED ARTIFACTS ---"]
+    parts = ["--- BEGIN USER-PROVIDED DATA ---"]
     for artifact in artifacts:
         label = _TYPE_LABELS.get(artifact.type, artifact.type.capitalize())
         parts.append(f"{label}: {artifact.name}")
@@ -63,7 +63,7 @@ def build_artifact_context_block(artifacts: list[ArtifactItem]) -> str:
         parts.append("---")
 
     # Replace the trailing separator with the closing marker.
-    parts[-1] = "--- END PROVIDED ARTIFACTS ---"
+    parts[-1] = "--- END USER-PROVIDED DATA ---"
     return "\n".join(parts)
 
 
