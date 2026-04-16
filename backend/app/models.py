@@ -39,6 +39,10 @@ class GlobalChatMessage(SQLModel, table=True):
     # user / assistant / system
     role: str
     content: str = Field(sa_column=Column(sa.Text))
+    # CONVERSATION_LIFECYCLE_V1: every message belongs to a conversation.
+    # "legacy_default" is the containment zone for requests without an explicit
+    # conversation_id — it is NOT normal system behavior.
+    conversation_id: str = Field(default="legacy_default", index=True)
     session_id: Optional[str] = Field(default=None, index=True)
     domain_profile_id: Optional[str] = Field(default=None, index=True)
     created_at: Optional[datetime] = Field(

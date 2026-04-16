@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -139,7 +139,9 @@ def post_web_search(body: dict[str, Any]) -> JSONResponse:
 
 
 @_global_prefix.get("/messages", status_code=200, dependencies=[Depends(require_auth)])
-def get_global_messages() -> JSONResponse:
+def get_global_messages(
+    conversation_id: str = Query(default="legacy_default"),
+) -> JSONResponse:
     """
     Return persisted global chat history (newest-first).
 
@@ -147,7 +149,7 @@ def get_global_messages() -> JSONResponse:
     """
     from backend.app.chat_routes import list_chat_messages
 
-    return list_chat_messages()
+    return list_chat_messages(conversation_id=conversation_id)
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ from backend.app.mode_engine import (
     stage_2_logical_validation,
     stage_3_compliance_validation,
 )
+from backend.tests.test_utils import _chat_payload
 
 TOKEN = "test-secret-key"
 
@@ -562,7 +563,7 @@ class TestChatEndpointModeEngine:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello"},
+            json=_chat_payload("Hello"),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -572,7 +573,7 @@ class TestChatEndpointModeEngine:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello", "modes": ["strict_mode"]},
+            json=_chat_payload("Hello", modes=["strict_mode"]),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -582,7 +583,7 @@ class TestChatEndpointModeEngine:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello", "modes": ["unknown_mode_xyz"]},
+            json=_chat_payload("Hello", modes=["unknown_mode_xyz"]),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -592,7 +593,7 @@ class TestChatEndpointModeEngine:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello", "modes": "strict_mode"},
+            json=_chat_payload("Hello", modes="strict_mode"),
             headers=_auth(),
         )
         assert resp.status_code == 422
@@ -613,7 +614,7 @@ class TestChatEndpointModeEngine:
         with patch.object(cr, "_call_openai_chat", return_value=valid_prediction):
             resp = client.post(
                 "/api/chat",
-                json={"message": "Predict the outcome", "modes": ["prediction_mode"]},
+                json=_chat_payload("Predict the outcome", modes=["prediction_mode"]),
                 headers=_auth(),
             )
 
@@ -632,7 +633,7 @@ class TestChatEndpointModeEngine:
         with patch.object(cr, "_call_openai_chat", return_value="plain answer"):
             resp = client.post(
                 "/api/chat",
-                json={"message": "predict", "modes": ["prediction_mode"]},
+                json=_chat_payload("predict", modes=["prediction_mode"]),
                 headers=_auth(),
             )
 
@@ -730,7 +731,7 @@ class TestMandatoryAudit:
 
         resp = non_raising_client.post(
             "/api/chat",
-            json={"message": "Hello"},
+            json=_chat_payload("Hello"),
             headers=_auth(),
         )
         assert resp.status_code == 500
@@ -789,7 +790,7 @@ class TestStubPathThroughGateway:
 
         resp = client.post(
             "/api/chat",
-            json={"message": "Stub gateway test"},
+            json=_chat_payload("Stub gateway test"),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -822,7 +823,7 @@ class TestStubPathThroughGateway:
 
         resp = client.post(
             "/api/chat",
-            json={"message": "audit stub check"},
+            json=_chat_payload("audit stub check"),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -1042,7 +1043,7 @@ class TestAllAICallsExclusivelyThroughGateway:
 
         resp = client.post(
             "/api/chat",
-            json={"message": "test gateway exclusive"},
+            json=_chat_payload("test gateway exclusive"),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -1078,7 +1079,7 @@ class TestAllAICallsExclusivelyThroughGateway:
 
         resp = client.post(
             "/api/chat",
-            json={"message": "live gateway test"},
+            json=_chat_payload("live gateway test"),
             headers=_auth(),
         )
         assert resp.status_code == 200

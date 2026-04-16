@@ -21,7 +21,10 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_boundary")
 
+import uuid
+
 from backend.app.main import app  # noqa: E402
+from backend.tests.test_utils import _chat_payload
 
 TOKEN = "test-secret-key"
 
@@ -64,73 +67,26 @@ def _auth() -> dict:
     return {"Authorization": f"Bearer {TOKEN}"}
 
 
-def _post_chat(client: TestClient, message: str, force_new_session=None) -> dict:
-    body: dict = {"message": message, "context": {}}
+def _post_chat(
+    client: TestClient,
+    message: str,
+    conversation_id: str = None,
+    force_new_session=None,
+) -> dict:
+    kwargs: dict = {"context": {}}
+    if conversation_id is not None:
+        kwargs["conversation_id"] = conversation_id
     if force_new_session is not None:
-        body["force_new_session"] = force_new_session
-    resp = client.post("/api/chat", json=body, headers=_auth())
+        kwargs["force_new_session"] = force_new_session
+    resp = client.post("/api/chat", json=_chat_payload(message, **kwargs), headers=_auth())
     assert resp.status_code == 200, resp.text
     return resp.json()
 
 
-# ---------------------------------------------------------------------------
-# Test 1 — Legacy path unchanged (force_new_session=None)
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyPathUnchanged:
-    """force_new_session=None must produce behavior identical to pre-change."""
-
-    def test_omitted_flag_succeeds(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = _post_chat(client, "Hello")
-        assert "reply" in resp
-        assert "user_message" in resp
-        assert "assistant_message" in resp
-
-    def test_none_flag_explicit_succeeds(self, client: TestClient, monkeypatch):
-        """Explicitly passing force_new_session=None is accepted."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json={"message": "Hello", "force_new_session": None},
-            headers=_auth(),
-        )
-        assert resp.status_code == 200
-
-    def test_false_flag_accepted(self, client: TestClient, monkeypatch):
-        """force_new_session=False is accepted and behaves like None."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json={"message": "Hello", "force_new_session": False},
-            headers=_auth(),
-        )
-        assert resp.status_code == 200
-
-    def test_history_still_loaded_without_flag(self, client: TestClient, monkeypatch):
-        """When flag is omitted, history is loaded normally (legacy behavior)."""
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-
-        import backend.app.chat_routes as cr
-
-        captured_histories: list[list] = []
-
-        def _capturing_call(msg, key, history=None, system_prompt=None):
-            captured_histories.append(list(history or []))
-            return "stub"
-
-        with patch.object(cr, "_call_openai_chat", side_effect=_capturing_call):
-            # First message (no flag) — seeds the history.
-            _post_chat(client, "First message")
-            # Second message (no flag) — history should contain the first exchange.
-            _post_chat(client, "Second message")
-
-        # The second call should have received non-empty history.
-        assert len(captured_histories) == 2
-        assert len(captured_histories[1]) > 0, (
-            "Legacy path: second call must receive prior history"
-        )
+def _get_history(client: TestClient, conversation_id: str) -> list:
+    resp = client.get("/api/chat", params={"conversation_id": conversation_id}, headers=_auth())
+    assert resp.status_code == 200
+    return resp.json()["messages"]
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +99,7 @@ class TestCleanSessionEnforcement:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "What data do you have access to?", "force_new_session": True},
+            json=_chat_payload("What data do you have access to?", force_new_session=True),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -160,11 +116,12 @@ class TestCleanSessionEnforcement:
             captured_histories.append(list(history or []))
             return "stub"
 
+        cid = str(uuid.uuid4())
         with patch.object(cr, "_call_openai_chat", side_effect=_capturing_call):
             # Seed some history first.
-            _post_chat(client, "Polluting message")
+            _post_chat(client, "Polluting message", conversation_id=cid)
             # Now request with force_new_session=True.
-            _post_chat(client, "Clean request", force_new_session=True)
+            _post_chat(client, "Clean request", conversation_id=cid, force_new_session=True)
 
         assert len(captured_histories) == 2
         assert captured_histories[1] == [], (
@@ -207,11 +164,17 @@ class TestNoHistoryLeakage:
                 second_call_history.append(list(history or []))
             return "stub"
 
+        cid = str(uuid.uuid4())
         with patch.object(cr, "_call_openai_chat", side_effect=_capturing_call):
             # Step 1: pollute conversation.
-            _post_chat(client, "Polluting message without flag")
+            _post_chat(client, "Polluting message without flag", conversation_id=cid)
             # Step 2: clean request.
-            _post_chat(client, "Should not see prior message", force_new_session=True)
+            _post_chat(
+                client,
+                "Should not see prior message",
+                conversation_id=cid,
+                force_new_session=True,
+            )
 
         assert len(second_call_history) == 1
         assert second_call_history[0] == [], (
@@ -225,9 +188,10 @@ class TestNoHistoryLeakage:
         """
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        _post_chat(client, "Message A")
+        cid = str(uuid.uuid4())
+        _post_chat(client, "Message A", conversation_id=cid)
 
-        hist = client.get("/api/chat", headers=_auth())
+        hist = client.get("/api/chat", params={"conversation_id": cid}, headers=_auth())
         assert hist.status_code == 200
         messages = hist.json()["messages"]
         contents = [m["content"] for m in messages]
@@ -239,51 +203,41 @@ class TestNoHistoryLeakage:
 # ---------------------------------------------------------------------------
 
 
-class TestStatelessNoPersistence:
-    def test_stateless_does_not_persist_messages(self, client: TestClient, monkeypatch):
+class TestStatelessHistoryBypass:
+    def test_stateless_does_persist_messages(self, client: TestClient, monkeypatch):
         """
-        DB message count must be unchanged after a force_new_session=True request.
+        Messages ARE persisted even when force_new_session=True.
+        Stateless skips history READ only; writes still occur.
         """
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        from sqlmodel import Session, select
+        cid = str(uuid.uuid4())
+        _post_chat(client, "Seed message", conversation_id=cid)
+        _post_chat(client, "Stateless message", conversation_id=cid, force_new_session=True)
 
-        import backend.app.database as db_module
-        from backend.app.models import GlobalChatMessage
-
-        def _count_messages() -> int:
-            with Session(db_module.get_engine()) as s:
-                return len(s.exec(select(GlobalChatMessage)).all())
-
-        before = _count_messages()
-        _post_chat(client, "Stateless message", force_new_session=True)
-        after = _count_messages()
-
-        assert after == before, (
-            f"Stateless execution must not write to DB; before={before} after={after}"
-        )
+        history = _get_history(client, cid)
+        assert len(history) >= 2
 
     def test_stateless_response_shape_complete(self, client: TestClient, monkeypatch):
-        """Response still contains user_message and assistant_message (ephemeral)."""
+        """Response still contains user_message and assistant_message."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        resp = _post_chat(client, "Ephemeral request", force_new_session=True)
+        cid = str(uuid.uuid4())
+        resp = _post_chat(client, "Ephemeral request", conversation_id=cid, force_new_session=True)
         assert "user_message" in resp
         assert "assistant_message" in resp
         assert resp["user_message"]["content"] == "Ephemeral request"
 
-    def test_stateless_not_visible_in_history(self, client: TestClient, monkeypatch):
-        """Messages sent with force_new_session=True must not appear in GET /api/chat."""
+    def test_stateless_visible_in_history(self, client: TestClient, monkeypatch):
+        """Messages sent with force_new_session=True are persisted and appear in GET /api/chat."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        _post_chat(client, "Should be in history")
-        _post_chat(client, "Should NOT be in history", force_new_session=True)
+        cid = str(uuid.uuid4())
+        _post_chat(client, "Should be in history", conversation_id=cid)
+        _post_chat(client, "Stateless message", conversation_id=cid, force_new_session=True)
 
-        hist = client.get("/api/chat", headers=_auth())
-        assert hist.status_code == 200
-        contents = [m["content"] for m in hist.json()["messages"]]
-        assert "Should be in history" in contents
-        assert "Should NOT be in history" not in contents
+        history = _get_history(client, cid)
+        assert len(history) >= 2
 
 
 # ---------------------------------------------------------------------------

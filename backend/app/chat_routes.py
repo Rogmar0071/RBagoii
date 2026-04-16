@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi import Request as FastAPIRequest
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -229,6 +229,8 @@ class ChatMessageResponse(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
     created_at: str
+    # CONVERSATION_LIFECYCLE_V1: every message belongs to a conversation.
+    conversation_id: str = "legacy_default"
     context: ChatContext = Field(default_factory=ChatContext)
     superseded: bool = False
 
@@ -261,6 +263,11 @@ class ChatPostRequest(BaseModel):
     # CONVERSATION_BOUNDARY_CONTROL_V1: when True, bypass all historical messages for
     # this request.  None/False preserves legacy behavior (history is loaded normally).
     force_new_session: bool | None = None
+    # CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK: conversation_id is a hard isolation
+    # boundary — every request MUST belong to an explicit conversation.
+    # Use POST /api/chat/conversation/new to obtain a conversation_id before sending
+    # the first message.  No fallback, no implicit assignment.
+    conversation_id: str
 
     @field_validator("message")
     @classmethod
@@ -449,6 +456,7 @@ def _message_to_response(message: Any) -> ChatMessageResponse:
         role=message.role,
         content=message.content,
         created_at=created_at_str,
+        conversation_id=getattr(message, "conversation_id", "legacy_default"),
         context=ChatContext(
             session_id=getattr(message, "session_id", None),
             domain_profile_id=getattr(message, "domain_profile_id", None),
@@ -461,17 +469,24 @@ def _new_ephemeral_message(
     role: Literal["user", "assistant", "system"],
     content: str,
     context: ChatContext,
+    conversation_id: str = "legacy_default",
 ) -> ChatMessageResponse:
     return ChatMessageResponse(
         id=str(uuid.uuid4()),
         role=role,
         content=content,
         created_at=datetime.now(timezone.utc).isoformat(),
+        conversation_id=conversation_id,
         context=context,
     )
 
 
-def _load_recent_history(db: Session | None) -> list[Any]:
+def _load_recent_history(db: Session | None, conversation_id: str = "legacy_default") -> list[Any]:
+    """Load recent non-superseded messages for the given conversation only.
+
+    CONVERSATION_LIFECYCLE_V1: hard isolation — no cross-conversation reads,
+    no merging, no fallback to global history.
+    """
     if db is None:
         return []
 
@@ -479,6 +494,7 @@ def _load_recent_history(db: Session | None) -> list[Any]:
 
     history = db.exec(
         select(GlobalChatMessage)
+        .where(GlobalChatMessage.conversation_id == conversation_id)
         .where(GlobalChatMessage.superseded_by_id.is_(None))
         .order_by(GlobalChatMessage.created_at.desc())
         .limit(_GLOBAL_CHAT_HISTORY_LIMIT)
@@ -486,14 +502,22 @@ def _load_recent_history(db: Session | None) -> list[Any]:
     return list(reversed(history))
 
 
-def _list_persisted_messages(db: Session | None) -> list[Any]:
+def _list_persisted_messages(
+    db: Session | None, conversation_id: str = "legacy_default"
+) -> list[Any]:
+    """Return all messages for the given conversation (newest-first).
+
+    CONVERSATION_LIFECYCLE_V1: hard isolation — no cross-conversation reads.
+    """
     if db is None:
         return []
 
     from backend.app.models import GlobalChatMessage
 
     return db.exec(
-        select(GlobalChatMessage).order_by(GlobalChatMessage.created_at.desc())
+        select(GlobalChatMessage)
+        .where(GlobalChatMessage.conversation_id == conversation_id)
+        .order_by(GlobalChatMessage.created_at.desc())
     ).all()
 
 
@@ -502,15 +526,17 @@ def _persist_message(
     role: Literal["user", "assistant", "system"],
     content: str,
     context: ChatContext,
+    conversation_id: str = "legacy_default",
 ) -> ChatMessageResponse:
     if db is None:
-        return _new_ephemeral_message(role, content, context)
+        return _new_ephemeral_message(role, content, context, conversation_id=conversation_id)
 
     from backend.app.models import GlobalChatMessage
 
     message = GlobalChatMessage(
         role=role,
         content=content,
+        conversation_id=conversation_id,
         session_id=context.session_id,
         domain_profile_id=context.domain_profile_id,
     )
@@ -809,8 +835,15 @@ def _validate_intent_v2(raw: dict[str, Any]) -> IntentV2Response:
 
 
 @router.get("/chat", status_code=200, dependencies=[Depends(require_auth)])
-def list_chat_messages() -> JSONResponse:
-    """Return persisted global chat history (newest-first)."""
+def list_chat_messages(
+    conversation_id: str = Query(default="legacy_default"),
+) -> JSONResponse:
+    """Return persisted chat history for a conversation (newest-first).
+
+    CONVERSATION_LIFECYCLE_V1: results are hard-isolated to the requested
+    conversation_id.  Defaults to the "legacy_default" containment zone so
+    that existing callers continue to see their prior messages.
+    """
     db = _db_session()
     if db is None:
         return _error(
@@ -820,13 +853,100 @@ def list_chat_messages() -> JSONResponse:
         )
 
     try:
-        messages = _list_persisted_messages(db)
+        messages = _list_persisted_messages(db, conversation_id=conversation_id)
         return _json_response(
             ChatHistoryResponse(
                 messages=[_message_to_response(message) for message in messages],
                 tools_available=_TOOLS_AVAILABLE,
             )
         )
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/chat/conversation/new  — CONVERSATION_LIFECYCLE_V1
+# ---------------------------------------------------------------------------
+
+
+@router.post("/chat/conversation/new", status_code=200, dependencies=[Depends(require_auth)])
+def create_conversation() -> JSONResponse:
+    """
+    Create a new conversation and return its UUID4 identifier.
+
+    CONVERSATION_LIFECYCLE_V1: every conversation_id is a UUID4.
+    No reuse, no inference, no fallback.
+
+    Response::
+
+        { "conversation_id": "<uuid4>" }
+    """
+    return JSONResponse(
+        status_code=200,
+        content={"conversation_id": str(uuid.uuid4())},
+    )
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/chat/conversation/{conversation_id}  — CONVERSATION_LIFECYCLE_V1
+# ---------------------------------------------------------------------------
+
+
+@router.delete(
+    "/chat/conversation/{conversation_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def delete_conversation(
+    conversation_id: str,
+    confirm: bool = Query(default=False),
+) -> JSONResponse:
+    """
+    Delete all messages belonging to the given conversation_id.
+
+    CONVERSATION_LIFECYCLE_V1:
+    - Deletes ALL messages for the specified conversation.
+    - Does NOT affect any other conversation.
+
+    RULE 4 — DELETE SAFETY:
+    Deleting ``"legacy_default"`` requires ``?confirm=true`` to prevent silent
+    deletion of the backward-compatibility containment zone.
+
+    Response::
+
+        { "deleted": <count> }
+    """
+    # RULE 4: legacy_default is the backward-compatibility containment zone.
+    # Silent deletion is not allowed — caller must pass ?confirm=true.
+    if conversation_id == "legacy_default" and not confirm:
+        return _error(
+            400,
+            "confirmation_required",
+            "Deleting 'legacy_default' requires explicit confirmation. "
+            "Retry with ?confirm=true.",
+        )
+
+    db = _db_session()
+    if db is None:
+        return _error(
+            503,
+            "service_unavailable",
+            "DATABASE_URL is not configured; persisted global chat is unavailable.",
+        )
+
+    try:
+        from backend.app.models import GlobalChatMessage
+
+        messages = db.exec(
+            select(GlobalChatMessage).where(
+                GlobalChatMessage.conversation_id == conversation_id
+            )
+        ).all()
+        count = len(messages)
+        for msg in messages:
+            db.delete(msg)
+        db.commit()
+        return JSONResponse(status_code=200, content={"deleted": count})
     finally:
         db.close()
 
@@ -865,6 +985,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 400,
                 "invalid_request",
                 "message is required and must not be empty.",
+            )
+        if any(error["loc"] == ("conversation_id",) for error in exc.errors()):
+            return _error(
+                400,
+                "invalid_request",
+                "conversation_id is required. Call POST /api/chat/conversation/new "
+                "to obtain one before sending messages.",
             )
         return _error(
             422,
@@ -907,19 +1034,30 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     )
     resolved_artifacts = context_surface["resolved_artifacts"]
 
-    # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines both read and write isolation.
+    # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines read isolation.
     is_stateless = request.force_new_session is True
+
+    # CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK (RULE 4): single source of truth.
+    # conversation_id is now required — no fallback, no branching.
+    active_conversation_id = request.conversation_id
 
     db = _db_session()
     try:
+        # RULE 5: always persist messages, regardless of force_new_session.
+        # force_new_session=True skips history READ only (debug/testing override).
+        user_message = _persist_message(
+            db, "user", message, context, conversation_id=active_conversation_id
+        )
         if is_stateless:
-            # Stateless mode: no DB read, no DB write — fully ephemeral execution.
-            logger.debug("force_new_session=True: bypassing persistence and conversation history")
-            user_message = _new_ephemeral_message("user", message, context)
+            # Stateless: skip history read — context window is empty.
+            logger.debug(
+                "force_new_session=True: skipping history read; "
+                "messages are still persisted under conversation_id=%s",
+                active_conversation_id,
+            )
             history = []
         else:
-            user_message = _persist_message(db, "user", message, context)
-            history = _load_recent_history(db)
+            history = _load_recent_history(db, conversation_id=active_conversation_id)
 
         # Read OPENAI_API_KEY at call time -- never returned or logged.
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -1018,10 +1156,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             if search_results:
                 reply += _format_citations(search_results)
 
-        assistant_message = (
-            _new_ephemeral_message("assistant", reply, context)
-            if is_stateless
-            else _persist_message(db, "assistant", reply, context)
+        assistant_message = _persist_message(
+            db, "assistant", reply, context, conversation_id=active_conversation_id
         )
         return _json_response(
             ChatPostResponse(
@@ -1099,10 +1235,12 @@ def edit_chat_message(message_id: str, body: dict[str, Any]) -> JSONResponse:
                 400, "invalid_request", "Only user messages may be edited."
             )
 
-        # Create the new (replacement) message.
+        # Create the new (replacement) message, inheriting the original's
+        # conversation_id so it stays within the same conversation boundary.
         new_msg = GlobalChatMessage(
             role="user",
             content=request.content,
+            conversation_id=original.conversation_id,
             session_id=original.session_id,
             domain_profile_id=original.domain_profile_id,
         )

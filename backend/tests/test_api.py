@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+
+from backend.tests.test_utils import _chat_payload
 
 # Disable background extraction so tests are fast.
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
@@ -310,7 +313,7 @@ class TestChat:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         response = client.post(
             "/api/chat",
-            json={"message": "What is ui-blueprint?"},
+            json=_chat_payload("What is ui-blueprint?"),
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert response.status_code == 200
@@ -331,7 +334,7 @@ class TestChat:
 
         response = client.post(
             "/api/chat",
-            json={"message": "hello"},
+            json=_chat_payload("hello"),
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert response.status_code == 200
@@ -360,7 +363,7 @@ class TestChat:
 
             response = client.post(
                 "/api/chat",
-                json={"message": "How does this work?"},
+                json=_chat_payload("How does this work?"),
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
@@ -393,7 +396,7 @@ class TestChat:
 
             response = client.post(
                 "/api/chat",
-                json={"message": injected},
+                json=_chat_payload(injected),
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
@@ -422,7 +425,7 @@ class TestChat:
 
             response = client.post(
                 "/api/chat",
-                json={"message": "hello"},
+                json=_chat_payload("hello"),
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
@@ -436,14 +439,19 @@ class TestChat:
     ) -> None:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
+        cid = str(uuid.uuid4())
         post_resp = client.post(
             "/api/chat",
-            json={"message": "Persist this", "context": {"session_id": "sess-1"}},
+            json=_chat_payload("Persist this", conversation_id=cid, context={"session_id": "sess-1"}),
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert post_resp.status_code == 200
 
-        history_resp = client.get("/api/chat", headers={"Authorization": f"Bearer {TOKEN}"})
+        history_resp = client.get(
+            "/api/chat",
+            params={"conversation_id": cid},
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
         assert history_resp.status_code == 200
         body = history_resp.json()
         assert body["schema_version"]
