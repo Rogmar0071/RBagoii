@@ -191,8 +191,7 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
     lines.append(
         "DATA SOVEREIGNTY (NON-NEGOTIABLE):\n"
         "You MUST operate only on data explicitly provided in this conversation.\n"
-        "You MUST NOT claim or imply access to system logs, job execution state, "
-        "internal pipelines, repositories, or any external environment.\n"
+        "You MUST NOT invent or assume information not present in the conversation.\n"
         "If required data is missing, you MUST request it explicitly.\n"
         "Default response when data is absent:\n"
         "'I only operate on data explicitly provided — please supply the relevant artifact.'"
