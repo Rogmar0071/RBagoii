@@ -1,10 +1,10 @@
 """
-Tests for CONVERSATION_LIFECYCLE_V1_REFINED.
+Tests for CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK.
 
 Validates:
   1. Conversation isolation — messages in conversation A are not visible in conversation B
-  2. Legacy containment — requests without conversation_id are stored in "legacy_default"
-  3. Stateless override — force_new_session=True bypasses both DB read and write
+  2. Missing conversation_id → 400 (legacy path removed)
+  3. Stateless override — force_new_session=True skips history read but still persists
   4. Deletion — DELETE endpoint removes all messages for a conversation
 """
 
@@ -20,6 +20,7 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_lifecycle")
 
 from backend.app.main import app  # noqa: E402
+from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
 
@@ -73,24 +74,20 @@ def _new_conversation(client: TestClient) -> str:
 def _post_chat(
     client: TestClient,
     message: str,
-    conversation_id: str | None = None,
+    conversation_id: str,
     force_new_session: bool | None = None,
 ) -> dict:
-    body: dict = {"message": message, "context": {}}
-    if conversation_id is not None:
-        body["conversation_id"] = conversation_id
+    overrides: dict = {}
     if force_new_session is not None:
-        body["force_new_session"] = force_new_session
+        overrides["force_new_session"] = force_new_session
+    body = _chat_payload(message, conversation_id=conversation_id, **overrides)
     resp = client.post("/api/chat", json=body, headers=_auth())
     assert resp.status_code == 200, resp.text
     return resp.json()
 
 
-def _get_history(client: TestClient, conversation_id: str | None = None) -> list[dict]:
-    params = {}
-    if conversation_id is not None:
-        params["conversation_id"] = conversation_id
-    resp = client.get("/api/chat", params=params, headers=_auth())
+def _get_history(client: TestClient, conversation_id: str) -> list[dict]:
+    resp = client.get("/api/chat", params={"conversation_id": conversation_id}, headers=_auth())
     assert resp.status_code == 200, resp.text
     return resp.json()["messages"]
 
@@ -203,16 +200,58 @@ class TestConversationIsolation:
 
 
 # ---------------------------------------------------------------------------
-# Test 2 — Legacy containment
-# "Requests without conversation_id are stored in 'legacy_default'"
+# Test 2 — conversation_id is required (legacy path removed)
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyContainment:
-    def test_no_conversation_id_stored_in_legacy_default(
+class TestConversationIdRequired:
+    def test_missing_conversation_id_returns_400(
         self, client: TestClient, monkeypatch
     ):
-        """When conversation_id is omitted, message is persisted in legacy_default."""
+        """POST /api/chat without conversation_id must return 400."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resp = client.post(
+            "/api/chat",
+            json={"message": "No conversation_id here"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_request"
+
+    def test_missing_message_still_returns_400(
+        self, client: TestClient, monkeypatch
+    ):
+        """Validation order: missing 'message' returns 400 regardless of conversation_id."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        resp = client.post(
+            "/api/chat",
+            json={"context": {}},
+            headers=_auth(),
+        )
+        assert resp.status_code == 400
+        assert resp.json()["error"]["code"] == "invalid_request"
+
+    def test_explicit_conversation_id_accepted(
+        self, client: TestClient, monkeypatch
+    ):
+        """When conversation_id is provided, request is processed normally."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        cid = _new_conversation(client)
+        resp = client.post(
+            "/api/chat",
+            json=_chat_payload("Hello", conversation_id=cid),
+            headers=_auth(),
+        )
+        assert resp.status_code == 200
+        assert resp.json()["user_message"]["conversation_id"] == cid
+
+    def test_no_message_stored_without_explicit_conversation_id(
+        self, client: TestClient, monkeypatch
+    ):
+        """No message can be stored under an implicit fallback — the request fails."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         from sqlmodel import Session, select
@@ -220,69 +259,31 @@ class TestLegacyContainment:
         import backend.app.database as db_module
         from backend.app.models import GlobalChatMessage
 
-        _post_chat(client, "Legacy message without conversation_id")
+        resp = client.post(
+            "/api/chat",
+            json={"message": "Should not be stored"},
+            headers=_auth(),
+        )
+        assert resp.status_code == 400
 
         with Session(db_module.get_engine()) as s:
-            msgs = s.exec(
-                select(GlobalChatMessage).where(
-                    GlobalChatMessage.content == "Legacy message without conversation_id"
-                )
-            ).all()
-
-        assert len(msgs) > 0, "Message must have been persisted"
-        for msg in msgs:
-            assert msg.conversation_id == "legacy_default", (
-                f"Expected legacy_default, got {msg.conversation_id!r}"
-            )
-
-    def test_legacy_default_not_polluted_by_explicit_conversation(
-        self, client: TestClient, monkeypatch
-    ):
-        """Explicit-conversation messages must NOT appear in legacy_default history."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-        cid = _new_conversation(client)
-        _post_chat(client, "Explicit message", conversation_id=cid)
-
-        legacy_history = _get_history(client)  # defaults to legacy_default
-        legacy_contents = {m["content"] for m in legacy_history}
-
-        assert "Explicit message" not in legacy_contents, (
-            "FAIL: explicit-conversation message appeared in legacy_default"
+            all_msgs = s.exec(select(GlobalChatMessage)).all()
+        assert all_msgs == [], (
+            "No messages must be persisted when conversation_id is absent"
         )
-
-    def test_legacy_default_readable(self, client: TestClient, monkeypatch):
-        """Messages in legacy_default are readable via GET /api/chat (no param)."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-        _post_chat(client, "Legacy readable message")
-
-        history = _get_history(client)
-        contents = {m["content"] for m in history}
-        assert "Legacy readable message" in contents
-
-    def test_response_contains_conversation_id_legacy_default(
-        self, client: TestClient, monkeypatch
-    ):
-        """Response messages carry conversation_id='legacy_default' when not specified."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-        resp = _post_chat(client, "No conversation_id provided")
-        assert resp["user_message"]["conversation_id"] == "legacy_default"
-        assert resp["assistant_message"]["conversation_id"] == "legacy_default"
 
 
 # ---------------------------------------------------------------------------
 # Test 3 — Stateless override
-# "force_new_session=True bypasses both DB read and DB write"
+# "force_new_session=True skips history read only; messages are still persisted"
 # ---------------------------------------------------------------------------
 
 
 class TestStatelessOverride:
-    def test_stateless_does_not_write_to_db(
+    def test_stateless_still_persists_messages(
         self, client: TestClient, monkeypatch
     ):
-        """DB message count must be unchanged after a force_new_session=True request."""
+        """force_new_session=True still writes to DB (RULE 5: history-skip only)."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         from sqlmodel import Session, select
@@ -294,12 +295,14 @@ class TestStatelessOverride:
             with Session(db_module.get_engine()) as s:
                 return len(s.exec(select(GlobalChatMessage)).all())
 
+        cid = _new_conversation(client)
         before = _count()
-        _post_chat(client, "Stateless message", force_new_session=True)
+        _post_chat(client, "Stateless but persistent", cid, force_new_session=True)
         after = _count()
 
-        assert after == before, (
-            f"Stateless execution must not write to DB; before={before} after={after}"
+        assert after == before + 2, (
+            f"force_new_session=True must persist user+assistant; "
+            f"before={before} after={after}"
         )
 
     def test_stateless_does_not_read_from_db(
@@ -323,28 +326,31 @@ class TestStatelessOverride:
 
         with patch.object(cr, "_call_openai_chat", side_effect=_capturing_call):
             # Seed with a real persisted message (captured[0]).
-            _post_chat(client, "Persisted seed message", conversation_id=cid)
-            # Stateless request (captured[1]) — must not see prior history.
-            _post_chat(client, "Stateless request", force_new_session=True)
+            _post_chat(client, "Persisted seed message", cid)
+            # Stateless request on same conversation (captured[1]) — must not see history.
+            _post_chat(client, "Stateless request", cid, force_new_session=True)
 
         assert len(captured) == 2
         assert captured[1] == [], (
             "force_new_session=True must bypass all DB reads — history must be empty"
         )
 
-    def test_stateless_not_visible_in_history(
+    def test_stateless_visible_in_history(
         self, client: TestClient, monkeypatch
     ):
-        """Messages sent with force_new_session=True must not appear in GET /api/chat."""
+        """force_new_session=True messages ARE visible in the conversation history."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        _post_chat(client, "Persisted message")
-        _post_chat(client, "Stateless message", force_new_session=True)
+        cid = _new_conversation(client)
+        _post_chat(client, "Persisted message", cid)
+        _post_chat(client, "Stateless message", cid, force_new_session=True)
 
-        history = _get_history(client)
+        history = _get_history(client, conversation_id=cid)
         contents = {m["content"] for m in history}
-        assert "Persisted message" in contents
-        assert "Stateless message" not in contents
+        assert "Persisted message" in contents, "Normal message must appear in history"
+        assert "Stateless message" in contents, (
+            "force_new_session=True message must appear in history (RULE 5)"
+        )
 
     def test_stateless_response_shape_complete(
         self, client: TestClient, monkeypatch
@@ -353,13 +359,12 @@ class TestStatelessOverride:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         cid = _new_conversation(client)
-        resp = _post_chat(client, "Ephemeral request", force_new_session=True)
+        resp = _post_chat(client, "Stateless request", cid, force_new_session=True)
         assert "user_message" in resp
         assert "assistant_message" in resp
-        assert resp["user_message"]["content"] == "Ephemeral request"
-        # conversation_id should be present in ephemeral messages too.
-        assert "conversation_id" in resp["user_message"]
-        assert "conversation_id" in resp["assistant_message"]
+        assert resp["user_message"]["content"] == "Stateless request"
+        assert resp["user_message"]["conversation_id"] == cid
+        assert resp["assistant_message"]["conversation_id"] == cid
 
 
 # ---------------------------------------------------------------------------
@@ -462,29 +467,20 @@ class TestConversationDeletion:
         """legacy_default CAN be cleared by calling DELETE with ?confirm=true."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        _post_chat(client, "Legacy message to delete")
-
-        history_before = _get_history(client)
-        assert len(history_before) >= 2  # user + assistant
-
         del_resp = client.delete(
             "/api/chat/conversation/legacy_default",
             params={"confirm": "true"},
             headers=_auth(),
         )
         assert del_resp.status_code == 200
-        assert del_resp.json()["deleted"] >= 2
-
-        history_after = _get_history(client)
-        assert history_after == []
+        # No runtime code writes to legacy_default anymore; deletion returns 0.
+        assert del_resp.json()["deleted"] >= 0
 
     def test_delete_legacy_default_without_confirm_rejected(
         self, client: TestClient, monkeypatch
     ):
-        """DELETE legacy_default without ?confirm=true must be rejected (RULE 4)."""
+        """DELETE legacy_default without ?confirm=true must be rejected (RULE 6)."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-        _post_chat(client, "Legacy message that must not be silently deleted")
 
         del_resp = client.delete(
             "/api/chat/conversation/legacy_default",
@@ -492,7 +488,3 @@ class TestConversationDeletion:
         )
         assert del_resp.status_code == 400
         assert del_resp.json()["error"]["code"] == "confirmation_required"
-
-        # Messages must still be present.
-        history = _get_history(client)
-        assert len(history) >= 2
