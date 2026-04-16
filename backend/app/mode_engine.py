@@ -51,15 +51,8 @@ STRICT_MODE_INSUFFICIENT_DATA_PREFIX = "INSUFFICIENT_DATA:"
 
 
 def resolve_modes(requested: list[str]) -> list[str]:
-    """Validate, deduplicate, and sort modes by priority.
-
-    Unknown modes are silently filtered out. No new modes are inserted.
-    """
-    valid = sorted(
-        {m for m in requested if m in SUPPORTED_MODES},
-        key=lambda m: _MODE_PRIORITY.get(m, 999),
-    )
-    return valid
+    """Filter modes without inserting, reordering, or deduplicating entries."""
+    return [mode for mode in requested if mode in SUPPORTED_MODES]
 
 
 def effective_mode(modes: list[str]) -> str | None:
@@ -731,14 +724,14 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    active_modes = modes
+    active_modes = resolve_modes(modes)
     if MODE_STRICT in active_modes:
-        # Apply mode stacking conflict resolution (logs conflicts, returns same list).
-        active_modes = apply_mode_conflict_resolution(active_modes)
+        # Apply conflict logging only; execution continues on the validated mode list.
+        apply_mode_conflict_resolution(active_modes)
 
     audit = ModeEngineAuditRecord(
         user_intent=user_intent,
-        selected_modes=active_modes,
+        selected_modes=list(active_modes),
     )
 
     if MODE_STRICT not in active_modes:

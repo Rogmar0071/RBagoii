@@ -84,8 +84,8 @@ class TestResolveModes:
     def test_empty_list_stays_empty(self):
         assert resolve_modes([]) == []
 
-    def test_deduplication_keeps_single_strict_mode(self):
-        result = resolve_modes([MODE_STRICT, MODE_STRICT])
+    def test_mixed_valid_and_invalid_modes_are_filter_only(self):
+        result = resolve_modes([MODE_STRICT, "invalid"])
         assert result == [MODE_STRICT]
 
     def test_strict_mode_is_preserved(self):
