@@ -101,10 +101,10 @@ def _auth() -> dict:
 
 class TestResolveModes:
     def test_unknown_modes_filtered(self):
-        assert resolve_modes(["unknown_mode"]) == [MODE_STRICT]
+        assert resolve_modes(["unknown_mode"]) == []
 
-    def test_empty_list_defaults_to_strict(self):
-        assert resolve_modes([]) == [MODE_STRICT]
+    def test_empty_list_stays_empty(self):
+        assert resolve_modes([]) == []
 
     def test_priority_order(self):
         modes = resolve_modes([MODE_BUILDER, MODE_STRICT, MODE_PREDICTION])
@@ -132,8 +132,9 @@ class TestEffectiveMode:
     def test_single_mode(self):
         assert effective_mode([MODE_DEBUG]) == MODE_DEBUG
 
-    def test_empty_falls_back_to_strict(self):
-        assert effective_mode([]) == MODE_STRICT
+    def test_empty_raises(self):
+        with pytest.raises(ValueError, match="No active modes"):
+            effective_mode([])
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +508,7 @@ class TestModeEngineGateway:
         # four stages: structural, logical, compliance, response_contract
         assert len(audit.validation_results) == 4
 
-    def test_unknown_modes_resolved_to_strict(self):
+    def test_unknown_modes_filtered_out(self):
         ai_call = MagicMock(return_value="Valid response.")
         output, audit = mode_engine_gateway(
             user_intent="query",
@@ -515,7 +516,9 @@ class TestModeEngineGateway:
             ai_call=ai_call,
             base_system_prompt="",
         )
-        assert MODE_STRICT in audit.selected_modes
+        assert output == "Valid response."
+        assert audit.selected_modes == []
+        assert audit.transformed_prompt == ""
 
     def test_prediction_mode_valid_output(self):
         valid_prediction = (
@@ -558,8 +561,8 @@ class TestModeEngineGateway:
 
 
 class TestChatEndpointModeEngine:
-    def test_default_modes_strict_no_api_key(self, client: TestClient, monkeypatch):
-        """Without modes field, strict_mode is the default and stub passes validation."""
+    def test_default_modes_normal_no_api_key(self, client: TestClient, monkeypatch):
+        """Without agent_mode, chat runs without strict mode injection."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
@@ -569,17 +572,17 @@ class TestChatEndpointModeEngine:
         assert resp.status_code == 200
         assert resp.json()["reply"]
 
-    def test_explicit_strict_mode(self, client: TestClient, monkeypatch):
+    def test_agent_mode_enables_strict_mode(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json=_chat_payload("Hello", modes=["strict_mode"]),
+            json=_chat_payload("Hello", agent_mode=True),
             headers=_auth(),
         )
         assert resp.status_code == 200
 
     def test_unknown_modes_ignored(self, client: TestClient, monkeypatch):
-        """Unknown mode names are silently dropped; falls back to strict_mode."""
+        """Modes in the request body do not activate gateway constraints."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
@@ -598,8 +601,8 @@ class TestChatEndpointModeEngine:
         )
         assert resp.status_code == 422
 
-    def test_prediction_mode_with_mocked_openai(self, client: TestClient, monkeypatch):
-        """prediction_mode: mocked OpenAI returns valid prediction output."""
+    def test_modes_field_is_ignored_without_agent_mode(self, client: TestClient, monkeypatch):
+        """Request modes do not alter chat behavior when agent_mode is false."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         valid_prediction = (
@@ -619,15 +622,14 @@ class TestChatEndpointModeEngine:
             )
 
         assert resp.status_code == 200
-        assert "ASSUMPTIONS:" in resp.json()["reply"]
+        assert resp.json()["reply"] == valid_prediction
 
-    def test_validation_failure_returns_structured_error_string(
+    def test_modes_field_does_not_trigger_validation_without_agent_mode(
         self, client: TestClient, monkeypatch
     ):
-        """When AI always fails validation, reply contains the structured failure JSON."""
+        """Request modes alone do not trigger structured validation failures."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
-        # Always return output that fails prediction_mode structural validation.
         import backend.app.chat_routes as cr
 
         with patch.object(cr, "_call_openai_chat", return_value="plain answer"):
@@ -638,9 +640,7 @@ class TestChatEndpointModeEngine:
             )
 
         assert resp.status_code == 200
-        reply = resp.json()["reply"]
-        parsed = json.loads(reply)
-        assert parsed["error"] == "VALIDATION_FAILED"
+        assert resp.json()["reply"] == "plain answer"
 
 
 # ---------------------------------------------------------------------------
@@ -1092,4 +1092,3 @@ class TestAllAICallsExclusivelyThroughGateway:
     def test_intent_endpoint_not_in_gateway_coverage(self):
         """POST /api/chat/intent is governed by INTERACTION_LAYER_V2, not this gateway."""
         assert "POST /api/chat/intent" not in _GATEWAY_COVERAGE
-

@@ -631,7 +631,7 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    selected_modes = list(modes)
+    selected_modes = resolve_modes(list(modes))
     # Apply mode stacking conflict resolution (logs conflicts, returns same list).
     selected_modes = apply_mode_conflict_resolution(selected_modes)
 
