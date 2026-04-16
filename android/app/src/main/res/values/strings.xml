@@ -40,6 +40,7 @@
     <string name="action_pin_chat">Pin chat</string>
     <string name="action_unpin_chat">Unpin chat</string>
     <string name="action_delete_chat">Delete chat</string>
+    <string name="label_pinned_chat">\uD83D\uDCCC %1$s</string>
     <string name="status_creating_project">Creating project…</string>
     <!-- FolderDetailActivity strings -->
     <string name="btn_analyze_queued">Analyze queued…</string>

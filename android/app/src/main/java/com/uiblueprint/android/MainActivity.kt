@@ -108,6 +108,7 @@ class MainActivity : AppCompatActivity(),
         private const val PREF_HOME_CONVERSATIONS = "home_conversations"
         private const val PREF_ACTIVE_HOME_CONVERSATION_ID = "active_home_conversation_id"
         private const val PREF_NEXT_HOME_CHAT_NUMBER = "next_home_chat_number"
+        private const val MAX_AUTO_CHAT_LABEL_LENGTH = 24
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -488,6 +489,9 @@ class MainActivity : AppCompatActivity(),
         activeConversationId = prefs.getString(PREF_ACTIVE_HOME_CONVERSATION_ID, null)
             ?.takeIf { savedId -> homeConversations.any { it.id == savedId } }
             ?: homeConversations.firstOrNull()?.id
+        if (!prefs.contains(PREF_NEXT_HOME_CHAT_NUMBER)) {
+            prefs.edit().putInt(PREF_NEXT_HOME_CHAT_NUMBER, homeConversations.size + 1).apply()
+        }
         sortHomeConversations()
         renderHomeConversationChips()
     }
@@ -533,7 +537,11 @@ class MainActivity : AppCompatActivity(),
         homeConversations.forEach { conversation ->
             val chip = Chip(this).apply {
                 id = View.generateViewId()
-                text = if (conversation.pinned) "📌 ${conversation.label}" else conversation.label
+                text = if (conversation.pinned) {
+                    getString(R.string.label_pinned_chat, conversation.label)
+                } else {
+                    conversation.label
+                }
                 isCheckable = true
                 isChecked = conversation.id == activeConversationId
                 chipBackgroundColor = backgroundTint
@@ -668,7 +676,7 @@ class MainActivity : AppCompatActivity(),
                         }
                         val nextChatNumber = prefs.getInt(
                             PREF_NEXT_HOME_CHAT_NUMBER,
-                            homeConversations.size + 1,
+                            1,
                         )
                         val conversation = HomeConversation(
                             id = conversationId,
@@ -706,7 +714,7 @@ class MainActivity : AppCompatActivity(),
             .firstOrNull()
             .orEmpty()
             .trim()
-            .take(24)
+            .take(MAX_AUTO_CHAT_LABEL_LENGTH)
             .ifBlank { conversation.label }
         if (!conversation.isAutoLabel || updatedLabel == conversation.label) return
         updateHomeConversation(conversation.id) {
