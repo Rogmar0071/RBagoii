@@ -240,23 +240,28 @@ def mutation_governance_gateway(
 ) -> MutationGovernanceResult:
     """Single mandatory entry/exit point for the mutation governance pipeline.
 
+    ALIGNED WITH DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1:
+    
     Pipeline (MUTATION_GOVERNANCE_EXECUTION_V1):
       1. receive_intent        — validate user_intent is non-empty.
-      2. mode_engine           — route through MODE_ENGINE_EXECUTION_V2 with
-                                 enforced modes (strict + prediction + builder).
-      3. ai_generates_proposal — parse mode engine output as MutationContract.
-      4. contract_validation   — 3-stage pipeline (structural → logical → scope).
-      5. enforcement_gate      — block if any stage failed.
-      6. audit_log             — mandatory write (raises RuntimeError on failure).
-      7. return_proposal       — structured MutationGovernanceResult only.
+      2. mode_resolution       — determine if strict_mode is active.
+      3. IF modes == []:
+           → APPROVE immediately (no validation, no contract)
+      4. IF modes == ["strict_mode"]:
+           → mode_engine (with contract-driven validation)
+           → parse output as MutationContract
+           → contract_validation (3-stage)
+           → enforcement_gate
+           → APPROVE or BLOCK
+      5. audit_log             — mandatory write.
+      6. return_proposal       — structured MutationGovernanceResult.
 
     Parameters
     ----------
     user_intent:
         Raw user intent describing the desired mutation.
     modes:
-        Requested modes.  Enforced modes are always added; unknown modes
-        are filtered by the mode engine.
+        Requested modes. If empty or None, NORMAL mode is used (no validation).
     ai_call:
         ``(system_prompt: str) -> str`` callable that invokes the AI.
         Passed through to ``mode_engine_gateway``.
@@ -274,14 +279,11 @@ def mutation_governance_gateway(
         (``block_if_log_not_written``).
     """
     # ------------------------------------------------------------------
-    # Enforce required modes (mode_engine_alignment)
+    # Mode resolution
     # ------------------------------------------------------------------
     requested_modes: list[str] = list(modes or [])
-    for m in _ENFORCED_MODES:
-        if m not in requested_modes:
-            requested_modes.append(m)
     resolved_modes = resolve_modes(requested_modes)
-
+    
     result = MutationGovernanceResult()
     audit = MutationGovernanceAuditRecord(
         contract_id=result.contract_id,
@@ -291,8 +293,33 @@ def mutation_governance_gateway(
     )
 
     # ------------------------------------------------------------------
-    # Step 2: mode_engine_gateway
-    # Enforces structured output, validates mode markers, retries on failure.
+    # PHASE 6 — NORMAL MODE PATH (modes == [])
+    # Governance NEVER assumes validation exists
+    # ------------------------------------------------------------------
+    if not resolved_modes or "strict_mode" not in resolved_modes:
+        # NORMAL MODE: no validation, no contract, immediate approval
+        result.status = "approved"
+        result.mutation_proposal = {
+            "note": "NORMAL mode: no contract validation required",
+            "user_intent": user_intent,
+        }
+        audit.status = "approved"
+        audit.mutation_proposal = result.mutation_proposal
+        persist_mutation_audit_record(audit)
+        return result
+
+    # ------------------------------------------------------------------
+    # STRICT MODE PATH: Contract-driven validation required
+    # ------------------------------------------------------------------
+    # Add enforced modes for strict mode operation
+    for m in _ENFORCED_MODES:
+        if m not in requested_modes:
+            requested_modes.append(m)
+    resolved_modes = resolve_modes(requested_modes)
+    audit.selected_modes = resolved_modes
+
+    # ------------------------------------------------------------------
+    # Step 2: mode_engine_gateway (with contract-driven validation)
     # ------------------------------------------------------------------
     mode_output, _mode_audit = mode_engine_gateway(
         user_intent=user_intent,
@@ -326,7 +353,8 @@ def mutation_governance_gateway(
     contract = MutationContract.from_dict(raw_data)
 
     # ------------------------------------------------------------------
-    # Step 4: 3-stage validation pipeline
+    # Step 4: 3-stage validation pipeline (CONTRACT-DRIVEN)
+    # Validation ONLY runs in strict_mode WITH contract
     # ------------------------------------------------------------------
     v1 = stage_1_structural_validation(contract)
     v2 = stage_2_logical_validation(contract)
@@ -335,7 +363,7 @@ def mutation_governance_gateway(
     result.validation_results = [vr.to_dict() for vr in all_stages]
 
     # ------------------------------------------------------------------
-    # Step 5: Mutation enforcement gate
+    # Step 5: Mutation enforcement gate (depends on contract validation)
     # ------------------------------------------------------------------
     gate = mutation_enforcement_gate(all_stages)
     result.gate_result = gate.to_dict()
