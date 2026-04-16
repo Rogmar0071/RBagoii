@@ -135,7 +135,7 @@ class MainActivity : AppCompatActivity(),
         }
 
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
-        binding.btnSearch.setOnClickListener { createHomeConversation() }
+        binding.btnNewChat.setOnClickListener { createHomeConversation() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         setupMicButton()
@@ -559,7 +559,7 @@ class MainActivity : AppCompatActivity(),
             }
             binding.chipGroupChats.addView(chip)
         }
-        binding.btnSearch.isEnabled = !isCreatingConversation
+        binding.btnNewChat.isEnabled = !isCreatingConversation
     }
 
     private fun showHomeConversationMenu(anchor: View, conversation: HomeConversation) {
@@ -590,7 +590,7 @@ class MainActivity : AppCompatActivity(),
 
     private fun showRenameHomeChatDialog(conversation: HomeConversation) {
         val editText = EditText(this).apply {
-            hint = getString(R.string.dialog_rename_hint)
+            hint = getString(R.string.dialog_rename_chat_hint)
             setText(conversation.label)
             selectAll()
         }
@@ -646,7 +646,7 @@ class MainActivity : AppCompatActivity(),
     private fun createHomeConversation(initialMessage: String? = null) {
         if (isCreatingConversation) return
         isCreatingConversation = true
-        binding.btnSearch.isEnabled = false
+        binding.btnNewChat.isEnabled = false
         binding.tvStatus.text = getString(R.string.status_creating_chat)
 
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
@@ -663,7 +663,7 @@ class MainActivity : AppCompatActivity(),
                     val body = resp.body?.string() ?: ""
                     runOnUiThread {
                         isCreatingConversation = false
-                        binding.btnSearch.isEnabled = true
+                        binding.btnNewChat.isEnabled = true
                         binding.tvStatus.text = getString(R.string.status_idle)
                         if (!resp.isSuccessful) {
                             binding.btnSend.isEnabled = true
@@ -703,7 +703,7 @@ class MainActivity : AppCompatActivity(),
             } catch (_: IOException) {
                 runOnUiThread {
                     isCreatingConversation = false
-                    binding.btnSearch.isEnabled = true
+                    binding.btnNewChat.isEnabled = true
                     binding.btnSend.isEnabled = true
                     binding.tvStatus.text = getString(R.string.status_idle)
                     Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
@@ -712,8 +712,8 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    private fun maybeUpdateConversationLabel(conversation: HomeConversation, seedMessage: String) {
-        val updatedLabel = seedMessage.lines()
+    private fun maybeUpdateConversationLabel(conversation: HomeConversation, initialMessage: String) {
+        val updatedLabel = initialMessage.lines()
             .firstOrNull()
             .orEmpty()
             .trim()
@@ -740,7 +740,7 @@ class MainActivity : AppCompatActivity(),
                 BackendClient.executeWithRetry(request).use { resp ->
                     runOnUiThread {
                         if (resp.isSuccessful || resp.code == 404) {
-                            homeConversations.removeAll { it.id == conversation.id }
+                            homeConversations.remove(conversation)
                             if (activeConversationId == conversationId) {
                                 activeConversationId = homeConversations.firstOrNull()?.id
                             }
