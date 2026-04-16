@@ -80,7 +80,9 @@ class SimulationRequest(BaseModel):
         from backend.app.mutation_simulation.contract import OVERRIDE_MIN_JUSTIFICATION_LENGTH
 
         justification = value.get("justification", "")
-        if not isinstance(justification, str) or len(justification.strip()) < OVERRIDE_MIN_JUSTIFICATION_LENGTH:
+        if not isinstance(justification, str) or (
+            len(justification.strip()) < OVERRIDE_MIN_JUSTIFICATION_LENGTH
+        ):
             raise ValueError(
                 f"override.justification must be a non-empty string of at least "
                 f"{OVERRIDE_MIN_JUSTIFICATION_LENGTH} characters."

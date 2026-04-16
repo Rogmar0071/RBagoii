@@ -19,7 +19,6 @@ from __future__ import annotations
 from typing import Any
 
 from .contract import (
-    ALL_FAILURE_CATEGORIES,
     FAILURE_BUILD,
     FAILURE_CONTRACT_VIOLATION,
     FAILURE_DEPENDENCY_BREAK,
