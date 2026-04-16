@@ -455,17 +455,16 @@ def _configure_sqlite(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Configure SQLite for tests."""
     db_path = tmp_path / "test_execution_verification.db"
     db_url = f"sqlite:///{db_path}"
-    monkeypatch.setenv("DATABASE_URL", db_url)
     
-    # Initialize database
-    from backend.app.database import init_db
-    init_db()
+    import backend.app.database as db_module
+    
+    db_module.reset_engine(db_url)
+    db_module.init_db()
+    monkeypatch.setenv("DATABASE_URL", db_url)
     
     yield
     
-    # Cleanup
-    if db_path.exists():
-        db_path.unlink()
+    db_module.reset_engine()
 
 
 class TestExecutionPathVerification:
