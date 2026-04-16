@@ -32,6 +32,7 @@
     <string name="action_new_chat">New chat</string>
     <string name="status_creating_chat">Creating chat…</string>
     <string name="error_create_chat_failed">Failed to create a new chat.</string>
+    <string name="error_chat_unavailable">Chat is no longer available.</string>
     <string name="error_delete_chat_failed">Failed to delete the chat.</string>
     <string name="label_chat_number">Chat %1$d</string>
     <string name="dialog_rename_chat_title">Rename chat</string>

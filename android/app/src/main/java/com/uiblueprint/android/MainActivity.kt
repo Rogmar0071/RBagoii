@@ -108,6 +108,7 @@ class MainActivity : AppCompatActivity(),
         private const val PREF_HOME_CONVERSATIONS = "home_conversations"
         private const val PREF_ACTIVE_HOME_CONVERSATION_ID = "active_home_conversation_id"
         private const val PREF_NEXT_HOME_CHAT_NUMBER = "next_home_chat_number"
+        private const val DEFAULT_NEXT_HOME_CHAT_NUMBER = 1
         private const val MAX_AUTO_CHAT_LABEL_LENGTH = 24
     }
 
@@ -393,7 +394,7 @@ class MainActivity : AppCompatActivity(),
         val activeConversation = homeConversations.firstOrNull { it.id == conversationId } ?: run {
             runOnUiThread {
                 binding.btnSend.isEnabled = true
-                Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, getString(R.string.error_chat_unavailable), Toast.LENGTH_SHORT).show()
             }
             return
         }
@@ -678,7 +679,7 @@ class MainActivity : AppCompatActivity(),
                         }
                         val nextChatNumber = prefs.getInt(
                             PREF_NEXT_HOME_CHAT_NUMBER,
-                            1,
+                            DEFAULT_NEXT_HOME_CHAT_NUMBER,
                         )
                         val conversation = HomeConversation(
                             id = conversationId,
