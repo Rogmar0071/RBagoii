@@ -64,7 +64,7 @@ def effective_mode(modes: list[str]) -> str:
     """Return the highest-priority active mode from *modes*."""
     resolved = resolve_modes(modes)
     if not resolved:
-        raise ValueError("No active modes")
+        raise ValueError("Cannot determine effective mode from empty mode list")
     return resolved[0]
 
 
@@ -631,7 +631,7 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    selected_modes = resolve_modes(list(modes))
+    selected_modes = resolve_modes(modes)
     # Apply mode stacking conflict resolution (logs conflicts, returns same list).
     selected_modes = apply_mode_conflict_resolution(selected_modes)
 

@@ -133,7 +133,9 @@ class TestEffectiveMode:
         assert effective_mode([MODE_DEBUG]) == MODE_DEBUG
 
     def test_empty_raises(self):
-        with pytest.raises(ValueError, match="No active modes"):
+        with pytest.raises(
+            ValueError, match="Cannot determine effective mode from empty mode list"
+        ):
             effective_mode([])
 
 
@@ -457,6 +459,25 @@ class TestModeEngineGateway:
         assert received_prompts, "ai_call must be called at least once"
         assert "MODE ENGINE EXECUTION V2 CONSTRAINTS" in received_prompts[0]
         assert "BASE" in received_prompts[0]
+
+    def test_empty_modes_skip_injection_and_strict_validation(self):
+        received_prompts: list[str] = []
+
+        def ai_call(system_prompt: str) -> str:
+            received_prompts.append(system_prompt)
+            return "I think maybe this is right."
+
+        output, audit = mode_engine_gateway(
+            user_intent="test",
+            modes=[],
+            ai_call=ai_call,
+            base_system_prompt="BASE",
+        )
+        assert output == "I think maybe this is right."
+        assert audit.selected_modes == []
+        assert audit.retry_count == 0
+        assert audit.transformed_prompt == "BASE"
+        assert received_prompts == ["BASE"]
 
     def test_retry_on_validation_failure(self):
         call_count = {"n": 0}

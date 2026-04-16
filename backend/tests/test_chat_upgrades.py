@@ -293,33 +293,49 @@ class TestNeedsWebSearch:
 
 
 class TestChatAgentMode:
-    def test_agent_mode_body_param_accepted(self, client: TestClient, monkeypatch):
+    def test_agent_mode_body_param_enables_strict_mode(
+        self, client: TestClient, monkeypatch
+    ):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json=_chat_payload("Hello", agent_mode=True),
-            headers=_auth(),
-        )
-        assert resp.status_code == 200
+        import backend.app.chat_routes as cr
 
-    def test_agent_mode_header_accepted(self, client: TestClient, monkeypatch):
-        """X-Agent-Mode: 1 header activates agent mode."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json=_chat_payload("Hello"),
-            headers={**_auth(), "X-Agent-Mode": "1"},
-        )
+        with patch.object(cr, "mode_engine_gateway", return_value=("ok", MagicMock())) as mock_gateway:
+            resp = client.post(
+                "/api/chat",
+                json=_chat_payload("Hello", agent_mode=True),
+                headers=_auth(),
+            )
         assert resp.status_code == 200
+        assert mock_gateway.call_args.kwargs["modes"] == ["strict_mode"]
 
-    def test_no_agent_mode_default(self, client: TestClient, monkeypatch):
+    def test_agent_mode_header_enables_strict_mode(
+        self, client: TestClient, monkeypatch
+    ):
+        """X-Agent-Mode: 1 header activates strict mode."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        resp = client.post(
-            "/api/chat",
-            json=_chat_payload("Hello"),
-            headers=_auth(),
-        )
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "mode_engine_gateway", return_value=("ok", MagicMock())) as mock_gateway:
+            resp = client.post(
+                "/api/chat",
+                json=_chat_payload("Hello"),
+                headers={**_auth(), "X-Agent-Mode": "1"},
+            )
         assert resp.status_code == 200
+        assert mock_gateway.call_args.kwargs["modes"] == ["strict_mode"]
+
+    def test_no_agent_mode_default_uses_normal_mode(self, client: TestClient, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "mode_engine_gateway", return_value=("ok", MagicMock())) as mock_gateway:
+            resp = client.post(
+                "/api/chat",
+                json=_chat_payload("Hello"),
+                headers=_auth(),
+            )
+        assert resp.status_code == 200
+        assert mock_gateway.call_args.kwargs["modes"] == []
 
 
 # ---------------------------------------------------------------------------
