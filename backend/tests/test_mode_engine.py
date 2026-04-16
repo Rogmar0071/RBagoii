@@ -261,6 +261,77 @@ class TestBuildStructuredFailure:
         assert result["retry_count"] == 2
 
 
+class TestDualModeInvariantLock:
+    def test_normal_mode_skips_validation_and_returns_free_text(self):
+        ai_call = MagicMock(return_value="free text")
+
+        output, audit = mode_engine_gateway(
+            user_intent="question",
+            modes=[],
+            ai_call=ai_call,
+            base_system_prompt="BASE",
+        )
+
+        assert output == "free text"
+        assert audit.final_output == "free text"
+        assert audit.validation_results == []
+        assert audit.retry_count == 0
+        ai_call.assert_called_once_with("BASE")
+
+    def test_agoii_mode_free_text_triggers_structured_failure(self):
+        ai_call = MagicMock(return_value="free text")
+
+        output, _audit = mode_engine_gateway(
+            user_intent="question",
+            modes=[MODE_STRICT],
+            ai_call=ai_call,
+            base_system_prompt="",
+        )
+
+        failure = json.loads(output)
+        assert failure["error"] == "VALIDATION_FAILED"
+        assert failure["failed_rules"]
+        assert failure["correction_instructions"]
+        assert ai_call.call_count == MAX_RETRIES + 1
+
+    def test_agoii_mode_structured_response_passes_without_failure(self):
+        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: valid structured response")
+
+        output, audit = mode_engine_gateway(
+            user_intent="question",
+            modes=[MODE_STRICT],
+            ai_call=ai_call,
+            base_system_prompt="",
+        )
+
+        assert output == "ARTIFACT_SUMMARY: valid structured response"
+        assert audit.final_output == output
+        assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
+        assert all(result["passed"] for result in audit.validation_results)
+        ai_call.assert_called_once()
+
+    def test_no_mode_leakage_between_normal_and_agoii_paths(self):
+        assert resolve_modes([]) == []
+        assert resolve_modes([MODE_STRICT]) == [MODE_STRICT]
+
+    def test_structured_failure_format_is_valid_json_with_required_fields(self):
+        ai_call = MagicMock(return_value="free text")
+
+        output, _audit = mode_engine_gateway(
+            user_intent="question",
+            modes=[MODE_STRICT],
+            ai_call=ai_call,
+            base_system_prompt="",
+        )
+
+        failure = json.loads(output)
+        assert isinstance(failure, dict)
+        assert "failed_rules" in failure
+        assert "correction_instructions" in failure
+        assert isinstance(failure["failed_rules"], list)
+        assert isinstance(failure["correction_instructions"], list)
+
+
 class TestModeEngineGateway:
     def test_valid_strict_output_passes_through(self):
         ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: A valid response.")
