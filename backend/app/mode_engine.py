@@ -60,7 +60,7 @@ def resolve_modes(requested: list[str]) -> list[str]:
 
 
 def effective_mode(modes: list[str]) -> str | None:
-    """Return the highest-priority active mode from *modes*, if any."""
+    """Return the highest-priority active mode from *modes*, or ``None``."""
     resolved = resolve_modes(modes)
     return resolved[0] if resolved else None
 
@@ -638,17 +638,17 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    resolved_modes = modes
-    if MODE_STRICT in resolved_modes:
+    active_modes = modes
+    if MODE_STRICT in active_modes:
         # Apply mode stacking conflict resolution (logs conflicts, returns same list).
-        resolved_modes = apply_mode_conflict_resolution(resolved_modes)
+        active_modes = apply_mode_conflict_resolution(active_modes)
 
     audit = ModeEngineAuditRecord(
         user_intent=user_intent,
-        selected_modes=resolved_modes,
+        selected_modes=active_modes,
     )
 
-    if MODE_STRICT not in resolved_modes:
+    if MODE_STRICT not in active_modes:
         audit.transformed_prompt = base_system_prompt
         raw_output = ai_call(base_system_prompt)
         audit.raw_ai_output = raw_output
@@ -659,7 +659,7 @@ def mode_engine_gateway(
     # ------------------------------------------------------------------
     # Stage 0: pre-generation constraints
     # ------------------------------------------------------------------
-    ok, reason = stage_0_pre_generation_constraints(user_intent, resolved_modes)
+    ok, reason = stage_0_pre_generation_constraints(user_intent, active_modes)
     if not ok:
         import json as _json
 
@@ -671,7 +671,7 @@ def mode_engine_gateway(
     # ------------------------------------------------------------------
     # Build mode-injected system prompt (includes conflict constraints)
     # ------------------------------------------------------------------
-    mode_injection = build_mode_system_prompt_injection(resolved_modes)
+    mode_injection = build_mode_system_prompt_injection(active_modes)
     transformed_prompt = base_system_prompt + mode_injection
     audit.transformed_prompt = transformed_prompt
 
@@ -689,12 +689,12 @@ def mode_engine_gateway(
         audit.retry_count = attempt
 
         # Four-stage validation pipeline.
-        v1 = stage_1_structural_validation(raw_output, resolved_modes)
-        v2 = stage_2_logical_validation(raw_output, resolved_modes)
-        v3 = stage_3_compliance_validation(raw_output, resolved_modes)
+        v1 = stage_1_structural_validation(raw_output, active_modes)
+        v2 = stage_2_logical_validation(raw_output, active_modes)
+        v3 = stage_3_compliance_validation(raw_output, active_modes)
         # v4: response contract — enforces no_free_text_for_structured_modes
         #     and partial_responses_rejected (string-based; reply stays a string).
-        v4 = _check_response_contract(raw_output, resolved_modes)
+        v4 = _check_response_contract(raw_output, active_modes)
 
         last_validation_results = [v1, v2, v3, v4]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]

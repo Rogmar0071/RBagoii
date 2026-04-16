@@ -41,6 +41,7 @@ from backend.app.artifact_utils import (
 )
 from backend.app.auth import require_auth
 from backend.app.mode_engine import (
+    MODE_STRICT,
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
@@ -1001,7 +1002,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     message = request.message
     context = request.context
     agent_mode = request.agent_mode
-    active_modes = ["strict_mode"] if agent_mode else []
+    active_modes = [MODE_STRICT] if agent_mode else []
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
