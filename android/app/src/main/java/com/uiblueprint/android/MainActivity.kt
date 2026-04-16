@@ -7,12 +7,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.MenuItem
 import android.view.View
 import android.widget.EditText
+import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.ActionBarDrawerToggle
@@ -23,6 +25,7 @@ import androidx.core.view.GravityCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.chip.Chip
 import com.uiblueprint.android.databinding.ActivityMainBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -54,6 +57,9 @@ class MainActivity : AppCompatActivity(),
     private lateinit var prefs: SharedPreferences
     private val folderAdapter = FolderAdapter(this)
     private lateinit var chatAdapter: ChatMessageAdapter
+    private val homeConversations = mutableListOf<HomeConversation>()
+    private var activeConversationId: String? = null
+    private var isCreatingConversation = false
 
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
@@ -99,6 +105,11 @@ class MainActivity : AppCompatActivity(),
         const val STATUS_FAILED = "failed"
         private const val PREFS_NAME = "chat_prefs"
         private const val PREF_AGENT_MODE = "agent_mode"
+        private const val PREF_HOME_CONVERSATIONS = "home_conversations"
+        private const val PREF_ACTIVE_HOME_CONVERSATION_ID = "active_home_conversation_id"
+        private const val PREF_NEXT_HOME_CHAT_NUMBER = "next_home_chat_number"
+        private const val DEFAULT_NEXT_HOME_CHAT_NUMBER = 1
+        private const val MAX_AUTO_CHAT_LABEL_CHARS = 24
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,6 +136,7 @@ class MainActivity : AppCompatActivity(),
         }
 
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
+        binding.btnNewChat.setOnClickListener { createHomeConversation() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         setupMicButton()
@@ -146,7 +158,12 @@ class MainActivity : AppCompatActivity(),
         }
 
         loadFolders()
-        loadGlobalChat()
+        restoreHomeConversations()
+        if (activeConversationId != null) {
+            loadGlobalChat()
+        } else {
+            createHomeConversation()
+        }
     }
 
     override fun onResume() {
@@ -318,12 +335,16 @@ class MainActivity : AppCompatActivity(),
         binding.rvChatMessages.adapter = chatAdapter
     }
 
-    private fun loadGlobalChat() {
+    private fun loadGlobalChat(conversationId: String? = activeConversationId) {
+        if (conversationId.isNullOrBlank()) {
+            renderChatMessages(null)
+            return
+        }
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
 
         val request = Request.Builder()
-            .url("$baseUrl/api/chat")
+            .url("$baseUrl/api/chat?conversation_id=$conversationId")
             .get()
             .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
             .build()
@@ -337,7 +358,9 @@ class MainActivity : AppCompatActivity(),
                             val messages = runCatching {
                                 JSONObject(body).getJSONArray("messages")
                             }.getOrNull()
-                            renderChatMessages(messages)
+                            if (activeConversationId == conversationId) {
+                                renderChatMessages(messages)
+                            }
                         }
                     }
                 }
@@ -351,13 +374,36 @@ class MainActivity : AppCompatActivity(),
         val message = binding.etMessage.text.toString().trim()
         if (message.isBlank()) return
 
+        val currentConversationId = activeConversationId
+        if (currentConversationId.isNullOrBlank()) {
+            if (isCreatingConversation) {
+                Toast.makeText(this, getString(R.string.status_creating_chat), Toast.LENGTH_SHORT).show()
+                return
+            }
+            binding.etMessage.setText("")
+            binding.btnSend.isEnabled = false
+            createHomeConversation(initialMessage = message)
+            return
+        }
         binding.etMessage.setText("")
         binding.btnSend.isEnabled = false
+        submitGlobalChatMessage(message, currentConversationId)
+    }
+
+    private fun submitGlobalChatMessage(message: String, conversationId: String) {
+        val activeConversation = homeConversations.firstOrNull { it.id == conversationId } ?: run {
+            runOnUiThread {
+                binding.btnSend.isEnabled = true
+                Toast.makeText(this, getString(R.string.error_chat_unavailable), Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
 
         val agentMode = binding.switchAgentMode.isChecked
 
         val bodyJson = JSONObject().apply {
             put("message", message)
+            put("conversation_id", conversationId)
             put("agent_mode", agentMode)
             put(
                 "context",
@@ -398,7 +444,12 @@ class MainActivity : AppCompatActivity(),
                                 Toast.makeText(this, "Unauthorized: check BACKEND_API_KEY", Toast.LENGTH_SHORT).show()
                             !resp.isSuccessful ->
                                 Toast.makeText(this, "Error: HTTP ${resp.code}", Toast.LENGTH_SHORT).show()
-                            else -> loadGlobalChat()
+                            else -> {
+                                maybeUpdateConversationLabel(activeConversation, message)
+                                if (activeConversationId == conversationId) {
+                                    loadGlobalChat(conversationId)
+                                }
+                            }
                         }
                         binding.btnSend.isEnabled = true
                     }
@@ -410,6 +461,328 @@ class MainActivity : AppCompatActivity(),
                 }
             }
         }
+    }
+
+    private fun restoreHomeConversations() {
+        homeConversations.clear()
+        val stored = prefs.getString(PREF_HOME_CONVERSATIONS, null)
+        if (!stored.isNullOrBlank()) {
+            runCatching {
+                val array = JSONArray(stored)
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val id = item.optString("id")
+                    val label = item.optString("label")
+                    if (id.isBlank() || label.isBlank()) continue
+                    val pinned = item.optBoolean("pinned", false)
+                    val isAutoLabel = item.optBoolean("is_auto_label", false)
+                    homeConversations.add(
+                        HomeConversation(
+                            id = id,
+                            label = label,
+                            pinned = pinned,
+                            isAutoLabel = isAutoLabel,
+                            order = item.optInt("order", i + 1),
+                        )
+                    )
+                }
+            }
+        }
+        activeConversationId = prefs.getString(PREF_ACTIVE_HOME_CONVERSATION_ID, null)
+            ?.takeIf { savedId -> homeConversations.any { it.id == savedId } }
+            ?: homeConversations.firstOrNull()?.id
+        ensureNextHomeChatNumberInitialized()
+        sortHomeConversations()
+        renderHomeConversationChips()
+    }
+
+    private fun ensureNextHomeChatNumberInitialized() {
+        if (prefs.contains(PREF_NEXT_HOME_CHAT_NUMBER)) return
+        prefs.edit().putInt(
+            PREF_NEXT_HOME_CHAT_NUMBER,
+            (homeConversations.maxOfOrNull { it.order } ?: 0) + 1,
+        ).apply()
+    }
+
+    private fun persistHomeConversations() {
+        val array = JSONArray()
+        homeConversations.forEach { conversation ->
+            array.put(
+                JSONObject().apply {
+                    put("id", conversation.id)
+                    put("label", conversation.label)
+                    put("pinned", conversation.pinned)
+                    put("is_auto_label", conversation.isAutoLabel)
+                    put("order", conversation.order)
+                }
+            )
+        }
+        prefs.edit()
+            .putString(PREF_HOME_CONVERSATIONS, array.toString())
+            .putString(PREF_ACTIVE_HOME_CONVERSATION_ID, activeConversationId)
+            .apply()
+    }
+
+    private fun renderHomeConversationChips() {
+        sortHomeConversations()
+        binding.chipGroupChats.removeAllViews()
+        val checkedStates = intArrayOf(android.R.attr.state_checked)
+        val defaultStates = intArrayOf()
+        val backgroundTint = ColorStateList(
+            arrayOf(checkedStates, defaultStates),
+            intArrayOf(
+                ContextCompat.getColor(this, R.color.text_primary),
+                ContextCompat.getColor(this, R.color.surface_raised),
+            ),
+        )
+        val textTint = ColorStateList(
+            arrayOf(checkedStates, defaultStates),
+            intArrayOf(
+                ContextCompat.getColor(this, R.color.black),
+                ContextCompat.getColor(this, R.color.text_primary),
+            ),
+        )
+        homeConversations.forEach { conversation ->
+            val chip = Chip(this).apply {
+                id = View.generateViewId()
+                text = if (conversation.pinned) {
+                    getString(R.string.label_pinned_chat, conversation.label)
+                } else {
+                    conversation.label
+                }
+                isCheckable = true
+                isChecked = conversation.id == activeConversationId
+                chipBackgroundColor = backgroundTint
+                setTextColor(textTint)
+                checkedIcon = null
+                isCloseIconVisible = false
+                setEnsureMinTouchTargetSize(false)
+                setOnClickListener { selectHomeConversation(conversation.id) }
+                setOnLongClickListener {
+                    showHomeConversationMenu(it, conversation)
+                    true
+                }
+            }
+            binding.chipGroupChats.addView(chip)
+        }
+        binding.btnNewChat.isEnabled = !isCreatingConversation
+    }
+
+    private fun showHomeConversationMenu(anchor: View, conversation: HomeConversation) {
+        val popup = PopupMenu(this, anchor)
+        popup.inflate(R.menu.menu_home_chat)
+        popup.menu.findItem(R.id.action_pin_chat)?.title = getString(
+            if (conversation.pinned) R.string.action_unpin_chat else R.string.action_pin_chat
+        )
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                R.id.action_rename_chat -> {
+                    showRenameHomeChatDialog(conversation)
+                    true
+                }
+                R.id.action_pin_chat -> {
+                    togglePinnedConversation(conversation.id)
+                    true
+                }
+                R.id.action_delete_chat -> {
+                    showDeleteHomeChatDialog(conversation)
+                    true
+                }
+                else -> false
+            }
+        }
+        popup.show()
+    }
+
+    private fun showRenameHomeChatDialog(conversation: HomeConversation) {
+        val editText = EditText(this).apply {
+            hint = getString(R.string.dialog_rename_chat_hint)
+            setText(conversation.label)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_rename_chat_title))
+            .setView(editText)
+            .setPositiveButton(getString(R.string.dialog_btn_save)) { _, _ ->
+                val newLabel = editText.text.toString().trim()
+                if (newLabel.isBlank()) {
+                    Toast.makeText(this, getString(R.string.error_title_empty), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                updateHomeConversation(conversation.id) { it.copy(label = newLabel, isAutoLabel = false) }
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun showDeleteHomeChatDialog(conversation: HomeConversation) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_delete_chat_title))
+            .setMessage(getString(R.string.dialog_delete_chat_message, conversation.label))
+            .setPositiveButton(getString(R.string.dialog_btn_delete)) { _, _ ->
+                deleteHomeConversation(conversation.id)
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun togglePinnedConversation(conversationId: String) {
+        updateHomeConversation(conversationId) { it.copy(pinned = !it.pinned) }
+    }
+
+    private fun updateHomeConversation(
+        conversationId: String,
+        transform: (HomeConversation) -> HomeConversation,
+    ) {
+        val index = homeConversations.indexOfFirst { it.id == conversationId }
+        if (index < 0) return
+        homeConversations[index] = transform(homeConversations[index])
+        sortHomeConversations()
+        persistHomeConversations()
+        renderHomeConversationChips()
+    }
+
+    private fun selectHomeConversation(conversationId: String) {
+        if (conversationId == activeConversationId) return
+        activeConversationId = conversationId
+        persistHomeConversations()
+        renderHomeConversationChips()
+        loadGlobalChat(conversationId)
+    }
+
+    private fun createHomeConversation(initialMessage: String? = null) {
+        if (isCreatingConversation) return
+        isCreatingConversation = true
+        binding.btnNewChat.isEnabled = false
+        binding.tvStatus.text = getString(R.string.status_creating_chat)
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/conversation/new")
+            .post("{}".toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        isCreatingConversation = false
+                        binding.btnNewChat.isEnabled = true
+                        binding.tvStatus.text = getString(R.string.status_idle)
+                        if (!resp.isSuccessful) {
+                            binding.btnSend.isEnabled = true
+                            Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        val conversationId = JSONObject(body).optString("conversation_id")
+                        if (conversationId.isBlank()) {
+                            binding.btnSend.isEnabled = true
+                            Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        val nextChatNumber = prefs.getInt(
+                            PREF_NEXT_HOME_CHAT_NUMBER,
+                            DEFAULT_NEXT_HOME_CHAT_NUMBER,
+                        )
+                        val conversation = HomeConversation(
+                            id = conversationId,
+                            label = getString(R.string.label_chat_number, nextChatNumber),
+                            pinned = false,
+                            isAutoLabel = true,
+                            order = nextChatNumber,
+                        )
+                        homeConversations.add(conversation)
+                        activeConversationId = conversationId
+                        prefs.edit().putInt(PREF_NEXT_HOME_CHAT_NUMBER, nextChatNumber + 1).apply()
+                        sortHomeConversations()
+                        persistHomeConversations()
+                        renderHomeConversationChips()
+                        renderChatMessages(null)
+                        if (initialMessage != null) {
+                            submitGlobalChatMessage(initialMessage, conversationId)
+                        } else {
+                            loadGlobalChat(conversationId)
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    isCreatingConversation = false
+                    binding.btnNewChat.isEnabled = true
+                    binding.btnSend.isEnabled = true
+                    binding.tvStatus.text = getString(R.string.status_idle)
+                    Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun maybeUpdateConversationLabel(conversation: HomeConversation, initialMessage: String) {
+        if (!conversation.isAutoLabel) return
+        val updatedLabel = deriveAutoConversationLabel(initialMessage, conversation.label)
+        if (updatedLabel == conversation.label) return
+        updateHomeConversation(conversation.id) {
+            it.copy(label = updatedLabel, isAutoLabel = false)
+        }
+    }
+
+    private fun deriveAutoConversationLabel(initialMessage: String, fallbackLabel: String): String =
+        initialMessage.lineSequence()
+            .firstOrNull()
+            .orEmpty()
+            .trim()
+            .take(MAX_AUTO_CHAT_LABEL_CHARS)
+            .ifBlank { fallbackLabel }
+
+    private fun deleteHomeConversation(conversationId: String) {
+        val conversation = homeConversations.firstOrNull { it.id == conversationId } ?: return
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/conversation/$conversationId")
+            .delete()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful || resp.code == 404) {
+                            homeConversations.remove(conversation)
+                            sortHomeConversations()
+                            if (activeConversationId == conversationId) {
+                                activeConversationId = homeConversations.firstOrNull()?.id
+                            }
+                            persistHomeConversations()
+                            renderHomeConversationChips()
+                            if (activeConversationId == null) {
+                                renderChatMessages(null)
+                                createHomeConversation()
+                            } else {
+                                loadGlobalChat(activeConversationId)
+                            }
+                        } else {
+                            Toast.makeText(this, getString(R.string.error_delete_chat_failed), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_delete_chat_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun sortHomeConversations() {
+        homeConversations.sortWith(
+            compareByDescending<HomeConversation> { it.pinned }
+                .thenBy { it.order }
+        )
     }
 
     private fun renderChatMessages(messages: JSONArray?) {
@@ -528,7 +901,7 @@ class MainActivity : AppCompatActivity(),
                 BackendClient.executeWithRetry(request).use { resp ->
                     runOnUiThread {
                         if (resp.isSuccessful) {
-                            loadGlobalChat()
+                            loadGlobalChat(activeConversationId)
                         } else {
                             Toast.makeText(this, "Edit failed: HTTP ${resp.code}", Toast.LENGTH_SHORT).show()
                         }
@@ -667,6 +1040,13 @@ class MainActivity : AppCompatActivity(),
     }
 
     data class FolderItem(val id: String, val status: String, val label: String)
+    data class HomeConversation(
+        val id: String,
+        val label: String,
+        val pinned: Boolean = false,
+        val isAutoLabel: Boolean = false,
+        val order: Int = 0,
+    )
 
     // -------------------------------------------------------------------------
     // Voice / microphone input

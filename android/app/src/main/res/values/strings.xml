@@ -28,6 +28,21 @@
     <string name="status_saved_to_gallery">Clip saved to Gallery</string>
     <string name="status_chat_retrying">(Waking backend… retrying %1$d/%2$d)</string>
     <string name="label_global_chat">Global Chat</string>
+    <string name="label_home_chats">Chats</string>
+    <string name="action_new_chat">New chat</string>
+    <string name="status_creating_chat">Creating chat…</string>
+    <string name="error_create_chat_failed">Failed to create a new chat.</string>
+    <string name="error_chat_unavailable">Chat is no longer available.</string>
+    <string name="error_delete_chat_failed">Failed to delete the chat.</string>
+    <string name="label_chat_number">Chat %1$d</string>
+    <string name="dialog_rename_chat_title">Rename chat</string>
+    <string name="dialog_rename_chat_hint">Chat name</string>
+    <string name="dialog_delete_chat_title">Delete chat?</string>
+    <string name="dialog_delete_chat_message">Delete %1$s and its messages?</string>
+    <string name="action_pin_chat">Pin chat</string>
+    <string name="action_unpin_chat">Unpin chat</string>
+    <string name="action_delete_chat">Delete chat</string>
+    <string name="label_pinned_chat">\uD83D\uDCCC %1$s</string>
     <string name="status_creating_project">Creating project…</string>
     <!-- FolderDetailActivity strings -->
     <string name="btn_analyze_queued">Analyze queued…</string>
