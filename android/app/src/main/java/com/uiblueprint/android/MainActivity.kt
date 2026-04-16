@@ -481,6 +481,7 @@ class MainActivity : AppCompatActivity(),
                             label = label,
                             pinned = pinned,
                             isAutoLabel = isAutoLabel,
+                            order = item.optInt("order", i + 1),
                         )
                     )
                 }
@@ -506,6 +507,7 @@ class MainActivity : AppCompatActivity(),
                     put("label", conversation.label)
                     put("pinned", conversation.pinned)
                     put("is_auto_label", conversation.isAutoLabel)
+                    put("order", conversation.order)
                 }
             )
         }
@@ -683,6 +685,7 @@ class MainActivity : AppCompatActivity(),
                             label = getString(R.string.label_chat_number, nextChatNumber),
                             pinned = false,
                             isAutoLabel = true,
+                            order = nextChatNumber,
                         )
                         homeConversations.add(conversation)
                         activeConversationId = conversationId
@@ -763,7 +766,10 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun sortHomeConversations() {
-        homeConversations.sortByDescending { it.pinned }
+        homeConversations.sortWith(
+            compareByDescending<HomeConversation> { it.pinned }
+                .thenBy { it.order }
+        )
     }
 
     private fun renderChatMessages(messages: JSONArray?) {
@@ -1026,6 +1032,7 @@ class MainActivity : AppCompatActivity(),
         val label: String,
         val pinned: Boolean = false,
         val isAutoLabel: Boolean = false,
+        val order: Int = 0,
     )
 
     // -------------------------------------------------------------------------
