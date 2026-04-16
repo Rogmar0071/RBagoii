@@ -633,6 +633,58 @@ class TestMutationGovernanceGateway:
 
 
 # ===========================================================================
+# DUAL MODE GOVERNANCE - PHASE 6 Tests
+# ===========================================================================
+
+
+class TestDualModeGovernance:
+    def test_normal_mode_approves_without_validation(self):
+        """PHASE 6: modes == [] → immediate approval, no validation"""
+        result = mutation_governance_gateway(
+            user_intent="test query",
+            modes=[],
+            ai_call=_make_ai_call("any free text response")
+        )
+        assert result.status == "approved"
+        assert result.mutation_proposal is not None
+        # No validation stages run in normal mode
+        assert result.validation_results == []
+        assert result.gate_result == {}
+    
+    def test_strict_mode_requires_contract_validation(self):
+        """PHASE 6: strict_mode → contract-driven validation"""
+        result = mutation_governance_gateway(
+            user_intent="test query",
+            modes=["strict_mode"],
+            ai_call=_make_ai_call(_VALID_OUTPUT)
+        )
+        assert result.status == "approved"
+        # Validation stages run in strict mode
+        assert len(result.validation_results) == 3  # structural, logical, scope
+        assert {vr["stage"] for vr in result.validation_results} == {
+            "structural", "logical", "scope"
+        }
+    
+    def test_governance_never_assumes_validation_exists(self):
+        """PHASE 6: Governance must not assume validation always exists"""
+        # In normal mode, no validation
+        result = mutation_governance_gateway(
+            user_intent="test",
+            modes=[],
+            ai_call=_make_ai_call("response")
+        )
+        assert result.validation_results == []
+        
+        # In strict mode, validation exists
+        result = mutation_governance_gateway(
+            user_intent="test",
+            modes=["strict_mode"],
+            ai_call=_make_ai_call(_VALID_OUTPUT)
+        )
+        assert len(result.validation_results) > 0
+
+
+# ===========================================================================
 # POST /api/mutations/propose -- HTTP endpoint
 # ===========================================================================
 
