@@ -299,7 +299,9 @@ class TestChatAgentMode:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         import backend.app.chat_routes as cr
 
-        with patch.object(cr, "mode_engine_gateway", return_value=("ok", MagicMock())) as mock_gateway:
+        with patch.object(
+            cr, "mode_engine_gateway", return_value=("ok", MagicMock())
+        ) as mock_gateway:
             resp = client.post(
                 "/api/chat",
                 json=_chat_payload("Hello", agent_mode=True),
@@ -315,7 +317,9 @@ class TestChatAgentMode:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         import backend.app.chat_routes as cr
 
-        with patch.object(cr, "mode_engine_gateway", return_value=("ok", MagicMock())) as mock_gateway:
+        with patch.object(
+            cr, "mode_engine_gateway", return_value=("ok", MagicMock())
+        ) as mock_gateway:
             resp = client.post(
                 "/api/chat",
                 json=_chat_payload("Hello"),
@@ -328,7 +332,9 @@ class TestChatAgentMode:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         import backend.app.chat_routes as cr
 
-        with patch.object(cr, "mode_engine_gateway", return_value=("ok", MagicMock())) as mock_gateway:
+        with patch.object(
+            cr, "mode_engine_gateway", return_value=("ok", MagicMock())
+        ) as mock_gateway:
             resp = client.post(
                 "/api/chat",
                 json=_chat_payload("Hello"),
