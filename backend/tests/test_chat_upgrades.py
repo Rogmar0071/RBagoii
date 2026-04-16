@@ -70,7 +70,12 @@ def _auth() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _post_chat(client: TestClient, message: str, agent_mode: bool = False, conversation_id: str = None) -> dict:
+def _post_chat(
+    client: TestClient,
+    message: str,
+    agent_mode: bool = False,
+    conversation_id: str = None,
+) -> dict:
     cid = conversation_id or str(uuid.uuid4())
     resp = client.post(
         "/api/chat",
@@ -427,7 +432,11 @@ class TestGlobalMessagesAliases:
         cid = str(uuid.uuid4())
         _post_chat(client, "Hello from alias test", conversation_id=cid)
 
-        alias_resp = client.get("/v1/global/messages", params={"conversation_id": cid}, headers=_auth())
+        alias_resp = client.get(
+            "/v1/global/messages",
+            params={"conversation_id": cid},
+            headers=_auth(),
+        )
         chat_resp = client.get("/api/chat", params={"conversation_id": cid}, headers=_auth())
 
         assert alias_resp.status_code == 200

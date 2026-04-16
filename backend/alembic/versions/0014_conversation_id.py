@@ -26,7 +26,12 @@ def upgrade() -> None:
     if "conversation_id" not in existing_columns:
         op.add_column(
             "global_chat_messages",
-            sa.Column("conversation_id", sa.Text(), nullable=False, server_default="legacy_default"),
+            sa.Column(
+                "conversation_id",
+                sa.Text(),
+                nullable=False,
+                server_default="legacy_default",
+            ),
         )
     if "ix_global_chat_messages_conversation_id" not in existing_indexes:
         op.create_index(

@@ -442,7 +442,11 @@ class TestChat:
         cid = str(uuid.uuid4())
         post_resp = client.post(
             "/api/chat",
-            json=_chat_payload("Persist this", conversation_id=cid, context={"session_id": "sess-1"}),
+            json=_chat_payload(
+                "Persist this",
+                conversation_id=cid,
+                context={"session_id": "sess-1"},
+            ),
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert post_resp.status_code == 200
