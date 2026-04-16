@@ -460,7 +460,7 @@ class TestModeEngineGateway:
         assert "MODE ENGINE EXECUTION V2 CONSTRAINTS" in received_prompts[0]
         assert "BASE" in received_prompts[0]
 
-    def test_empty_modes_skip_injection_and_strict_validation(self):
+    def test_empty_modes_skip_injection(self):
         received_prompts: list[str] = []
 
         def ai_call(system_prompt: str) -> str:
@@ -645,7 +645,7 @@ class TestChatEndpointModeEngine:
         assert resp.status_code == 200
         assert resp.json()["reply"] == valid_prediction
 
-    def test_modes_field_does_not_trigger_validation_without_agent_mode(
+    def test_modes_field_alone_does_not_trigger_validation(
         self, client: TestClient, monkeypatch
     ):
         """Request modes alone do not trigger structured validation failures."""
