@@ -257,7 +257,7 @@ class TestBuildStructuredFailure:
         result = _build_structured_failure([vr], retry_count=2)
         assert result["error"] == "VALIDATION_FAILED"
         assert "strict_mode:guessing_detected" in result["failed_rules"]
-        assert "fix it" in result["correction_instructions"]
+        assert result["correction_instructions"] == ["fix it"]
         assert result["retry_count"] == 2
 
 
@@ -575,7 +575,7 @@ class TestStubPathThroughGateway:
         assert gateway_calls[0]["user_intent"] == "Stub gateway test"
         assert gateway_calls[0]["modes"] == []
 
-    def test_stub_passes_strict_mode_validation(self):
+    def test_stub_fails_strict_mode_validation(self):
         from backend.app.chat_routes import _stub_reply
 
         stub = _stub_reply("hello")

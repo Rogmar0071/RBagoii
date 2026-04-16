@@ -265,7 +265,7 @@ _REQUIRED_MARKERS: dict[str, list[str]] = {
     MODE_BUILDER: ["SECTION_"],
 }
 
-_STRICT_ARTIFACT_LINE = re.compile(r"^ARTIFACT_[A-Z0-9_]+:\s*(.+?)\s*$")
+_STRICT_ARTIFACT_LINE = re.compile(r"^(ARTIFACT_[A-Z0-9_]+):\s*(.*)$")
 
 
 def _strict_mode_uses_insufficient_data(ai_output: str) -> bool:
@@ -335,11 +335,11 @@ def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationRe
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
 
     if artifact_lines and not uses_insufficient_data:
-        malformed = [
-            line
-            for line in artifact_lines
-            if _STRICT_ARTIFACT_LINE.fullmatch(line) is None
-        ]
+        malformed = []
+        for line in artifact_lines:
+            match = _STRICT_ARTIFACT_LINE.fullmatch(line)
+            if match is None or not match.group(2).strip():
+                malformed.append(line)
         if malformed:
             failed.append("strict_mode:malformed_artifact_section")
             corrections.append(
