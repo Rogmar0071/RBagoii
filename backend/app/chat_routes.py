@@ -263,11 +263,11 @@ class ChatPostRequest(BaseModel):
     # CONVERSATION_BOUNDARY_CONTROL_V1: when True, bypass all historical messages for
     # this request.  None/False preserves legacy behavior (history is loaded normally).
     force_new_session: bool | None = None
-    # CONVERSATION_LIFECYCLE_V1: explicit conversation isolation boundary.
-    # When provided: authoritative — stored as-is (conversation_origin="explicit").
-    # When absent:   falls back to "legacy_default" containment zone
-    #                (conversation_origin="implicit_legacy").
-    conversation_id: str | None = None
+    # CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK: conversation_id is a hard isolation
+    # boundary — every request MUST belong to an explicit conversation.
+    # Use POST /api/chat/conversation/new to obtain a conversation_id before sending
+    # the first message.  No fallback, no implicit assignment.
+    conversation_id: str
 
     @field_validator("message")
     @classmethod
@@ -986,6 +986,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 "invalid_request",
                 "message is required and must not be empty.",
             )
+        if any(error["loc"] == ("conversation_id",) for error in exc.errors()):
+            return _error(
+                400,
+                "invalid_request",
+                "conversation_id is required. Call POST /api/chat/conversation/new "
+                "to obtain one before sending messages.",
+            )
         return _error(
             422,
             "invalid_request",
@@ -1027,39 +1034,29 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     )
     resolved_artifacts = context_surface["resolved_artifacts"]
 
-    # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines both read and write isolation.
+    # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines read isolation.
     is_stateless = request.force_new_session is True
 
-    # CONVERSATION_LIFECYCLE_V1: resolve active conversation boundary.
-    # IF explicit conversation_id provided → use as-is (authoritative).
-    # IF not provided → "legacy_default" containment zone (implicit_legacy).
-    # Stateless mode (force_new_session=True) is a higher-order override —
-    # conversation_id is intentionally ignored.
-    if request.conversation_id is not None:
-        active_conversation_id = request.conversation_id
-        conversation_origin: str = "explicit"
-    else:
-        active_conversation_id = "legacy_default"
-        conversation_origin = "implicit_legacy"
-    logger.debug(
-        "conversation resolution: id=%s origin=%s stateless=%s",
-        active_conversation_id,
-        conversation_origin,
-        is_stateless,
-    )
+    # CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK (RULE 4): single source of truth.
+    # conversation_id is now required — no fallback, no branching.
+    active_conversation_id = request.conversation_id
 
     db = _db_session()
     try:
+        # RULE 5: always persist messages, regardless of force_new_session.
+        # force_new_session=True skips history READ only (debug/testing override).
+        user_message = _persist_message(
+            db, "user", message, context, conversation_id=active_conversation_id
+        )
         if is_stateless:
-            # Stateless mode: no DB read, no DB write — fully ephemeral execution.
-            # conversation_id is ignored in stateless mode.
-            logger.debug("force_new_session=True: bypassing persistence and conversation history")
-            user_message = _new_ephemeral_message("user", message, context)
+            # Stateless: skip history read — context window is empty.
+            logger.debug(
+                "force_new_session=True: skipping history read; "
+                "messages are still persisted under conversation_id=%s",
+                active_conversation_id,
+            )
             history = []
         else:
-            user_message = _persist_message(
-                db, "user", message, context, conversation_id=active_conversation_id
-            )
             history = _load_recent_history(db, conversation_id=active_conversation_id)
 
         # Read OPENAI_API_KEY at call time -- never returned or logged.
@@ -1159,12 +1156,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             if search_results:
                 reply += _format_citations(search_results)
 
-        assistant_message = (
-            _new_ephemeral_message("assistant", reply, context)
-            if is_stateless
-            else _persist_message(
-                db, "assistant", reply, context, conversation_id=active_conversation_id
-            )
+        assistant_message = _persist_message(
+            db, "assistant", reply, context, conversation_id=active_conversation_id
         )
         return _json_response(
             ChatPostResponse(
