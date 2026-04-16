@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -23,6 +24,7 @@ import androidx.core.view.GravityCompat
 import androidx.drawerlayout.widget.DrawerLayout
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.google.android.material.chip.Chip
 import com.uiblueprint.android.databinding.ActivityMainBinding
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
@@ -54,6 +56,9 @@ class MainActivity : AppCompatActivity(),
     private lateinit var prefs: SharedPreferences
     private val folderAdapter = FolderAdapter(this)
     private lateinit var chatAdapter: ChatMessageAdapter
+    private val homeConversations = mutableListOf<HomeConversation>()
+    private var activeConversationId: String? = null
+    private var isCreatingConversation = false
 
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
     private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
@@ -99,6 +104,8 @@ class MainActivity : AppCompatActivity(),
         const val STATUS_FAILED = "failed"
         private const val PREFS_NAME = "chat_prefs"
         private const val PREF_AGENT_MODE = "agent_mode"
+        private const val PREF_HOME_CONVERSATIONS = "home_conversations"
+        private const val PREF_ACTIVE_HOME_CONVERSATION_ID = "active_home_conversation_id"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -125,6 +132,7 @@ class MainActivity : AppCompatActivity(),
         }
 
         binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
+        binding.btnSearch.setOnClickListener { createHomeConversation() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
         setupMicButton()
@@ -146,7 +154,12 @@ class MainActivity : AppCompatActivity(),
         }
 
         loadFolders()
-        loadGlobalChat()
+        restoreHomeConversations()
+        if (activeConversationId != null) {
+            loadGlobalChat()
+        } else {
+            createHomeConversation()
+        }
     }
 
     override fun onResume() {
@@ -318,12 +331,17 @@ class MainActivity : AppCompatActivity(),
         binding.rvChatMessages.adapter = chatAdapter
     }
 
-    private fun loadGlobalChat() {
+    private fun loadGlobalChat(conversationId: String? = activeConversationId) {
+        val currentConversationId = conversationId
+        if (currentConversationId.isNullOrBlank()) {
+            renderChatMessages(null)
+            return
+        }
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
 
         val request = Request.Builder()
-            .url("$baseUrl/api/chat")
+            .url("$baseUrl/api/chat?conversation_id=$currentConversationId")
             .get()
             .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
             .build()
@@ -337,7 +355,9 @@ class MainActivity : AppCompatActivity(),
                             val messages = runCatching {
                                 JSONObject(body).getJSONArray("messages")
                             }.getOrNull()
-                            renderChatMessages(messages)
+                            if (activeConversationId == currentConversationId) {
+                                renderChatMessages(messages)
+                            }
                         }
                     }
                 }
@@ -351,13 +371,36 @@ class MainActivity : AppCompatActivity(),
         val message = binding.etMessage.text.toString().trim()
         if (message.isBlank()) return
 
+        val currentConversationId = activeConversationId
+        if (currentConversationId.isNullOrBlank()) {
+            if (isCreatingConversation) {
+                Toast.makeText(this, getString(R.string.status_creating_chat), Toast.LENGTH_SHORT).show()
+                return
+            }
+            binding.etMessage.setText("")
+            binding.btnSend.isEnabled = false
+            createHomeConversation(initialMessage = message)
+            return
+        }
         binding.etMessage.setText("")
         binding.btnSend.isEnabled = false
+        submitGlobalChatMessage(message, currentConversationId)
+    }
+
+    private fun submitGlobalChatMessage(message: String, conversationId: String) {
+        val activeConversation = homeConversations.firstOrNull { it.id == conversationId } ?: run {
+            runOnUiThread {
+                binding.btnSend.isEnabled = true
+                Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
 
         val agentMode = binding.switchAgentMode.isChecked
 
         val bodyJson = JSONObject().apply {
             put("message", message)
+            put("conversation_id", conversationId)
             put("agent_mode", agentMode)
             put(
                 "context",
@@ -398,7 +441,12 @@ class MainActivity : AppCompatActivity(),
                                 Toast.makeText(this, "Unauthorized: check BACKEND_API_KEY", Toast.LENGTH_SHORT).show()
                             !resp.isSuccessful ->
                                 Toast.makeText(this, "Error: HTTP ${resp.code}", Toast.LENGTH_SHORT).show()
-                            else -> loadGlobalChat()
+                            else -> {
+                                maybeUpdateConversationLabel(activeConversation, message)
+                                if (activeConversationId == conversationId) {
+                                    loadGlobalChat(conversationId)
+                                }
+                            }
                         }
                         binding.btnSend.isEnabled = true
                     }
@@ -410,6 +458,166 @@ class MainActivity : AppCompatActivity(),
                 }
             }
         }
+    }
+
+    private fun restoreHomeConversations() {
+        homeConversations.clear()
+        val stored = prefs.getString(PREF_HOME_CONVERSATIONS, null)
+        if (!stored.isNullOrBlank()) {
+            runCatching {
+                val array = JSONArray(stored)
+                for (i in 0 until array.length()) {
+                    val item = array.optJSONObject(i) ?: continue
+                    val id = item.optString("id")
+                    val label = item.optString("label")
+                    if (id.isBlank() || label.isBlank()) continue
+                    homeConversations.add(HomeConversation(id = id, label = label))
+                }
+            }
+        }
+        activeConversationId = prefs.getString(PREF_ACTIVE_HOME_CONVERSATION_ID, null)
+            ?.takeIf { savedId -> homeConversations.any { it.id == savedId } }
+            ?: homeConversations.firstOrNull()?.id
+        renderHomeConversationChips()
+    }
+
+    private fun persistHomeConversations() {
+        val array = JSONArray()
+        homeConversations.forEach { conversation ->
+            array.put(
+                JSONObject().apply {
+                    put("id", conversation.id)
+                    put("label", conversation.label)
+                }
+            )
+        }
+        prefs.edit()
+            .putString(PREF_HOME_CONVERSATIONS, array.toString())
+            .putString(PREF_ACTIVE_HOME_CONVERSATION_ID, activeConversationId)
+            .apply()
+    }
+
+    private fun renderHomeConversationChips() {
+        binding.chipGroupChats.removeAllViews()
+        val checkedStates = intArrayOf(android.R.attr.state_checked)
+        val defaultStates = intArrayOf()
+        val backgroundTint = ColorStateList(
+            arrayOf(checkedStates, defaultStates),
+            intArrayOf(
+                ContextCompat.getColor(this, R.color.text_primary),
+                ContextCompat.getColor(this, R.color.surface_raised),
+            ),
+        )
+        val textTint = ColorStateList(
+            arrayOf(checkedStates, defaultStates),
+            intArrayOf(
+                ContextCompat.getColor(this, R.color.black),
+                ContextCompat.getColor(this, R.color.text_primary),
+            ),
+        )
+        homeConversations.forEach { conversation ->
+            val chip = Chip(this).apply {
+                id = View.generateViewId()
+                text = conversation.label
+                isCheckable = true
+                isChecked = conversation.id == activeConversationId
+                chipBackgroundColor = backgroundTint
+                setTextColor(textTint)
+                checkedIcon = null
+                isCloseIconVisible = false
+                setEnsureMinTouchTargetSize(false)
+                setOnClickListener { selectHomeConversation(conversation.id) }
+            }
+            binding.chipGroupChats.addView(chip)
+        }
+        binding.btnSearch.isEnabled = !isCreatingConversation
+    }
+
+    private fun selectHomeConversation(conversationId: String) {
+        if (conversationId == activeConversationId) return
+        activeConversationId = conversationId
+        persistHomeConversations()
+        renderHomeConversationChips()
+        loadGlobalChat(conversationId)
+    }
+
+    private fun createHomeConversation(initialMessage: String? = null) {
+        if (isCreatingConversation) return
+        isCreatingConversation = true
+        binding.btnSearch.isEnabled = false
+        binding.tvStatus.text = getString(R.string.status_creating_chat)
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/conversation/new")
+            .post("{}".toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        isCreatingConversation = false
+                        binding.btnSearch.isEnabled = true
+                        binding.tvStatus.text = getString(R.string.status_idle)
+                        if (!resp.isSuccessful) {
+                            binding.btnSend.isEnabled = true
+                            Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        val conversationId = JSONObject(body).optString("conversation_id")
+                        if (conversationId.isBlank()) {
+                            binding.btnSend.isEnabled = true
+                            Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        val conversation = HomeConversation(
+                            id = conversationId,
+                            label = getString(R.string.label_chat_number, homeConversations.size + 1),
+                        )
+                        homeConversations.add(conversation)
+                        activeConversationId = conversationId
+                        persistHomeConversations()
+                        renderHomeConversationChips()
+                        renderChatMessages(null)
+                        if (initialMessage != null) {
+                            submitGlobalChatMessage(initialMessage, conversationId)
+                        } else {
+                            loadGlobalChat(conversationId)
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    isCreatingConversation = false
+                    binding.btnSearch.isEnabled = true
+                    binding.btnSend.isEnabled = true
+                    binding.tvStatus.text = getString(R.string.status_idle)
+                    Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun maybeUpdateConversationLabel(conversation: HomeConversation, seedMessage: String) {
+        if (!conversation.label.startsWith(getString(R.string.label_chat_number, 1).substringBefore(" 1"))) {
+            return
+        }
+        val updatedLabel = seedMessage.lines()
+            .firstOrNull()
+            .orEmpty()
+            .trim()
+            .take(24)
+            .ifBlank { conversation.label }
+        if (updatedLabel == conversation.label) return
+        val index = homeConversations.indexOfFirst { it.id == conversation.id }
+        if (index < 0) return
+        homeConversations[index] = conversation.copy(label = updatedLabel)
+        persistHomeConversations()
+        renderHomeConversationChips()
     }
 
     private fun renderChatMessages(messages: JSONArray?) {
@@ -528,7 +736,7 @@ class MainActivity : AppCompatActivity(),
                 BackendClient.executeWithRetry(request).use { resp ->
                     runOnUiThread {
                         if (resp.isSuccessful) {
-                            loadGlobalChat()
+                            loadGlobalChat(activeConversationId)
                         } else {
                             Toast.makeText(this, "Edit failed: HTTP ${resp.code}", Toast.LENGTH_SHORT).show()
                         }
@@ -667,6 +875,7 @@ class MainActivity : AppCompatActivity(),
     }
 
     data class FolderItem(val id: String, val status: String, val label: String)
+    data class HomeConversation(val id: String, val label: String)
 
     // -------------------------------------------------------------------------
     // Voice / microphone input

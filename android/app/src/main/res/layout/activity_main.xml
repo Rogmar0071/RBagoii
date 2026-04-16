@@ -55,8 +55,8 @@
                 android:layout_width="40dp"
                 android:layout_height="40dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_search"
-                android:contentDescription="@string/btn_search"
+                android:src="@android:drawable/ic_input_add"
+                android:contentDescription="@string/action_new_chat"
                 app:tint="@color/icon_tint"
                 android:scaleType="center" />
         </LinearLayout>
@@ -83,6 +83,36 @@
             android:textColor="@color/text_hint"
             android:textSize="11sp"
             tools:text="Backend: https://ui-blueprint-backend.onrender.com" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="4dp"
+            android:text="@string/label_home_chats"
+            android:textColor="@color/text_secondary"
+            android:textStyle="bold"
+            android:textSize="13sp" />
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="4dp"
+            android:paddingBottom="8dp"
+            android:scrollbars="none">
+
+            <com.google.android.material.chip.ChipGroup
+                android:id="@+id/chipGroupChats"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                app:chipSpacingHorizontal="8dp"
+                app:chipSpacingVertical="8dp"
+                app:singleLine="true"
+                app:singleSelection="true" />
+        </HorizontalScrollView>
 
         <!-- Multi-select contextual toolbar (hidden by default) -->
         <LinearLayout
