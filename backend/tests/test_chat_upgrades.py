@@ -22,6 +22,7 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_chat")
 
 from backend.app.main import app  # noqa: E402
+from backend.tests.test_utils import _chat_payload
 
 TOKEN = "test-secret-key"
 
@@ -69,10 +70,11 @@ def _auth() -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _post_chat(client: TestClient, message: str, agent_mode: bool = False) -> dict:
+def _post_chat(client: TestClient, message: str, agent_mode: bool = False, conversation_id: str = None) -> dict:
+    cid = conversation_id or str(uuid.uuid4())
     resp = client.post(
         "/api/chat",
-        json={"message": message, "context": {}, "agent_mode": agent_mode},
+        json=_chat_payload(message, context={}, agent_mode=agent_mode, conversation_id=cid),
         headers=_auth(),
     )
     assert resp.status_code == 200, resp.text
@@ -270,7 +272,7 @@ class TestNeedsWebSearch:
         ):
             resp = client.post(
                 "/api/chat",
-                json={"message": "search: breaking news"},
+                json=_chat_payload("search: breaking news"),
                 headers=_auth(),
             )
 
@@ -290,7 +292,7 @@ class TestChatAgentMode:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello", "agent_mode": True},
+            json=_chat_payload("Hello", agent_mode=True),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -300,7 +302,7 @@ class TestChatAgentMode:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello"},
+            json=_chat_payload("Hello"),
             headers={**_auth(), "X-Agent-Mode": "1"},
         )
         assert resp.status_code == 200
@@ -309,7 +311,7 @@ class TestChatAgentMode:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         resp = client.post(
             "/api/chat",
-            json={"message": "Hello"},
+            json=_chat_payload("Hello"),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -346,7 +348,8 @@ class TestChatEdit:
     def test_edit_preserves_original(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        chat_resp = _post_chat(client, "Keep this")
+        cid = str(uuid.uuid4())
+        chat_resp = _post_chat(client, "Keep this", conversation_id=cid)
         user_msg_id = chat_resp["user_message"]["id"]
 
         client.post(
@@ -356,7 +359,7 @@ class TestChatEdit:
         )
 
         # GET history should include both (original superseded + new active).
-        hist = client.get("/api/chat", headers=_auth())
+        hist = client.get("/api/chat", params={"conversation_id": cid}, headers=_auth())
         messages = hist.json()["messages"]
         ids = {m["id"] for m in messages}
         assert user_msg_id in ids  # original is preserved
@@ -421,10 +424,11 @@ class TestGlobalMessagesAliases:
     def test_get_global_messages_alias(self, client: TestClient, monkeypatch):
         """GET /v1/global/messages returns same data as GET /api/chat."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        _post_chat(client, "Hello from alias test")
+        cid = str(uuid.uuid4())
+        _post_chat(client, "Hello from alias test", conversation_id=cid)
 
-        alias_resp = client.get("/v1/global/messages", headers=_auth())
-        chat_resp = client.get("/api/chat", headers=_auth())
+        alias_resp = client.get("/v1/global/messages", params={"conversation_id": cid}, headers=_auth())
+        chat_resp = client.get("/api/chat", params={"conversation_id": cid}, headers=_auth())
 
         assert alias_resp.status_code == 200
         assert chat_resp.status_code == 200
@@ -463,7 +467,8 @@ class TestChatHistorySuperseded:
     def test_superseded_flag_in_history(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        chat_resp = _post_chat(client, "First version")
+        cid = str(uuid.uuid4())
+        chat_resp = _post_chat(client, "First version", conversation_id=cid)
         user_msg_id = chat_resp["user_message"]["id"]
 
         client.post(
@@ -472,7 +477,7 @@ class TestChatHistorySuperseded:
             headers=_auth(),
         )
 
-        hist = client.get("/api/chat", headers=_auth())
+        hist = client.get("/api/chat", params={"conversation_id": cid}, headers=_auth())
         messages = {m["id"]: m for m in hist.json()["messages"]}
 
         # Original user message must be superseded.
@@ -481,8 +486,9 @@ class TestChatHistorySuperseded:
     def test_new_messages_not_superseded(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        _post_chat(client, "Regular message")
-        hist = client.get("/api/chat", headers=_auth())
+        cid = str(uuid.uuid4())
+        _post_chat(client, "Regular message", conversation_id=cid)
+        hist = client.get("/api/chat", params={"conversation_id": cid}, headers=_auth())
 
         for msg in hist.json()["messages"]:
             assert msg["superseded"] is False
