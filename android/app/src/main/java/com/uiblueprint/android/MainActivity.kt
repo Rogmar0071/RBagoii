@@ -14,6 +14,7 @@ import android.speech.SpeechRecognizer
 import android.view.MenuItem
 import android.view.View
 import android.widget.EditText
+import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.ActionBarDrawerToggle
@@ -470,24 +471,37 @@ class MainActivity : AppCompatActivity(),
                     val item = array.optJSONObject(i) ?: continue
                     val id = item.optString("id")
                     val label = item.optString("label")
+                    val pinned = item.optBoolean("pinned", false)
+                    val isAutoLabel = item.optBoolean("is_auto_label", label.startsWith(defaultHomeChatLabelPrefix()))
                     if (id.isBlank() || label.isBlank()) continue
-                    homeConversations.add(HomeConversation(id = id, label = label))
+                    homeConversations.add(
+                        HomeConversation(
+                            id = id,
+                            label = label,
+                            pinned = pinned,
+                            isAutoLabel = isAutoLabel,
+                        )
+                    )
                 }
             }
         }
         activeConversationId = prefs.getString(PREF_ACTIVE_HOME_CONVERSATION_ID, null)
             ?.takeIf { savedId -> homeConversations.any { it.id == savedId } }
             ?: homeConversations.firstOrNull()?.id
+        sortHomeConversations()
         renderHomeConversationChips()
     }
 
     private fun persistHomeConversations() {
+        sortHomeConversations()
         val array = JSONArray()
         homeConversations.forEach { conversation ->
             array.put(
                 JSONObject().apply {
                     put("id", conversation.id)
                     put("label", conversation.label)
+                    put("pinned", conversation.pinned)
+                    put("is_auto_label", conversation.isAutoLabel)
                 }
             )
         }
@@ -498,6 +512,7 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun renderHomeConversationChips() {
+        sortHomeConversations()
         binding.chipGroupChats.removeAllViews()
         val checkedStates = intArrayOf(android.R.attr.state_checked)
         val defaultStates = intArrayOf()
@@ -518,7 +533,7 @@ class MainActivity : AppCompatActivity(),
         homeConversations.forEach { conversation ->
             val chip = Chip(this).apply {
                 id = View.generateViewId()
-                text = conversation.label
+                text = if (conversation.pinned) "📌 ${conversation.label}" else conversation.label
                 isCheckable = true
                 isChecked = conversation.id == activeConversationId
                 chipBackgroundColor = backgroundTint
@@ -527,10 +542,87 @@ class MainActivity : AppCompatActivity(),
                 isCloseIconVisible = false
                 setEnsureMinTouchTargetSize(false)
                 setOnClickListener { selectHomeConversation(conversation.id) }
+                setOnLongClickListener {
+                    showHomeConversationMenu(it, conversation)
+                    true
+                }
             }
             binding.chipGroupChats.addView(chip)
         }
         binding.btnSearch.isEnabled = !isCreatingConversation
+    }
+
+    private fun showHomeConversationMenu(anchor: View, conversation: HomeConversation) {
+        val popup = PopupMenu(this, anchor)
+        popup.inflate(R.menu.menu_home_chat)
+        popup.menu.findItem(R.id.action_pin_chat)?.title = getString(
+            if (conversation.pinned) R.string.action_unpin_chat else R.string.action_pin_chat
+        )
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                R.id.action_rename_chat -> {
+                    showRenameHomeChatDialog(conversation)
+                    true
+                }
+                R.id.action_pin_chat -> {
+                    togglePinnedConversation(conversation.id)
+                    true
+                }
+                R.id.action_delete_chat -> {
+                    showDeleteHomeChatDialog(conversation)
+                    true
+                }
+                else -> false
+            }
+        }
+        popup.show()
+    }
+
+    private fun showRenameHomeChatDialog(conversation: HomeConversation) {
+        val editText = EditText(this).apply {
+            hint = getString(R.string.dialog_rename_hint)
+            setText(conversation.label)
+            selectAll()
+        }
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_rename_chat_title))
+            .setView(editText)
+            .setPositiveButton(getString(R.string.dialog_btn_save)) { _, _ ->
+                val newLabel = editText.text.toString().trim()
+                if (newLabel.isBlank()) {
+                    Toast.makeText(this, getString(R.string.error_title_empty), Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+                updateHomeConversation(conversation.id) { it.copy(label = newLabel, isAutoLabel = false) }
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun showDeleteHomeChatDialog(conversation: HomeConversation) {
+        AlertDialog.Builder(this)
+            .setTitle(getString(R.string.dialog_delete_chat_title))
+            .setMessage(getString(R.string.dialog_delete_chat_message, conversation.label))
+            .setPositiveButton(getString(R.string.dialog_btn_delete)) { _, _ ->
+                deleteHomeConversation(conversation.id)
+            }
+            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
+            .show()
+    }
+
+    private fun togglePinnedConversation(conversationId: String) {
+        updateHomeConversation(conversationId) { it.copy(pinned = !it.pinned) }
+    }
+
+    private fun updateHomeConversation(
+        conversationId: String,
+        transform: (HomeConversation) -> HomeConversation,
+    ) {
+        val index = homeConversations.indexOfFirst { it.id == conversationId }
+        if (index < 0) return
+        homeConversations[index] = transform(homeConversations[index])
+        persistHomeConversations()
+        renderHomeConversationChips()
     }
 
     private fun selectHomeConversation(conversationId: String) {
@@ -577,6 +669,8 @@ class MainActivity : AppCompatActivity(),
                         val conversation = HomeConversation(
                             id = conversationId,
                             label = getString(R.string.label_chat_number, homeConversations.size + 1),
+                            pinned = false,
+                            isAutoLabel = true,
                         )
                         homeConversations.add(conversation)
                         activeConversationId = conversationId
@@ -603,22 +697,64 @@ class MainActivity : AppCompatActivity(),
     }
 
     private fun maybeUpdateConversationLabel(conversation: HomeConversation, seedMessage: String) {
-        if (!conversation.label.startsWith(getString(R.string.label_chat_number, 1).substringBefore(" 1"))) {
-            return
-        }
         val updatedLabel = seedMessage.lines()
             .firstOrNull()
             .orEmpty()
             .trim()
             .take(24)
             .ifBlank { conversation.label }
-        if (updatedLabel == conversation.label) return
-        val index = homeConversations.indexOfFirst { it.id == conversation.id }
-        if (index < 0) return
-        homeConversations[index] = conversation.copy(label = updatedLabel)
-        persistHomeConversations()
-        renderHomeConversationChips()
+        if (!conversation.isAutoLabel || updatedLabel == conversation.label) return
+        updateHomeConversation(conversation.id) {
+            it.copy(label = updatedLabel, isAutoLabel = false)
+        }
     }
+
+    private fun deleteHomeConversation(conversationId: String) {
+        val conversation = homeConversations.firstOrNull { it.id == conversationId } ?: return
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/conversation/$conversationId")
+            .delete()
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    runOnUiThread {
+                        if (resp.isSuccessful || resp.code == 404) {
+                            homeConversations.removeAll { it.id == conversation.id }
+                            if (activeConversationId == conversationId) {
+                                activeConversationId = homeConversations.firstOrNull()?.id
+                            }
+                            persistHomeConversations()
+                            renderHomeConversationChips()
+                            if (activeConversationId == null) {
+                                renderChatMessages(null)
+                                createHomeConversation()
+                            } else {
+                                loadGlobalChat(activeConversationId)
+                            }
+                        } else {
+                            Toast.makeText(this, getString(R.string.error_delete_chat_failed), Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            } catch (_: IOException) {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_delete_chat_failed), Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun sortHomeConversations() {
+        homeConversations.sortByDescending { it.pinned }
+    }
+
+    private fun defaultHomeChatLabelPrefix(): String =
+        getString(R.string.label_chat_number, 1).substringBefore(" 1")
 
     private fun renderChatMessages(messages: JSONArray?) {
         if (messages == null || messages.length() == 0) {
@@ -875,7 +1011,12 @@ class MainActivity : AppCompatActivity(),
     }
 
     data class FolderItem(val id: String, val status: String, val label: String)
-    data class HomeConversation(val id: String, val label: String)
+    data class HomeConversation(
+        val id: String,
+        val label: String,
+        val pinned: Boolean = false,
+        val isAutoLabel: Boolean = false,
+    )
 
     // -------------------------------------------------------------------------
     // Voice / microphone input
