@@ -136,9 +136,16 @@ class TestStage1StructuralValidation:
         assert result.passed is False
         assert "strict_mode:empty_output" in result.failed_rules
 
-    def test_strict_mode_non_empty_passes(self):
-        result = stage_1_structural_validation("Valid response.", [MODE_STRICT])
+    def test_strict_mode_structured_output_passes(self):
+        result = stage_1_structural_validation(
+            "ARTIFACT_SUMMARY: Valid response.", [MODE_STRICT]
+        )
         assert result.passed is True
+
+    def test_strict_mode_free_text_fails_structural_contract(self):
+        result = stage_1_structural_validation("Valid response.", [MODE_STRICT])
+        assert result.passed is False
+        assert "strict_mode:structured_output_required" in result.failed_rules
 
     def test_empty_modes_skip_validation(self):
         result = stage_1_structural_validation("", [])
@@ -147,9 +154,14 @@ class TestStage1StructuralValidation:
 
 
 class TestStage2LogicalValidation:
-    def test_strict_mode_allows_plain_output(self):
-        result = stage_2_logical_validation("any output", [MODE_STRICT])
+    def test_strict_mode_valid_artifact_output_passes(self):
+        result = stage_2_logical_validation("ARTIFACT_SUMMARY: any output", [MODE_STRICT])
         assert result.passed is True
+
+    def test_strict_mode_empty_artifact_value_fails(self):
+        result = stage_2_logical_validation("ARTIFACT_SUMMARY:   ", [MODE_STRICT])
+        assert result.passed is False
+        assert "strict_mode:malformed_artifact_section" in result.failed_rules
 
     def test_empty_modes_skip_validation(self):
         result = stage_2_logical_validation("I think this works", [])
@@ -185,9 +197,28 @@ class TestStage3ComplianceValidation:
 
 
 class TestResponseContractEnforcement:
-    def test_check_response_contract_passes_for_strict_only(self):
+    def test_check_response_contract_rejects_free_text_for_strict_only(self):
         result = _check_response_contract("Any free text response.", [MODE_STRICT])
+        assert result.passed is False
+        assert "response_contract:free_text_in_strict_mode" in result.failed_rules
+        assert result.correction_instructions
+
+    def test_check_response_contract_passes_for_structured_strict_output(self):
+        result = _check_response_contract(
+            "ARTIFACT_SUMMARY: structured response.", [MODE_STRICT]
+        )
         assert result.passed is True
+
+    def test_check_response_contract_detects_mixed_output(self):
+        result = _check_response_contract(
+            "ARTIFACT_SUMMARY: structured response.\nExtra free text.",
+            [MODE_STRICT],
+        )
+        assert result.passed is False
+        assert (
+            "response_contract:mixed_free_text_and_structured_output"
+            in result.failed_rules
+        )
 
     def test_check_response_contract_passes_for_empty_modes(self):
         result = _check_response_contract("Any free text response.", [])
@@ -226,21 +257,21 @@ class TestBuildStructuredFailure:
         result = _build_structured_failure([vr], retry_count=2)
         assert result["error"] == "VALIDATION_FAILED"
         assert "strict_mode:guessing_detected" in result["failed_rules"]
-        assert "fix it" in result["suggested_fix"]
+        assert "fix it" in result["correction_instructions"]
         assert result["retry_count"] == 2
 
 
 class TestModeEngineGateway:
     def test_valid_strict_output_passes_through(self):
-        ai_call = MagicMock(return_value="A valid response.")
+        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: A valid response.")
         output, audit = mode_engine_gateway(
             user_intent="Hello",
             modes=[MODE_STRICT],
             ai_call=ai_call,
             base_system_prompt="System prompt.",
         )
-        assert output == "A valid response."
-        assert audit.final_output == "A valid response."
+        assert output == "ARTIFACT_SUMMARY: A valid response."
+        assert audit.final_output == "ARTIFACT_SUMMARY: A valid response."
         assert audit.retry_count == 0
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
         ai_call.assert_called_once()
@@ -262,7 +293,7 @@ class TestModeEngineGateway:
 
         def ai_call(system_prompt: str) -> str:
             received_prompts.append(system_prompt)
-            return "Response."
+            return "ARTIFACT_SUMMARY: Response."
 
         mode_engine_gateway(
             user_intent="test",
@@ -300,7 +331,7 @@ class TestModeEngineGateway:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 return "I think this is correct."
-            return "This is definitely correct."
+            return "ARTIFACT_SUMMARY: This is definitely correct."
 
         output, audit = mode_engine_gateway(
             user_intent="question",
@@ -309,7 +340,7 @@ class TestModeEngineGateway:
             base_system_prompt="",
         )
         assert call_count["n"] == 2
-        assert output == "This is definitely correct."
+        assert output == "ARTIFACT_SUMMARY: This is definitely correct."
         assert audit.retry_count == 1
 
     def test_structured_failure_after_exhausted_retries_in_strict_mode(self):
@@ -322,11 +353,12 @@ class TestModeEngineGateway:
         )
         failure = json.loads(output)
         assert failure["error"] == "VALIDATION_FAILED"
+        assert failure["correction_instructions"]
         assert failure["retry_count"] == MAX_RETRIES
         assert ai_call.call_count == MAX_RETRIES + 1
 
     def test_audit_record_fields_populated_in_strict_mode(self):
-        ai_call = MagicMock(return_value="Clean response.")
+        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: Clean response.")
         output, audit = mode_engine_gateway(
             user_intent="user query",
             modes=[MODE_STRICT],
@@ -336,8 +368,8 @@ class TestModeEngineGateway:
         assert audit.user_intent == "user query"
         assert MODE_STRICT in audit.selected_modes
         assert "MODE ENGINE" in audit.transformed_prompt
-        assert audit.raw_ai_output == "Clean response."
-        assert output == "Clean response."
+        assert audit.raw_ai_output == "ARTIFACT_SUMMARY: Clean response."
+        assert output == "ARTIFACT_SUMMARY: Clean response."
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
 
 
@@ -552,10 +584,10 @@ class TestStubPathThroughGateway:
         v3 = stage_3_compliance_validation(stub, [MODE_STRICT])
         v4 = _check_response_contract(stub, [MODE_STRICT])
 
-        assert v1.passed is True
+        assert v1.passed is False
         assert v2.passed is True
-        assert v3.passed is True
-        assert v4.passed is True
+        assert v3.passed is False
+        assert v4.passed is False
 
     def test_stub_audit_record_is_written(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

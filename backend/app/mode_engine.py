@@ -17,6 +17,7 @@ Strict-mode responses are validated before exit; non-strict responses pass throu
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -45,6 +46,8 @@ _MODE_PRIORITY: dict[str, int] = {m: i for i, m in enumerate(MODE_PRIORITY_ORDER
 
 # Maximum number of validation retries before structured failure is returned.
 MAX_RETRIES = 2
+STRICT_MODE_ARTIFACT_PREFIX = "ARTIFACT_"
+STRICT_MODE_INSUFFICIENT_DATA_PREFIX = "INSUFFICIENT_DATA:"
 
 
 def resolve_modes(requested: list[str]) -> list[str]:
@@ -202,7 +205,8 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
         lines.append(
             "STRICT MODE: You MUST NOT guess or assume. "
             "If you lack sufficient information respond with exactly: "
-            "INSUFFICIENT_DATA: <reason>. Hallucination is prohibited."
+            "INSUFFICIENT_DATA: <reason>. Otherwise respond using "
+            "ARTIFACT_<NAME>: <value> sections only. Hallucination is prohibited."
         )
 
     if MODE_PREDICTION in modes:
@@ -261,6 +265,20 @@ _REQUIRED_MARKERS: dict[str, list[str]] = {
     MODE_BUILDER: ["SECTION_"],
 }
 
+_STRICT_ARTIFACT_LINE = re.compile(r"^ARTIFACT_[A-Z0-9_]+:\s*(.+?)\s*$")
+
+
+def _strict_mode_uses_insufficient_data(ai_output: str) -> bool:
+    return ai_output.strip().startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX)
+
+
+def _strict_mode_artifact_lines(ai_output: str) -> list[str]:
+    return [
+        line.strip()
+        for line in ai_output.splitlines()
+        if line.strip().startswith(STRICT_MODE_ARTIFACT_PREFIX)
+    ]
+
 
 def stage_1_structural_validation(ai_output: str, modes: list[str]) -> ValidationResult:
     """Validate that required fields are present in *ai_output*."""
@@ -269,6 +287,8 @@ def stage_1_structural_validation(ai_output: str, modes: list[str]) -> Validatio
     missing: list[str] = []
     failed: list[str] = []
     corrections: list[str] = []
+    artifact_lines = _strict_mode_artifact_lines(ai_output)
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
 
     for mode in modes:
         for marker in _REQUIRED_MARKERS.get(mode, []):
@@ -282,6 +302,13 @@ def stage_1_structural_validation(ai_output: str, modes: list[str]) -> Validatio
         missing.append("non_empty_output")
         corrections.append(
             "Provide a non-empty response or state INSUFFICIENT_DATA: <reason>"
+        )
+    elif not artifact_lines and not uses_insufficient_data:
+        failed.append("strict_mode:structured_output_required")
+        missing.append("ARTIFACT_<NAME>")
+        corrections.append(
+            "Respond using at least one ARTIFACT_<NAME>: <value> section or "
+            "INSUFFICIENT_DATA: <reason>"
         )
 
     return ValidationResult(
@@ -304,6 +331,20 @@ def stage_2_logical_validation(ai_output: str, modes: list[str]) -> ValidationRe
         return ValidationResult(stage="logical", passed=True)
     failed: list[str] = []
     corrections: list[str] = []
+    artifact_lines = _strict_mode_artifact_lines(ai_output)
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+
+    if artifact_lines and not uses_insufficient_data:
+        malformed = [
+            line
+            for line in artifact_lines
+            if _STRICT_ARTIFACT_LINE.fullmatch(line) is None
+        ]
+        if malformed:
+            failed.append("strict_mode:malformed_artifact_section")
+            corrections.append(
+                "Each structured line must match ARTIFACT_<NAME>: <value>"
+            )
 
     if MODE_PREDICTION in modes:
         # Assumptions must be explicit (non-empty after the label).
@@ -444,6 +485,50 @@ def _check_response_contract(ai_output: str, modes: list[str]) -> ValidationResu
     """
     if MODE_STRICT not in modes:
         return ValidationResult(stage="response_contract", passed=True)
+    lines = [line.strip() for line in ai_output.splitlines() if line.strip()]
+    uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
+    artifact_lines = _strict_mode_artifact_lines(ai_output)
+
+    if not artifact_lines and not uses_insufficient_data:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:free_text_in_strict_mode"],
+            missing_fields=["ARTIFACT_<NAME>"],
+            correction_instructions=[
+                "AGOII strict mode rejects free-text responses. "
+                "Respond with ARTIFACT_<NAME>: <value> sections or "
+                "INSUFFICIENT_DATA: <reason>"
+            ],
+        )
+
+    invalid_lines = [
+        line
+        for line in lines
+        if not line.startswith(STRICT_MODE_ARTIFACT_PREFIX)
+        and not line.startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX)
+    ]
+    if artifact_lines and invalid_lines:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:mixed_free_text_and_structured_output"],
+            correction_instructions=[
+                "When using ARTIFACT sections, every non-empty line must be "
+                "an ARTIFACT_<NAME>: <value> entry."
+            ],
+        )
+
+    if uses_insufficient_data and len(lines) > 1:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["response_contract:insufficient_data_must_stand_alone"],
+            correction_instructions=[
+                "If you return INSUFFICIENT_DATA: <reason>, do not include "
+                "additional free-text or ARTIFACT sections."
+            ],
+        )
 
     active_structured = [m for m in modes if m in _STRUCTURED_MODES]
     if not active_structured:
@@ -501,14 +586,22 @@ def _build_structured_failure(
     retry_count: int,
 ) -> dict[str, Any]:
     """Return a structured failure dict after retry exhaustion."""
-    all_failed = [r for vr in validation_results for r in vr.failed_rules]
-    all_missing = [r for vr in validation_results for r in vr.missing_fields]
-    all_corrections = [r for vr in validation_results for r in vr.correction_instructions]
+    all_failed = list(
+        dict.fromkeys(r for vr in validation_results for r in vr.failed_rules)
+    ) or ["validation_failed:unknown"]
+    all_missing = list(
+        dict.fromkeys(r for vr in validation_results for r in vr.missing_fields)
+    )
+    all_corrections = list(
+        dict.fromkeys(r for vr in validation_results for r in vr.correction_instructions)
+    ) or [
+        "Respond with ARTIFACT_<NAME>: <value> sections or INSUFFICIENT_DATA: <reason>"
+    ]
     return {
         "error": "VALIDATION_FAILED",
         "failed_rules": all_failed,
         "missing_fields": all_missing,
-        "suggested_fix": all_corrections,
+        "correction_instructions": all_corrections,
         "retry_count": retry_count,
     }
 
