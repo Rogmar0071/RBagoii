@@ -4,17 +4,20 @@ backend.app.artifact_utils
 Pure stateless helpers for normalizing and injecting user-supplied artifacts
 into AI system prompts.
 
-Contract: ARTIFACT_INGESTION_PIPELINE_V1 (MQP-PHASE-B)
+Contracts:
+  ARTIFACT_INGESTION_PIPELINE_V1 (MQP-PHASE-B)
+  CONTEXT_ASSEMBLY_ALIGNMENT_V2
 
 Rules (non-negotiable):
 - Artifacts are NEVER summarized, truncated, or preprocessed.
 - This module holds NO state.
 - All reasoning on artifact content happens in the AI layer, not here.
+- Context resolution is deterministic and performs zero external I/O.
 """
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
 
@@ -61,3 +64,44 @@ def build_artifact_context_block(artifacts: list[ArtifactItem]) -> str:
     # Replace the trailing separator with the closing marker.
     parts[-1] = "--- END PROVIDED ARTIFACTS ---"
     return "\n".join(parts)
+
+
+def resolve_context_surface(
+    *,
+    context_scope: str,
+    project_id: Optional[str],
+    artifacts: list[ArtifactItem],
+) -> dict:
+    """Deterministic context resolver for CONTEXT_ASSEMBLY_ALIGNMENT_V2.
+
+    Maps UI-declared scope + project_id + artifacts to a resolved surface dict.
+    Performs ZERO external I/O — no DB access, no file access, no retrieval.
+
+    Parameters
+    ----------
+    context_scope:
+        One of "global" or "project".  Validation (422 on invalid values and on
+        project scope without project_id) is enforced in the caller layer.
+    project_id:
+        Required when context_scope == "project"; None otherwise.
+    artifacts:
+        User-provided artifacts (already normalized).
+
+    Returns
+    -------
+    {
+        "resolved_artifacts": list[ArtifactItem],
+        "scope": str,
+        "project_id": Optional[str],
+    }
+
+    Notes
+    -----
+    resolved_artifacts is identical to *artifacts* in both scopes by design:
+    no persistence layer exists, so no stored artifacts can be injected.
+    """
+    return {
+        "resolved_artifacts": artifacts,
+        "scope": context_scope,
+        "project_id": project_id,
+    }

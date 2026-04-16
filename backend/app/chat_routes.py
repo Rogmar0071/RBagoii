@@ -30,10 +30,14 @@ import httpx
 from fastapi import APIRouter, Depends
 from fastapi import Request as FastAPIRequest
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 from sqlmodel import Session, select
 
-from backend.app.artifact_utils import ArtifactItem, build_artifact_context_block
+from backend.app.artifact_utils import (
+    ArtifactItem,
+    build_artifact_context_block,
+    resolve_context_surface,
+)
 from backend.app.auth import require_auth
 from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
@@ -251,6 +255,11 @@ class ChatPostRequest(BaseModel):
     # ARTIFACT_INGESTION_PIPELINE_V1: user-provided artifacts for this request.
     # Artifacts are passed verbatim into the system prompt; no preprocessing.
     artifacts: list[ArtifactItem] | None = None
+    # CONTEXT_ASSEMBLY_ALIGNMENT_V2: UI must declare execution context.
+    # Defaults to "global" for backward compatibility with existing callers.
+    context_scope: Literal["global", "project"] = "global"
+    # Required when context_scope == "project"; ignored when context_scope == "global".
+    project_id: str | None = None
 
     @field_validator("message")
     @classmethod
@@ -259,6 +268,15 @@ class ChatPostRequest(BaseModel):
         if not text:
             raise ValueError("message is required and must not be empty.")
         return text
+
+    @model_validator(mode="after")
+    def _validate_context_scope(self) -> "ChatPostRequest":
+        # CONTEXT_ASSEMBLY_ALIGNMENT_V2: project scope requires project_id.
+        if self.context_scope == "project" and not self.project_id:
+            raise ValueError(
+                "project_id is required when context_scope is 'project'."
+            )
+        return self
 
 
 class ChatPostResponse(BaseModel):
@@ -862,6 +880,14 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     active_modes = resolve_modes(request.modes or [])
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []
+    # CONTEXT_ASSEMBLY_ALIGNMENT_V2: resolve execution context surface.
+    # No external I/O — deterministic pass-through only.
+    context_surface = resolve_context_surface(
+        context_scope=request.context_scope,
+        project_id=request.project_id,
+        artifacts=active_artifacts,
+    )
+    resolved_artifacts = context_surface["resolved_artifacts"]
 
     db = _db_session()
     try:
@@ -914,9 +940,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     "ARTIFACT_SOURCES, etc."
                 )
 
-            # ARTIFACT_INGESTION_PIPELINE_V1: inject user-provided artifacts.
+            # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
+            # inject user-provided artifacts (order: after ops/retrieval, before mode injection).
             # Artifacts are passed verbatim — no preprocessing, no summarization.
-            artifact_block = build_artifact_context_block(active_artifacts)
+            artifact_block = build_artifact_context_block(resolved_artifacts)
             if artifact_block:
                 base_system_prompt += "\n\n" + artifact_block
 
