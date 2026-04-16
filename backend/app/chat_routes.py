@@ -43,7 +43,6 @@ from backend.app.auth import require_auth
 from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
-    resolve_modes,
 )
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
@@ -1006,10 +1005,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     agent_mode = request.agent_mode or (
         http_request.headers.get("X-Agent-Mode", "0") == "1"
     )
-    # MODE_ENGINE_EXECUTION_V2: resolve active modes (defaults to strict_mode).
-    # resolve_modes([]) already falls back to [MODE_STRICT], so passing an empty
-    # list or None both produce the same default behaviour.
-    active_modes = resolve_modes(request.modes or [])
+    # MODE_ISOLATION_CORRECTION_V1: agent mode is the sole control point for
+    # strict_mode activation on POST /api/chat.
+    active_modes = ["strict_mode"] if agent_mode else []
     # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
     active_artifacts = request.artifacts or []
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared

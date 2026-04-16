@@ -50,19 +50,21 @@ MAX_RETRIES = 2
 def resolve_modes(requested: list[str]) -> list[str]:
     """Validate, deduplicate, and sort modes by priority.
 
-    Unknown modes are silently filtered out.  If the resulting list is empty,
-    falls back to ``[strict_mode]``.
+    Unknown modes are silently filtered out. If the resulting list is empty,
+    returns ``[]``.
     """
     valid = sorted(
         {m for m in requested if m in SUPPORTED_MODES},
         key=lambda m: _MODE_PRIORITY.get(m, 999),
     )
-    return valid if valid else [MODE_STRICT]
+    return valid
 
 
 def effective_mode(modes: list[str]) -> str:
     """Return the highest-priority active mode from *modes*."""
     resolved = resolve_modes(modes)
+    if not resolved:
+        raise ValueError("No active modes")
     return resolved[0]
 
 
@@ -608,8 +610,7 @@ def mode_engine_gateway(
     user_intent:
         The user's raw query/message.
     modes:
-        Requested mode list.  Unknown entries are filtered; empty list
-        falls back to ``[strict_mode]``.
+        Requested mode list supplied by the caller. Empty input remains empty.
     ai_call:
         Callable ``(system_prompt: str) -> str`` that invokes the AI and
         returns raw text.  Exceptions propagate.
@@ -630,19 +631,19 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    resolved_modes = resolve_modes(modes)
+    selected_modes = list(modes)
     # Apply mode stacking conflict resolution (logs conflicts, returns same list).
-    resolved_modes = apply_mode_conflict_resolution(resolved_modes)
+    selected_modes = apply_mode_conflict_resolution(selected_modes)
 
     audit = ModeEngineAuditRecord(
         user_intent=user_intent,
-        selected_modes=resolved_modes,
+        selected_modes=selected_modes,
     )
 
     # ------------------------------------------------------------------
     # Stage 0: pre-generation constraints
     # ------------------------------------------------------------------
-    ok, reason = stage_0_pre_generation_constraints(user_intent, resolved_modes)
+    ok, reason = stage_0_pre_generation_constraints(user_intent, selected_modes)
     if not ok:
         import json as _json
 
@@ -654,8 +655,10 @@ def mode_engine_gateway(
     # ------------------------------------------------------------------
     # Build mode-injected system prompt (includes conflict constraints)
     # ------------------------------------------------------------------
-    mode_injection = build_mode_system_prompt_injection(resolved_modes)
-    transformed_prompt = base_system_prompt + mode_injection
+    transformed_prompt = base_system_prompt
+    if selected_modes:
+        mode_injection = build_mode_system_prompt_injection(selected_modes)
+        transformed_prompt += mode_injection
     audit.transformed_prompt = transformed_prompt
 
     # ------------------------------------------------------------------
@@ -672,12 +675,12 @@ def mode_engine_gateway(
         audit.retry_count = attempt
 
         # Four-stage validation pipeline.
-        v1 = stage_1_structural_validation(raw_output, resolved_modes)
-        v2 = stage_2_logical_validation(raw_output, resolved_modes)
-        v3 = stage_3_compliance_validation(raw_output, resolved_modes)
+        v1 = stage_1_structural_validation(raw_output, selected_modes)
+        v2 = stage_2_logical_validation(raw_output, selected_modes)
+        v3 = stage_3_compliance_validation(raw_output, selected_modes)
         # v4: response contract — enforces no_free_text_for_structured_modes
         #     and partial_responses_rejected (string-based; reply stays a string).
-        v4 = _check_response_contract(raw_output, resolved_modes)
+        v4 = _check_response_contract(raw_output, selected_modes)
 
         last_validation_results = [v1, v2, v3, v4]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]
