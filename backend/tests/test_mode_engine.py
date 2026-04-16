@@ -104,7 +104,7 @@ class TestBuildModeSystemPromptInjection:
         prompt = build_mode_system_prompt_injection([MODE_STRICT])
         assert "STRICT MODE" in prompt
         assert "INSUFFICIENT_DATA" in prompt
-        assert MODE_STRICT in prompt
+        assert f"Active modes: {MODE_STRICT}" in prompt
 
 
 class TestStage0:
@@ -268,7 +268,7 @@ class TestModeEngineGateway:
             ai_call=ai_call,
             base_system_prompt="BASE",
         )
-        assert received_prompts == [received_prompts[0]]
+        assert len(received_prompts) == 1
         assert "MODE ENGINE EXECUTION V2 CONSTRAINTS" in received_prompts[0]
         assert "BASE" in received_prompts[0]
 
