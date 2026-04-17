@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from backend.app.mode_engine import mode_engine_gateway, resolve_modes
+from backend.app.mode_engine import resolve_modes
 
 from .audit import persist_mutation_audit_record
 from .contract import (
@@ -319,10 +319,10 @@ def mutation_governance_gateway(
             requested_modes.append(m)
     resolved_modes = resolve_modes(requested_modes)
     audit.selected_modes = resolved_modes
-    
+
     # Build mutation prompt with mode constraints
     from backend.app.mode_engine import build_mode_system_prompt_injection
-    
+
     mode_constraints = build_mode_system_prompt_injection(resolved_modes)
     full_prompt = _MUTATION_SYSTEM_PROMPT + mode_constraints
 
