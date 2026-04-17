@@ -1010,7 +1010,8 @@ def mode_engine_gateway(
         import json as _json
 
         failure: dict[str, Any] = {
-            "error": "CONTRACT_VALIDATION_FAILED",
+            "error": "VALIDATION_FAILED",
+            "stage": "contract_boundary",
             "status": "blocked",
             "blocked_reason": "contract_validation_failure",
             "failed_rules": contract_validation.failed_rules,
@@ -1077,6 +1078,7 @@ def mode_engine_gateway(
         # PHASE 4 — PARSE-FIRST ENFORCEMENT
         # Check if output can be parsed before validation
         # For typed_structured_json contracts, verify JSON parsing works
+        parse_failed = False
         if contract_obj and contract_obj.output_format == "typed_structured_json":
             # Check for INSUFFICIENT_DATA fallback first (allowed bypass)
             uses_insufficient_data = _strict_mode_uses_insufficient_data(raw_output)
@@ -1084,40 +1086,31 @@ def mode_engine_gateway(
                 parsed_output = _parse_typed_output(raw_output)
                 if parsed_output is None:
                     # PHASE 6 — FAILURE TAXONOMY: "parse_failure"
-                    # PHASE 7 — RETRY ENGINE: set retry_count = MAX_RETRIES on parse failure
-                    import json as _json
-
-                    parse_failure_result = ValidationResult(
-                        stage="parse",
-                        passed=False,
-                        failed_rules=["parse_failure"],
-                        correction_instructions=[
-                            "Output must be valid JSON or INSUFFICIENT GROUNDED KNOWLEDGE"
-                        ],
-                    )
-                    audit.retry_count = MAX_RETRIES
-                    audit.validation_results = [parse_failure_result.to_dict()]
-                    failure_dict = {
-                        "error": "VALIDATION_FAILED",
-                        "status": "blocked",
-                        "blocked_reason": "parse_failure",
-                        "validation_results": [parse_failure_result.to_dict()],
-                        "retry_count": MAX_RETRIES,
-                    }
-                    audit.final_output = _json.dumps(failure_dict)
-                    _persist_audit_record(audit)
-                    return audit.final_output, audit
+                    # Mark as parse failure but continue to allow retries
+                    parse_failed = True
 
         # PHASE 5 — VALIDATION PIPELINE LOCK
         # Three-stage CONTRACT-DRIVEN validation pipeline (MANDATORY ORDER)
         # 1. structural  2. logical  3. compliance
         # ALL stages MUST execute IF parse succeeds
         # EACH stage MUST return: stage, passed, failed_rules, correction_instructions
-        v1 = stage_1_structural_validation(raw_output, active_modes, contract_obj)
-        v2 = stage_2_logical_validation(raw_output, active_modes, contract_obj)
-        v3 = stage_3_compliance_validation(raw_output, active_modes, contract_obj)
+        if parse_failed:
+            # Create a parse failure validation result
+            parse_failure_result = ValidationResult(
+                stage="parse",
+                passed=False,
+                failed_rules=["parse_failure"],
+                correction_instructions=[
+                    "Output must be valid JSON or INSUFFICIENT GROUNDED KNOWLEDGE"
+                ],
+            )
+            last_validation_results = [parse_failure_result]
+        else:
+            v1 = stage_1_structural_validation(raw_output, active_modes, contract_obj)
+            v2 = stage_2_logical_validation(raw_output, active_modes, contract_obj)
+            v3 = stage_3_compliance_validation(raw_output, active_modes, contract_obj)
+            last_validation_results = [v1, v2, v3]
 
-        last_validation_results = [v1, v2, v3]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]
 
         if all(vr.passed for vr in last_validation_results):
@@ -1140,11 +1133,21 @@ def mode_engine_gateway(
         # No Silent Completion Rule: strict mode must return explicit insufficiency
         import json as _json
 
+        # Collect failed_rules and correction_instructions from all validation results
+        all_failed = list(dict.fromkeys(r for vr in last_validation_results for r in vr.failed_rules))
+        all_corrections = list(
+            dict.fromkeys(r for vr in last_validation_results for r in vr.correction_instructions)
+        )
+
         audit.retry_count = MAX_RETRIES
         failure_dict = {
             "error": "VALIDATION_FAILED",
             "status": "blocked",
             "blocked_reason": "validation_failure",
+            "failed_rules": all_failed or ["validation_failed"],
+            "correction_instructions": all_corrections or [
+                "Respond with typed JSON object or INSUFFICIENT GROUNDED KNOWLEDGE"
+            ],
             "validation_results": audit.validation_results,
             "retry_count": MAX_RETRIES,
             "insufficiency_message": STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE,

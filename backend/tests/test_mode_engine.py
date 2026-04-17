@@ -41,7 +41,8 @@ from backend.app.mode_engine import (  # noqa: E402
 from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
-EXPECTED_VALIDATION_STAGES = 4
+# PHASE 5 — VALIDATION PIPELINE LOCK: Three stages (structural, logical, compliance)
+EXPECTED_VALIDATION_STAGES = 3
 VALID_TYPED_STRICT_OUTPUT = json.dumps(
     {
         "claims": [
@@ -702,7 +703,8 @@ class TestMandatoryAudit:
                 base_system_prompt="",
             )
 
-    def test_post_chat_returns_500_when_audit_fails(self, monkeypatch):
+    def test_post_chat_returns_200_with_error_when_audit_fails(self, monkeypatch):
+        """PHASE 3 — API STABILITY LOCK: ALL execution paths MUST return HTTP 200"""
         non_raising_client = TestClient(app, raise_server_exceptions=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -718,7 +720,11 @@ class TestMandatoryAudit:
             json=_chat_payload("Hello"),
             headers=_auth(),
         )
-        assert resp.status_code == 500
+        # PHASE 3: Always return 200, even on audit failure
+        assert resp.status_code == 200
+        # Should contain error information in the response
+        data = resp.json()
+        assert "error" in data or ("reply" in data and "SYSTEM_FAILURE" in data["reply"])
 
     def test_audit_record_no_silent_fallback_when_db_configured(self, monkeypatch, tmp_path):
         from sqlmodel import Session
