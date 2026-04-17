@@ -52,6 +52,21 @@
         app:icon="@android:drawable/ic_input_add"
         app:iconTint="@color/icon_tint" />
 
+    <!-- Browse all files button -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnBrowseAllFiles"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="4dp"
+        android:text="@string/action_browse_all_files"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        app:icon="@android:drawable/ic_menu_view"
+        app:iconTint="@color/text_secondary" />
+
     <!-- GitHub repos button -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnGithubRepos"

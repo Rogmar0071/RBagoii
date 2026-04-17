@@ -199,6 +199,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         val rvFiles = binding.filesPanel.findViewById<androidx.recyclerview.widget.RecyclerView>(R.id.rvFiles)
         val tvEmptyState = binding.filesPanel.findViewById<android.widget.TextView>(R.id.tvEmptyState)
         val btnUploadFile = binding.filesPanel.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnUploadFile)
+        val btnBrowseAllFiles = binding.filesPanel.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnBrowseAllFiles)
         val btnGithubRepos = binding.filesPanel.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnGithubRepos)
         val btnClosePanel = binding.filesPanel.findViewById<androidx.appcompat.widget.AppCompatImageButton>(R.id.btnClosePanel)
 
@@ -218,6 +219,11 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         // Upload file button
         btnUploadFile?.setOnClickListener {
             filePickerLauncher.launch("*/*")
+        }
+
+        // Browse all files button
+        btnBrowseAllFiles?.setOnClickListener {
+            showAllFilesDialog()
         }
 
         // GitHub repos button (placeholder for now)
@@ -534,6 +540,134 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         } else {
             tvEmptyState?.visibility = View.GONE
             rvFiles?.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showAllFilesDialog() {
+        // Load all files from all conversations
+        executor.execute {
+            try {
+                val apiKey = prefs.getString("api_key", "") ?: ""
+                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                
+                // Use dummy conversation_id since we're fetching all files
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat/_all/files?all_conversations=true")
+                    .addHeader("Authorization", "******")
+                    .get()
+                    .build()
+
+                val response = BackendClient.client.newCall(request).execute()
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: "[]"
+                    val filesArray = JSONArray(body)
+                    val allFiles = mutableListOf<ChatFile>()
+                    
+                    for (i in 0 until filesArray.length()) {
+                        val obj = filesArray.getJSONObject(i)
+                        val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                        allFiles.add(
+                            ChatFile(
+                                id = obj.getString("id"),
+                                conversationId = obj.getString("conversation_id"),
+                                filename = obj.getString("filename"),
+                                mimeType = obj.getString("mime_type"),
+                                sizeBytes = obj.getLong("size_bytes"),
+                                category = obj.getString("category"),
+                                includedInContext = obj.getBoolean("included_in_context"),
+                                createdAt = dateFormat.parse(obj.getString("created_at").split(".")[0]) ?: Date(),
+                                updatedAt = dateFormat.parse(obj.getString("updated_at").split(".")[0]) ?: Date(),
+                                downloadUrl = obj.optString("download_url", null),
+                            )
+                        )
+                    }
+                    
+                    runOnUiThread {
+                        if (allFiles.isEmpty()) {
+                            Toast.makeText(this, "No files found", Toast.LENGTH_SHORT).show()
+                        } else {
+                            showFileSelectionDialog(allFiles)
+                        }
+                    }
+                } else {
+                    Log.e("ChatActivity", "Failed to load all files: ${response.code}")
+                    runOnUiThread {
+                        Toast.makeText(this, "Failed to load files", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ChatActivity", "Error loading all files", e)
+                runOnUiThread {
+                    Toast.makeText(this, "Error loading files", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun showFileSelectionDialog(allFiles: List<ChatFile>) {
+        val currentConvId = conversationId
+        
+        // Group files by conversation
+        val filesByConv = allFiles.groupBy { it.conversationId }
+        
+        // Build dialog with checkboxes
+        val dialogView = layoutInflater.inflate(android.R.layout.select_dialog_multichoice, null)
+        val items = mutableListOf<String>()
+        val fileList = mutableListOf<ChatFile>()
+        
+        filesByConv.forEach { (convId, files) ->
+            val convLabel = if (convId == currentConvId) "This Chat" else "Chat: ${convId.take(8)}"
+            files.forEach { file ->
+                items.add("${file.filename}\n$convLabel")
+                fileList.add(file)
+            }
+        }
+        
+        val checkedItems = fileList.map { it.includedInContext }.toBooleanArray()
+        
+        AlertDialog.Builder(this)
+            .setTitle("Select Files to Include")
+            .setMultiChoiceItems(items.toTypedArray(), checkedItems) { _, which, isChecked ->
+                checkedItems[which] = isChecked
+            }
+            .setPositiveButton("Apply") { _, _ ->
+                // Update included_in_context for changed files
+                fileList.forEachIndexed { index, file ->
+                    if (file.includedInContext != checkedItems[index]) {
+                        updateFileContextCrossConversation(file, checkedItems[index])
+                    }
+                }
+                // Refresh current file list
+                loadChatFiles()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateFileContextCrossConversation(file: ChatFile, included: Boolean) {
+        executor.execute {
+            try {
+                val apiKey = prefs.getString("api_key", "") ?: ""
+                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+
+                val json = JSONObject().apply {
+                    put("included_in_context", included)
+                }
+
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat/${file.conversationId}/files/${file.id}?allow_cross_conversation=true")
+                    .addHeader("Authorization", "******")
+                    .addHeader("Content-Type", "application/json")
+                    .patch(json.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                val response = BackendClient.client.newCall(request).execute()
+                if (!response.isSuccessful) {
+                    Log.e("ChatActivity", "Failed to update file context: ${response.code}")
+                }
+            } catch (e: Exception) {
+                Log.e("ChatActivity", "Error updating file context", e)
+            }
         }
     }
 

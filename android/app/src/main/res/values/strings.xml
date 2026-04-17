@@ -159,4 +159,6 @@
     <string name="action_view_file">View</string>
     <string name="action_ok">OK</string>
     <string name="action_delete">Delete</string>
+    <string name="action_browse_all_files">Browse All Files</string>
+    <string name="label_from_conversation">From: %1$s</string>
 </resources>
