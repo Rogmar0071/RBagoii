@@ -279,6 +279,9 @@ def mutation_governance_gateway(
     # ------------------------------------------------------------------
     requested_modes: list[str] = list(modes or [])
     resolved_modes = resolve_modes(requested_modes)
+    
+    # Strict mode detection (STRICT_MODE_PROPAGATION_ENFORCEMENT_V1)
+    is_strict = modes is not None and "strict_mode" in modes
 
     result = MutationGovernanceResult()
     audit = MutationGovernanceAuditRecord(
@@ -289,10 +292,10 @@ def mutation_governance_gateway(
     )
 
     # ------------------------------------------------------------------
-    # PHASE 6 — NORMAL MODE PATH (modes == [])
+    # PHASE 6 — NORMAL MODE PATH (modes == [] or modes == None)
     # Governance NEVER assumes validation exists
     # ------------------------------------------------------------------
-    if not resolved_modes or "strict_mode" not in resolved_modes:
+    if not is_strict:
         # NORMAL MODE: no validation, no contract, immediate approval
         result.status = "approved"
         result.mutation_proposal = {
