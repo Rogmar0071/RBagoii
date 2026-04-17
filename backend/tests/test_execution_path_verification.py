@@ -133,7 +133,21 @@ def get_canonical_scenarios() -> list[ExecutionScenario]:
             description="Strict mode with contract-compliant AI output",
             modes=[MODE_STRICT],
             user_intent="analyze the data quality",
-            ai_response="ASSUMPTIONS: Data is from 2024\nCONFIDENCE: high\nMISSING_DATA: none",
+            ai_response=json.dumps(
+                {
+                    "claims": [
+                        {
+                            "statement": "Data quality was evaluated from available records.",
+                            "confidence": 0.9,
+                            "source_type": "inferred",
+                            "verifiability": "externally_verifiable",
+                        }
+                    ],
+                    "uncertainties": [],
+                    "generation_mode": "inferred",
+                    "mode_label": "INFERRED",
+                }
+            ),
             expect_intent_extraction=True,
             expect_contract_creation=True,
             expect_validation_execution=True,

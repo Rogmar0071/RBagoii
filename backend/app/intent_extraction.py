@@ -139,6 +139,7 @@ def extract_intent(user_message: str) -> IntentObject:
 
     intent.verification_required = "yes" if intent.truth_requirement == "strict" else "no"
 
+    # output_class intentionally depends on truth_requirement above.
     if any(kw in lower_msg for kw in ["opinion", "preference", "subjective"]):
         intent.output_class = "opinion"
     elif intent.truth_requirement == "strict":

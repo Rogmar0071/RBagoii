@@ -354,7 +354,21 @@ class TestPhase4GovernanceToggle:
     ):
         """Strict mode should approve valid contract-compliant output."""
         # Mock OpenAI to return valid strict mode response
-        valid_response = "ASSUMPTIONS: Data from 2024\nCONFIDENCE: high\nMISSING_DATA: none"
+        valid_response = json.dumps(
+            {
+                "claims": [
+                    {
+                        "statement": "Data was analyzed from provided context.",
+                        "confidence": 0.9,
+                        "source_type": "inferred",
+                        "verifiability": "externally_verifiable",
+                    }
+                ],
+                "uncertainties": [],
+                "generation_mode": "inferred",
+                "mode_label": "INFERRED",
+            }
+        )
 
         with patch("backend.app.chat_routes.httpx.post") as mock_post:
             mock_post.return_value = MagicMock(
@@ -374,12 +388,9 @@ class TestPhase4GovernanceToggle:
             body = response.json()
             reply = body["reply"]
 
-            # Valid output should pass through (not a structured failure)
-            assert "ASSUMPTIONS" in reply or "CONFIDENCE" in reply
-            # Should not be a JSON error object
-            if reply.startswith("{"):
-                parsed = json.loads(reply)
-                assert "error" not in parsed
+            parsed = json.loads(reply)
+            assert parsed["mode_label"] == "INFERRED"
+            assert "error" not in parsed
 
 
 # ===========================================================================
