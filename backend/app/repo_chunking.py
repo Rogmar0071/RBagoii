@@ -236,7 +236,10 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Missing chunks: {missing}. Only {total_chunks - len(missing)}/{total_chunks} chunks received",
+            detail=(
+                f"Missing chunks: {missing}. "
+                f"Only {total_chunks - len(missing)}/{total_chunks} chunks received"
+            ),
         )
 
     total_written = 0
@@ -295,7 +298,7 @@ def save_chunk(upload_id: str, chunk_index: int, total_chunks: int, data: bytes)
     """
     chunk_dir = _chunks_dir(upload_id, create=True)
     manifest_path = chunk_dir / "_meta.json"
-    
+
     # Load or create manifest
     if manifest_path.exists():
         manifest = load_manifest(upload_id)
@@ -305,17 +308,17 @@ def save_chunk(upload_id: str, chunk_index: int, total_chunks: int, data: bytes)
             "total_chunks": total_chunks,
             "received_chunks": [],
         }
-    
+
     # Save chunk
     _write_chunk_bytes(chunk_dir, chunk_index, data)
-    
+
     # Update manifest
     received_chunks = set(int(index) for index in manifest.get("received_chunks", []))
     received_chunks.add(chunk_index)
     manifest["received_chunks"] = sorted(received_chunks)
     manifest["total_chunks"] = total_chunks  # Update in case it changed
     _write_manifest(upload_id, manifest)
-    
+
     chunks_received = len(manifest["received_chunks"])
     return {
         **manifest,
@@ -332,7 +335,7 @@ def assemble_chunks(upload_id: str) -> bytes:
     manifest = load_manifest(upload_id)
     chunk_dir = _chunks_dir(upload_id, create=False)
     total_chunks = int(manifest["total_chunks"])
-    
+
     # Check all chunks are present
     present_chunk_indexes = {
         int(path.name.removeprefix("chunk_"))
@@ -343,7 +346,10 @@ def assemble_chunks(upload_id: str) -> bytes:
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Missing chunks: {missing}. Only {total_chunks - len(missing)}/{total_chunks} chunks received",
+            detail=(
+                f"Missing chunks: {missing}. "
+                f"Only {total_chunks - len(missing)}/{total_chunks} chunks received"
+            ),
         )
 
     # Assemble chunks
