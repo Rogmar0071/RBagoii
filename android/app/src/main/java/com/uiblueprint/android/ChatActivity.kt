@@ -34,6 +34,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -285,7 +287,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/$convId/files")
@@ -346,7 +348,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 // Use the chunked upload helper
                 val success = ChatFileUploadHelper.uploadFile(
@@ -383,14 +385,25 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         ).show()
                     }
                 }
+            } catch (e: SocketTimeoutException) {
+                Log.e("ChatActivity", "Timeout uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_backend_timeout), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: ConnectException) {
+                Log.e("ChatActivity", "Connection failed uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_backend_connection_failed), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: IOException) {
+                Log.e("ChatActivity", "Network error uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_file_upload_network, e.message ?: "Unknown"), Toast.LENGTH_LONG).show()
+                }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error uploading file", e)
                 runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        getString(R.string.error_file_upload_failed),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this, getString(R.string.error_file_upload_generic, e.message ?: "Unknown"), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -400,7 +413,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val json = JSONObject().apply {
                     put("included_in_context", included)
@@ -455,7 +468,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val json = JSONObject().apply {
                     put("filename", newName)
@@ -498,7 +511,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/${file.conversationId}/files/${file.id}")
@@ -541,7 +554,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 // Use dummy conversation_id since we're fetching all files
                 val request = Request.Builder()
@@ -641,7 +654,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val json = JSONObject().apply {
                     put("included_in_context", included)
@@ -701,7 +714,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val json = JSONObject().apply {
                     put("repo_url", repoUrl)

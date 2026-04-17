@@ -20,9 +20,9 @@ import java.util.concurrent.TimeUnit
  */
 object BackendClient {
 
-    const val CONNECT_TIMEOUT_S = 15L
-    const val READ_TIMEOUT_S = 60L
-    const val WRITE_TIMEOUT_S = 60L
+    const val CONNECT_TIMEOUT_S = 30L
+    const val READ_TIMEOUT_S = 120L
+    const val WRITE_TIMEOUT_S = 120L
 
     const val MAX_RETRIES = 2
     const val MAX_ATTEMPTS = MAX_RETRIES + 1
