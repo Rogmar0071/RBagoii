@@ -997,8 +997,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     Agent mode can be enabled via:
     - Body field: ``agent_mode: true``
 
-    When enabled, the assistant is instructed to respond using ARTIFACT_*
-    structured output sections.
+    When enabled, the assistant is instructed to respond using typed strict-mode
+    JSON with explicit confidence/verifiability metadata.
     """
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: capture raw context_scope from body before
     # Pydantic validation so we can distinguish explicit vs implicit_legacy intent.
@@ -1118,13 +1118,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 else:
                     base_system_prompt = _build_chat_system_prompt(db)
 
-                # When agent_mode is enabled, append an instruction to use ARTIFACT format.
+                # When agent_mode is enabled, append strict typed-output requirements.
                 if agent_mode:
                     base_system_prompt += (
-                        "\n\nRespond using structured ARTIFACT sections. "
-                        "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
-                        "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
-                        "ARTIFACT_SOURCES, etc."
+                        "\n\nAgent mode strict output contract:\n"
+                        "- Return JSON object only.\n"
+                        "- Include fields: claims, uncertainties, generation_mode, mode_label.\n"
+                        "- claims[] fields: statement, confidence (0..1), "
+                        "source_type, verifiability.\n"
+                        "- mode_label must be RETRIEVED, INFERRED, or GENERATED.\n"
+                        "- If requirements cannot be met, return exactly: "
+                        "INSUFFICIENT GROUNDED KNOWLEDGE"
                     )
 
                 # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:

@@ -16,6 +16,7 @@ Strict-mode responses are validated before exit; non-strict responses pass throu
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -49,6 +50,9 @@ _MODE_PRIORITY: dict[str, int] = {m: i for i, m in enumerate(MODE_PRIORITY_ORDER
 MAX_RETRIES = 2
 STRICT_MODE_ARTIFACT_PREFIX = "ARTIFACT_"
 STRICT_MODE_INSUFFICIENT_DATA_PREFIX = "INSUFFICIENT_DATA:"
+STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE = "INSUFFICIENT GROUNDED KNOWLEDGE"
+STRICT_MODE_MIN_CONFIDENCE = 0.6
+CERTAINTY_LANGUAGE_MIN_CONFIDENCE = 0.95
 
 
 def resolve_modes(requested: list[str]) -> list[str]:
@@ -187,22 +191,19 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
     lines = ["\n\n--- MODE ENGINE EXECUTION V2 CONSTRAINTS ---"]
     lines.append(f"Active modes: {', '.join(modes)}")
 
-    # Data sovereignty — always enforced regardless of active modes.
-    lines.append(
-        "DATA SOVEREIGNTY (NON-NEGOTIABLE):\n"
-        "You MUST operate only on data explicitly provided in this conversation.\n"
-        "You MUST NOT invent or assume information not present in the conversation.\n"
-        "If required data is missing, you MUST request it explicitly.\n"
-        "Default response when data is absent:\n"
-        "'I only operate on data explicitly provided — please supply the relevant artifact.'"
-    )
-
     if MODE_STRICT in modes:
         lines.append(
-            "STRICT MODE: You MUST NOT guess or assume. "
-            "If you lack sufficient information respond with exactly: "
-            "INSUFFICIENT_DATA: <reason>. Otherwise respond using "
-            "ARTIFACT_<NAME>: <value> sections only. Hallucination is prohibited."
+            "STRICT MODE CONTAINMENT:\n"
+            "1) Output MUST be a JSON object only (no markdown, no prose wrappers).\n"
+            "2) JSON must include: claims (array), uncertainties (array), "
+            "generation_mode, mode_label.\n"
+            "3) Each claim object must include: statement, confidence (0..1), "
+            "source_type, verifiability.\n"
+            "4) mode_label must be one of RETRIEVED, INFERRED, GENERATED.\n"
+            "5) If the contract cannot be met, respond with exactly: "
+            f"{STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE}\n"
+            f"(legacy acceptance: {STRICT_MODE_INSUFFICIENT_DATA_PREFIX} <reason>)\n"
+            "6) Never present unverified output as reality."
         )
 
     if MODE_PREDICTION in modes:
@@ -264,7 +265,10 @@ _STRICT_ARTIFACT_LINE = re.compile(r"^(ARTIFACT_[A-Z0-9_]+):\s*(.*)$")
 
 
 def _strict_mode_uses_insufficient_data(ai_output: str) -> bool:
-    return ai_output.strip().startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX)
+    stripped = ai_output.strip()
+    return stripped.startswith(STRICT_MODE_INSUFFICIENT_DATA_PREFIX) or (
+        stripped == STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE
+    )
 
 
 def _strict_mode_artifact_lines(ai_output: str) -> list[str]:
@@ -273,6 +277,36 @@ def _strict_mode_artifact_lines(ai_output: str) -> list[str]:
         for line in ai_output.splitlines()
         if line.strip().startswith(STRICT_MODE_ARTIFACT_PREFIX)
     ]
+
+
+def _parse_typed_output(ai_output: str) -> dict[str, Any] | None:
+    try:
+        parsed = json.loads(ai_output)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _required_top_level_fields_missing(
+    parsed: dict[str, Any], contract: ContractObject
+) -> list[str]:
+    missing: list[str] = []
+    for section in contract.required_sections:
+        if section not in parsed:
+            missing.append(section)
+    return missing
+
+
+def _confidence_threshold(contract: ContractObject) -> float:
+    if contract.truth_requirement == "strict":
+        return 0.8
+    if contract.domain_risk == "high":
+        return 0.75
+    return STRICT_MODE_MIN_CONFIDENCE
+
+
+def _allowed_mode_labels() -> set[str]:
+    return {"RETRIEVED", "INFERRED", "GENERATED"}
 
 
 def stage_1_structural_validation(
@@ -300,33 +334,86 @@ def stage_1_structural_validation(
             ],
         )
 
-    # STRICT MODE WITH CONTRACT: validate against contract
-    missing: list[str] = []
-    failed: list[str] = []
-    corrections: list[str] = []
-
-    # Check required sections from contract
-    for section in contract.required_sections:
-        if section not in ai_output:
-            missing.append(section)
-            failed.append(f"missing_required_section:{section}")
-            corrections.append(f"Contract requires section '{section}' to be present in response")
-
-    # Check for empty output
-    if not ai_output.strip():
-        failed.append("strict_mode:empty_output")
-        missing.append("non_empty_output")
-        corrections.append("Provide a non-empty response or state INSUFFICIENT_DATA: <reason>")
-
-    # Special handling: allow INSUFFICIENT_DATA as valid response
+    # Special handling: allow strict fallback sentinel as valid response
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
     if uses_insufficient_data:
-        # INSUFFICIENT_DATA is always valid in strict mode
         return ValidationResult(
             stage="structural",
             passed=True,
             contract_reference=contract.to_dict(),
         )
+
+    # Backward-compatible path for legacy contracts used by existing tests.
+    if contract.output_format != "typed_structured_json":
+        missing: list[str] = []
+        failed: list[str] = []
+        corrections: list[str] = []
+        for section in contract.required_sections:
+            if section not in ai_output:
+                missing.append(section)
+                failed.append(f"missing_required_section:{section}")
+                corrections.append(
+                    f"Contract requires section '{section}' to be present in response"
+                )
+        if not ai_output.strip():
+            failed.append("strict_mode:empty_output")
+            missing.append("non_empty_output")
+            corrections.append("Provide a non-empty response")
+        return ValidationResult(
+            stage="structural",
+            passed=len(failed) == 0,
+            failed_rules=failed,
+            missing_fields=missing,
+            correction_instructions=corrections,
+            contract_reference=contract.to_dict(),
+        )
+
+    failed: list[str] = []
+    missing: list[str] = []
+    corrections: list[str] = []
+
+    parsed = _parse_typed_output(ai_output)
+    if parsed is None:
+        failed.append("typed_output_required")
+        corrections.append(
+            "Respond with JSON object only, or use "
+            "INSUFFICIENT GROUNDED KNOWLEDGE when contract cannot be met"
+        )
+        return ValidationResult(
+            stage="structural",
+            passed=False,
+            failed_rules=failed,
+            missing_fields=missing,
+            correction_instructions=corrections,
+            contract_reference=contract.to_dict(),
+        )
+
+    missing = _required_top_level_fields_missing(parsed, contract)
+    for section in missing:
+        failed.append(f"missing_required_section:{section}")
+
+    claims = parsed.get("claims")
+    if not isinstance(claims, list):
+        failed.append("claims_not_array")
+        corrections.append("claims must be an array")
+    elif len(claims) == 0:
+        failed.append("claims_empty")
+        corrections.append(
+            "claims must contain at least one claim, or return "
+            "INSUFFICIENT GROUNDED KNOWLEDGE"
+        )
+    else:
+        for i, claim in enumerate(claims):
+            if not isinstance(claim, dict):
+                failed.append(f"claim_not_object:{i}")
+                continue
+            for key in ("statement", "confidence", "source_type", "verifiability"):
+                if key not in claim:
+                    failed.append(f"missing_claim_field:{i}:{key}")
+
+    if "mode_label" in parsed and parsed["mode_label"] not in _allowed_mode_labels():
+        failed.append("invalid_mode_label")
+        corrections.append("mode_label must be RETRIEVED, INFERRED, or GENERATED")
 
     return ValidationResult(
         stage="structural",
@@ -374,45 +461,93 @@ def stage_2_logical_validation(
             contract_reference=contract.to_dict(),
         )
 
+    # Backward-compatible path for legacy contracts used by existing tests.
+    if contract.output_format != "typed_structured_json":
+        failed: list[str] = []
+        corrections: list[str] = []
+        for rule in contract.validation_rules:
+            if rule == "assumptions_explicit" and "ASSUMPTIONS:" in ai_output:
+                assumptions_text = ai_output.split("ASSUMPTIONS:", 1)[1].split("\n")[0].strip()
+                if not assumptions_text:
+                    failed.append("undeclared_assumptions")
+                    corrections.append(
+                        "Contract requires ASSUMPTIONS: section to contain explicit content"
+                    )
+            elif rule == "confidence_valid" and "CONFIDENCE:" in ai_output:
+                conf_text = ai_output.split("CONFIDENCE:", 1)[1].split("\n")[0].strip().lower()
+                is_numeric = False
+                try:
+                    val = float(conf_text)
+                    is_numeric = 0.0 <= val <= 1.0
+                except ValueError:
+                    pass
+                if not is_numeric and conf_text not in {"low", "medium", "high"}:
+                    failed.append("invalid_confidence")
+                    corrections.append("Contract requires CONFIDENCE: to be 0-1 or low/medium/high")
+            elif rule == "alternatives_present" and "ALTERNATIVES:" in ai_output:
+                alt_section = ai_output.split("ALTERNATIVES:", 1)[1].strip()
+                if not alt_section:
+                    failed.append("alternatives_not_distinct")
+                    corrections.append("Contract requires ALTERNATIVES: to list alternatives")
+        return ValidationResult(
+            stage="logical",
+            passed=len(failed) == 0,
+            failed_rules=failed,
+            correction_instructions=corrections,
+            contract_reference=contract.to_dict(),
+        )
+
+    parsed = _parse_typed_output(ai_output)
+    if parsed is None:
+        return ValidationResult(
+            stage="logical",
+            passed=False,
+            failed_rules=["typed_output_required"],
+            correction_instructions=["Respond with typed JSON or INSUFFICIENT GROUNDED KNOWLEDGE"],
+            contract_reference=contract.to_dict(),
+        )
+
     failed: list[str] = []
     corrections: list[str] = []
+    claims = parsed.get("claims", [])
+    threshold = _confidence_threshold(contract)
 
-    # Validate based on contract validation rules
-    for rule in contract.validation_rules:
-        if rule == "assumptions_explicit" and "ASSUMPTIONS:" in ai_output:
-            assumptions_text = ai_output.split("ASSUMPTIONS:", 1)[1].split("\n")[0].strip()
-            if not assumptions_text:
-                failed.append("undeclared_assumptions")
-                corrections.append(
-                    "Contract requires ASSUMPTIONS: section to contain explicit content"
-                )
+    for i, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            continue
+        conf = claim.get("confidence")
+        if not isinstance(conf, (int, float)) or not (0.0 <= float(conf) <= 1.0):
+            failed.append(f"invalid_confidence:{i}")
+            corrections.append("Each claim confidence must be a number between 0 and 1")
+            continue
+        if float(conf) < threshold:
+            failed.append(f"confidence_below_threshold:{i}")
+            corrections.append(
+                "Claims in this contract require confidence >= "
+                f"{threshold:.2f}, otherwise use INSUFFICIENT GROUNDED KNOWLEDGE"
+            )
 
-        elif rule == "confidence_valid" and "CONFIDENCE:" in ai_output:
-            conf_text = ai_output.split("CONFIDENCE:", 1)[1].split("\n")[0].strip().lower()
-            _VALID_CATEGORICAL = {"low", "medium", "high", "very low", "very high"}
-            is_numeric = False
-            try:
-                val = float(conf_text)
-                is_numeric = 0.0 <= val <= 1.0
-            except ValueError:
-                pass
-            is_categorical = any(cat in conf_text for cat in _VALID_CATEGORICAL)
-            if not is_numeric and not is_categorical:
-                failed.append("invalid_confidence")
-                corrections.append("Contract requires CONFIDENCE: to be 0-1 or low/medium/high")
+        if contract.output_class == "fact" and claim.get(
+            "verifiability"
+        ) != "externally_verifiable":
+            failed.append(f"fact_without_verifiability:{i}")
+            corrections.append(
+                "Fact-class output requires claim "
+                "verifiability=externally_verifiable"
+            )
 
-        elif rule == "alternatives_present" and "ALTERNATIVES:" in ai_output:
-            alt_section = ai_output.split("ALTERNATIVES:", 1)[1]
-            alt_lines = [
-                ln.strip()
-                for ln in alt_section.split("\n")
-                if ln.strip() and not ln.strip().endswith(":")
-            ]
-            if not alt_lines:
-                failed.append("alternatives_not_distinct")
-                corrections.append(
-                    "Contract requires ALTERNATIVES: to list at least one alternative"
-                )
+    generation_mode = str(parsed.get("generation_mode", "")).lower()
+    mode_label = parsed.get("mode_label")
+    if generation_mode == "retrieved" and mode_label != "RETRIEVED":
+        failed.append("mode_mismatch:retrieved")
+    if generation_mode == "inferred" and mode_label != "INFERRED":
+        failed.append("mode_mismatch:inferred")
+    if generation_mode == "generated" and mode_label != "GENERATED":
+        failed.append("mode_mismatch:generated")
+
+    if contract.intent_type == "decide" and generation_mode == "generated":
+        failed.append("intent_contract_mismatch:decide_vs_generated")
+        corrections.append("Decide intent cannot be delivered as purely GENERATED output")
 
     return ValidationResult(
         stage="logical",
@@ -439,6 +574,8 @@ _GUESSING_INDICATORS = frozenset(
         "i would guess",
     }
 )
+# Tokens used to detect simulated certainty in claim statements.
+_CERTAINTY_TOKENS = frozenset({"definitely", "certainly", "undeniably", "guaranteed", "proven"})
 
 
 def stage_3_compliance_validation(
@@ -472,19 +609,59 @@ def stage_3_compliance_validation(
             contract_reference=contract.to_dict(),
         )
 
-    failed: list[str] = []
-    corrections: list[str] = []
-
-    # Check for guessing indicators in strict mode
-    if MODE_STRICT in modes:
+    # Backward-compatible path for legacy contracts used by existing tests.
+    if contract.output_format != "typed_structured_json":
+        failed: list[str] = []
+        corrections: list[str] = []
         lower = ai_output.lower()
         guesses = [ind for ind in _GUESSING_INDICATORS if ind in lower]
         if guesses:
             failed.append("strict_mode:guessing_detected")
-            corrections.append(
-                "Contract prohibits guessing. "
-                "Replace uncertain statements with INSUFFICIENT_DATA: <reason>"
-            )
+            corrections.append("Contract prohibits guessing in strict mode")
+        return ValidationResult(
+            stage="compliance",
+            passed=len(failed) == 0,
+            failed_rules=failed,
+            correction_instructions=corrections,
+            contract_reference=contract.to_dict(),
+        )
+
+    failed: list[str] = []
+    corrections: list[str] = []
+
+    parsed = _parse_typed_output(ai_output)
+    if parsed is None:
+        return ValidationResult(
+            stage="compliance",
+            passed=False,
+            failed_rules=["typed_output_required"],
+            correction_instructions=["Respond with typed JSON or INSUFFICIENT GROUNDED KNOWLEDGE"],
+            contract_reference=contract.to_dict(),
+        )
+
+    lower = ai_output.lower()
+    guesses = [ind for ind in _GUESSING_INDICATORS if ind in lower]
+    if guesses:
+        failed.append("strict_mode:guessing_detected")
+        corrections.append(
+            "Strict mode prohibits guessing. Use INSUFFICIENT GROUNDED KNOWLEDGE when uncertain."
+        )
+
+    claims = parsed.get("claims", [])
+    for i, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            continue
+        statement = str(claim.get("statement", "")).lower()
+        conf = claim.get("confidence")
+        if any(tok in statement for tok in _CERTAINTY_TOKENS):
+            if not isinstance(conf, (int, float)) or float(conf) < (
+                CERTAINTY_LANGUAGE_MIN_CONFIDENCE
+            ):
+                failed.append(f"simulated_certainty:{i}")
+                corrections.append(
+                    "Do not use certainty language unless confidence is "
+                    "near-certain and verifiable."
+                )
 
     return ValidationResult(
         stage="compliance",
@@ -534,23 +711,65 @@ def _check_response_contract(
             contract_reference=contract.to_dict(),
         )
 
+    # Backward-compatible path for legacy contracts used by existing tests.
+    if contract.output_format != "typed_structured_json":
+        failed: list[str] = []
+        corrections: list[str] = []
+        if contract.output_format in {"structured_json", "labeled_sections"}:
+            for section in contract.required_sections:
+                if section not in ai_output:
+                    failed.append(f"missing_required_section:{section}")
+                    corrections.append(f"Contract requires {section} section in output")
+        return ValidationResult(
+            stage="response_contract",
+            passed=len(failed) == 0,
+            failed_rules=failed,
+            correction_instructions=corrections,
+            contract_reference=contract.to_dict(),
+        )
+
+    parsed = _parse_typed_output(ai_output)
+    if parsed is None:
+        return ValidationResult(
+            stage="response_contract",
+            passed=False,
+            failed_rules=["typed_output_required"],
+            correction_instructions=["Respond with typed JSON or INSUFFICIENT GROUNDED KNOWLEDGE"],
+            contract_reference=contract.to_dict(),
+        )
+
     failed: list[str] = []
     corrections: list[str] = []
 
-    # Check output format compliance per contract
-    if contract.output_format == "structured_json":
-        # For JSON output, check if required sections are present
-        for section in contract.required_sections:
-            if section not in ai_output:
-                failed.append(f"missing_required_section:{section}")
-                corrections.append(f"Contract requires {section} section in output")
+    mode_label = parsed.get("mode_label")
+    if mode_label not in _allowed_mode_labels():
+        failed.append("mode_label_required")
+        corrections.append("mode_label must be RETRIEVED, INFERRED, or GENERATED")
 
-    elif contract.output_format == "labeled_sections":
-        # For labeled sections, check if required sections are present
-        for section in contract.required_sections:
-            if section not in ai_output:
-                failed.append(f"missing_required_section:{section}")
-                corrections.append(f"Contract requires {section} section in output")
+    source_types: set[str] = set()
+    for claim in parsed.get("claims", []):
+        if isinstance(claim, dict):
+            source_type = str(claim.get("source_type", "")).strip().lower()
+            if source_type:
+                source_types.add(source_type)
+
+    if len(source_types) > 1:
+        failed.append("mixed_source_types_without_explicit_marking")
+        corrections.append(
+            "Do not mix retrieval/inference/generation source types in one response."
+        )
+
+    allowed_sources_by_mode = {
+        "RETRIEVED": {"retrieved", "external_retrieval", "external"},
+        "INFERRED": {"inferred", "logical_inference"},
+        "GENERATED": {"generated", "creative_generation", "creative"},
+    }
+    allowed_sources = allowed_sources_by_mode.get(str(mode_label), set())
+
+    if mode_label in allowed_sources_by_mode and source_types and not source_types.issubset(
+        allowed_sources
+    ):
+        failed.append(f"mode_label_source_mismatch:{str(mode_label).lower()}")
 
     return ValidationResult(
         stage="response_contract",
@@ -594,7 +813,7 @@ def _build_structured_failure(
     all_missing = list(dict.fromkeys(r for vr in validation_results for r in vr.missing_fields))
     all_corrections = list(
         dict.fromkeys(r for vr in validation_results for r in vr.correction_instructions)
-    ) or ["Respond with ARTIFACT_<NAME>: <value> sections or INSUFFICIENT_DATA: <reason>"]
+    ) or ["Respond with typed JSON object or INSUFFICIENT GROUNDED KNOWLEDGE"]
     return {
         "error": "VALIDATION_FAILED",
         "failed_rules": all_failed,
@@ -844,15 +1063,13 @@ def mode_engine_gateway(
 
     # Check if we exhausted retries
     if not all(vr.passed for vr in last_validation_results):
-        # ----------------------------------------------------------
-        # PHASE 5 — Retry exhaustion: structured failure with contract reference
-        # retry_count MUST equal MAX_RETRIES (2) on final failure
-        # ----------------------------------------------------------
+        # No Silent Completion Rule: strict mode must return explicit insufficiency
+        # (embedded in structured failure payload for API consistency).
         import json as _json
 
-        # Ensure audit retry_count is set to MAX_RETRIES on final failure
         audit.retry_count = MAX_RETRIES
         failure_dict = _build_structured_failure(last_validation_results, MAX_RETRIES)
+        failure_dict["insufficiency_message"] = STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE
         audit.final_output = _json.dumps(failure_dict)
         _persist_audit_record(audit)  # raises if DB configured + write fails
         return audit.final_output, audit

@@ -43,6 +43,11 @@ class ContractObject:
     output_format: str = ""
     intent_domain: str = ""
     intent_objective: str = ""
+    intent_type: str = "explain"
+    truth_requirement: str = "flexible"
+    domain_risk: str = "low"
+    verification_required: str = "no"
+    output_class: str = "synthesis"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +57,11 @@ class ContractObject:
             "output_format": self.output_format,
             "intent_domain": self.intent_domain,
             "intent_objective": self.intent_objective,
+            "intent_type": self.intent_type,
+            "truth_requirement": self.truth_requirement,
+            "domain_risk": self.domain_risk,
+            "verification_required": self.verification_required,
+            "output_class": self.output_class,
         }
 
     @classmethod
@@ -63,6 +73,11 @@ class ContractObject:
             output_format=data.get("output_format", ""),
             intent_domain=data.get("intent_domain", ""),
             intent_objective=data.get("intent_objective", ""),
+            intent_type=data.get("intent_type", "explain"),
+            truth_requirement=data.get("truth_requirement", "flexible"),
+            domain_risk=data.get("domain_risk", "low"),
+            verification_required=data.get("verification_required", "no"),
+            output_class=data.get("output_class", "synthesis"),
         )
 
 
@@ -85,74 +100,32 @@ def construct_contract(intent: IntentObject) -> ContractObject:
     contract = ContractObject(
         intent_domain=intent.domain,
         intent_objective=intent.objective,
+        intent_type=intent.intent_type,
+        truth_requirement=intent.truth_requirement,
+        domain_risk=intent.domain_risk,
+        verification_required=intent.verification_required,
+        output_class=intent.output_class,
     )
 
-    # Define contract based on intent domain and expected output type
-    if intent.domain == "code_modification":
-        contract.required_sections = [
-            "SECTION_INTENT_ANALYSIS",
-            "SECTION_MUTATION_CONTRACT",
-        ]
-        contract.required_elements = [
-            "target_files",
-            "operation_type",
-            "proposed_changes",
-            "assumptions",
-            "alternatives",
-            "confidence",
-            "risks",
-            "missing_data",
-        ]
-        contract.validation_rules = [
-            "all_required_sections_present",
-            "all_required_elements_present",
-            "target_files_non_empty",
-            "operation_type_valid",
-            "assumptions_explicit",
-            "alternatives_present",
-            "confidence_valid",
-            "risks_present",
-        ]
-        contract.output_format = "structured_json"
-
-    elif intent.domain == "analysis":
-        contract.required_sections = [
-            "ASSUMPTIONS",
-            "CONFIDENCE",
-            "MISSING_DATA",
-        ]
-        contract.required_elements = []
-        contract.validation_rules = [
-            "assumptions_present",
-            "confidence_present",
-            "missing_data_declared",
-        ]
-        contract.output_format = "labeled_sections"
-
-    elif intent.expected_output_type == "structured_proposal":
-        # Generic structured proposal
-        contract.required_sections = [
-            "ASSUMPTIONS",
-            "ALTERNATIVES",
-            "CONFIDENCE",
-            "MISSING_DATA",
-        ]
-        contract.required_elements = []
-        contract.validation_rules = [
-            "assumptions_explicit",
-            "alternatives_present",
-            "confidence_valid",
-            "missing_data_declared",
-        ]
-        contract.output_format = "labeled_sections"
-
-    else:
-        # Minimal contract for general queries in strict mode
-        # Requires ARTIFACT_ sections or INSUFFICIENT_DATA
-        contract.required_sections = ["ARTIFACT_"]
-        contract.required_elements = []
-        contract.validation_rules = []
-        contract.output_format = "artifact_sections"
+    # Strict-mode containment architecture contract (applies across domains).
+    contract.required_sections = ["claims", "uncertainties", "generation_mode", "mode_label"]
+    # `claims[].field` entries are declarative contract surface descriptors.
+    # Runtime validation is implemented explicitly in mode_engine stage validators.
+    contract.required_elements = [
+        "claims[].statement",
+        "claims[].confidence",
+        "claims[].source_type",
+        "claims[].verifiability",
+    ]
+    contract.validation_rules = [
+        "typed_output_required",
+        "confidence_threshold_enforced",
+        "verifiability_required_for_facts",
+        "intent_contract_alignment",
+        "simulated_certainty_blocked",
+        "mode_label_required",
+    ]
+    contract.output_format = "typed_structured_json"
 
     return contract
 

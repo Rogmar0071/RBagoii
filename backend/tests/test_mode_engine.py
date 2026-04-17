@@ -42,6 +42,21 @@ from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
 EXPECTED_VALIDATION_STAGES = 4
+VALID_TYPED_STRICT_OUTPUT = json.dumps(
+    {
+        "claims": [
+            {
+                "statement": "System behavior is inferred from available context.",
+                "confidence": 0.9,
+                "source_type": "inferred",
+                "verifiability": "externally_verifiable",
+            }
+        ],
+        "uncertainties": [],
+        "generation_mode": "inferred",
+        "mode_label": "INFERRED",
+    }
+)
 
 
 @pytest.fixture(autouse=True)
@@ -391,7 +406,7 @@ class TestDualModeInvariantLock:
     def test_agoii_mode_validates_with_contract(self):
         """PHASE 3-4: strict_mode validates with contract"""
         # Mock AI to return valid contract-compliant output
-        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: test response")
+        ai_call = MagicMock(return_value=VALID_TYPED_STRICT_OUTPUT)
 
         output, audit = mode_engine_gateway(
             user_intent="test question",
@@ -401,7 +416,7 @@ class TestDualModeInvariantLock:
         )
 
         # Should pass validation with contract
-        assert "ARTIFACT_" in output
+        assert json.loads(output)["mode_label"] == "INFERRED"
         assert audit.final_output == output
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
         # Some validation stages may fail, contract determines requirements
@@ -450,15 +465,14 @@ class TestDualModeInvariantLock:
 class TestModeEngineGateway:
     def test_valid_strict_output_with_contract_passes_through(self):
         """Contract-driven validation passes valid output"""
-        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: test response")
+        ai_call = MagicMock(return_value=VALID_TYPED_STRICT_OUTPUT)
         output, audit = mode_engine_gateway(
             user_intent="test question",
             modes=[MODE_STRICT],
             ai_call=ai_call,
             base_system_prompt="System prompt.",
         )
-        # Output contains required sections per contract (ARTIFACT_ or INSUFFICIENT_DATA)
-        assert "ARTIFACT_" in output or "INSUFFICIENT_DATA:" in output
+        assert json.loads(output)["mode_label"] == "INFERRED"
         assert audit.retry_count >= 0
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
         ai_call.assert_called()
@@ -520,7 +534,7 @@ class TestModeEngineGateway:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 return "I think this is correct."
-            return "ARTIFACT_SUMMARY: This is definitely correct."
+            return VALID_TYPED_STRICT_OUTPUT
 
         output, audit = mode_engine_gateway(
             user_intent="question",
@@ -529,7 +543,7 @@ class TestModeEngineGateway:
             base_system_prompt="",
         )
         assert call_count["n"] == 2
-        assert output == "ARTIFACT_SUMMARY: This is definitely correct."
+        assert output == VALID_TYPED_STRICT_OUTPUT
         assert audit.retry_count == 1
 
     def test_structured_failure_after_exhausted_retries_in_strict_mode(self):
@@ -547,7 +561,7 @@ class TestModeEngineGateway:
         assert ai_call.call_count == MAX_RETRIES + 1
 
     def test_audit_record_fields_populated_in_strict_mode(self):
-        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: Clean response.")
+        ai_call = MagicMock(return_value=VALID_TYPED_STRICT_OUTPUT)
         output, audit = mode_engine_gateway(
             user_intent="user query",
             modes=[MODE_STRICT],
@@ -557,8 +571,8 @@ class TestModeEngineGateway:
         assert audit.user_intent == "user query"
         assert MODE_STRICT in audit.selected_modes
         assert "MODE ENGINE" in audit.transformed_prompt
-        assert audit.raw_ai_output == "ARTIFACT_SUMMARY: Clean response."
-        assert output == "ARTIFACT_SUMMARY: Clean response."
+        assert audit.raw_ai_output == VALID_TYPED_STRICT_OUTPUT
+        assert output == VALID_TYPED_STRICT_OUTPUT
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
 
 
@@ -1006,7 +1020,7 @@ class TestBoundaryEnforcement:
 
     def test_valid_contract_allows_execution(self):
         """Valid contract allows execution to proceed"""
-        ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
+        ai_call = MagicMock(return_value=VALID_TYPED_STRICT_OUTPUT)
 
         output, audit = mode_engine_gateway(
             user_intent="test query",
