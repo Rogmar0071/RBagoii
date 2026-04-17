@@ -54,6 +54,7 @@
     <string name="toast_copied">Copied</string>
     <!-- Input bar -->
     <string name="btn_attach">Attach</string>
+    <string name="btn_new_chat">New Chat</string>
     <string name="btn_mic">Voice input</string>
     <string name="btn_voice_send">Send voice</string>
     <string name="toast_mic_not_supported">Voice input is not supported on this device</string>

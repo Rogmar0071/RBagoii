@@ -36,6 +36,16 @@
                 android:paddingEnd="8dp" />
 
             <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnNewChat"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_add"
+                app:tint="@color/icon_tint"
+                android:contentDescription="@string/btn_new_chat"
+                android:scaleType="center" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnResourceMenu"
                 android:layout_width="40dp"
                 android:layout_height="40dp"
