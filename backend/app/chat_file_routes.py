@@ -19,7 +19,6 @@ import logging
 import mimetypes
 import os
 import uuid
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
@@ -32,8 +31,6 @@ from backend.app.models import ChatFile
 from backend.app.repo_chunking import (
     assemble_chunks,
     cleanup,
-    default_chunk_size_bytes,
-    load_manifest,
     save_chunk,
 )
 from backend.app.storage import get_presigned_url, upload_bytes
@@ -259,7 +256,11 @@ async def upload_chat_file(
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
 
-@router.post("/{conversation_id}/files/chunks", status_code=202, dependencies=[Depends(require_auth)])
+@router.post(
+    "/{conversation_id}/files/chunks",
+    status_code=202,
+    dependencies=[Depends(require_auth)]
+)
 async def upload_chat_file_chunk(
     conversation_id: str,
     chunk: UploadFile,
