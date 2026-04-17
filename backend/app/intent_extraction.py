@@ -31,6 +31,11 @@ class IntentObject:
     objective: str = ""
     constraints: list[str] = field(default_factory=list)
     expected_output_type: str = ""
+    intent_type: str = "explain"
+    truth_requirement: str = "flexible"
+    domain_risk: str = "low"
+    verification_required: str = "no"
+    output_class: str = "synthesis"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -38,6 +43,11 @@ class IntentObject:
             "objective": self.objective,
             "constraints": self.constraints,
             "expected_output_type": self.expected_output_type,
+            "intent_type": self.intent_type,
+            "truth_requirement": self.truth_requirement,
+            "domain_risk": self.domain_risk,
+            "verification_required": self.verification_required,
+            "output_class": self.output_class,
         }
 
     @classmethod
@@ -47,6 +57,11 @@ class IntentObject:
             objective=data.get("objective", ""),
             constraints=data.get("constraints", []),
             expected_output_type=data.get("expected_output_type", ""),
+            intent_type=data.get("intent_type", "explain"),
+            truth_requirement=data.get("truth_requirement", "flexible"),
+            domain_risk=data.get("domain_risk", "low"),
+            verification_required=data.get("verification_required", "no"),
+            output_class=data.get("output_class", "synthesis"),
         )
 
 
@@ -97,5 +112,38 @@ def extract_intent(user_message: str) -> IntentObject:
         intent.expected_output_type = "structured_proposal"
     else:
         intent.expected_output_type = "text"
+
+    # Layer 1 — intent contract classification for strict governance.
+    if any(kw in lower_msg for kw in ["decide", "choose", "select", "recommend"]):
+        intent.intent_type = "decide"
+    elif any(kw in lower_msg for kw in ["analyze", "compare", "evaluate"]):
+        intent.intent_type = "analyze"
+    elif any(kw in lower_msg for kw in ["generate", "create", "draft"]):
+        intent.intent_type = "generate"
+    else:
+        intent.intent_type = "explain"
+
+    if any(kw in lower_msg for kw in ["fact", "true", "accurate", "exact", "verify", "source"]):
+        intent.truth_requirement = "strict"
+    elif any(kw in lower_msg for kw in ["guess", "brainstorm", "idea", "creative"]):
+        intent.truth_requirement = "speculative"
+    else:
+        intent.truth_requirement = "flexible"
+
+    if any(kw in lower_msg for kw in ["medical", "legal", "finance", "security", "compliance"]):
+        intent.domain_risk = "high"
+    elif any(kw in lower_msg for kw in ["architecture", "migration", "policy", "decision"]):
+        intent.domain_risk = "medium"
+    else:
+        intent.domain_risk = "low"
+
+    intent.verification_required = "yes" if intent.truth_requirement == "strict" else "no"
+
+    if any(kw in lower_msg for kw in ["opinion", "preference", "subjective"]):
+        intent.output_class = "opinion"
+    elif intent.truth_requirement == "strict":
+        intent.output_class = "fact"
+    else:
+        intent.output_class = "synthesis"
 
     return intent
