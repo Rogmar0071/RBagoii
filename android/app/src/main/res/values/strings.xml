@@ -159,6 +159,10 @@
     <string name="action_view_file">View</string>
     <string name="action_ok">OK</string>
     <string name="action_delete">Delete</string>
+    <string name="dialog_btn_delete">Delete</string>
+    <string name="dialog_btn_rename">Rename</string>
+    <string name="btn_show_details">Show details</string>
+    <string name="label_no_related_files">No related files</string>
     <string name="action_browse_all_files">Browse All Files</string>
     <string name="label_from_conversation">From: %1$s</string>
 </resources>

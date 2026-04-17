@@ -19,7 +19,7 @@ import os
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
@@ -76,12 +76,12 @@ def categorize_file(filename: str, mime_type: str) -> str:
     # Check MIME type first
     if mime_type in CATEGORY_MAP:
         return CATEGORY_MAP[mime_type]
-    
+
     # Check if it's a code file by extension
     _, ext = os.path.splitext(filename.lower())
     if ext in CODE_EXTENSIONS:
         return "code"
-    
+
     # Default categorization by MIME type prefix
     if mime_type.startswith("text/"):
         return "document"
@@ -93,7 +93,7 @@ def categorize_file(filename: str, mime_type: str) -> str:
         return "audio"
     elif mime_type.startswith("application/"):
         return "data"
-    
+
     return "other"
 
 
@@ -103,12 +103,12 @@ def extract_text_content(file_content: bytes, mime_type: str, filename: str) -> 
         # Text files
         if mime_type.startswith("text/") or mime_type in ["application/json", "application/xml"]:
             return file_content.decode("utf-8", errors="ignore")
-        
+
         # Check if it's a code file
         _, ext = os.path.splitext(filename.lower())
         if ext in CODE_EXTENSIONS:
             return file_content.decode("utf-8", errors="ignore")
-        
+
         # For other file types, we could add PDF, DOCX extraction here
         # For now, just return None for binary files
         return None
@@ -156,27 +156,31 @@ async def upload_chat_file(
         # Read file content
         file_content = await file.read()
         file_size = len(file_content)
-        
+
         # Determine MIME type
-        mime_type = file.content_type or mimetypes.guess_type(file.filename)[0] or "application/octet-stream"
-        
+        mime_type = (
+            file.content_type
+            or mimetypes.guess_type(file.filename)[0]
+            or "application/octet-stream"
+        )
+
         # Categorize file
         category = categorize_file(file.filename, mime_type)
-        
+
         # Extract text content if possible
         extracted_text = extract_text_content(file_content, mime_type, file.filename)
-        
+
         # Generate object key
         file_id = uuid.uuid4()
         object_key = f"chat_files/{conversation_id}/{file_id}/{file.filename}"
-        
+
         # Upload to storage
         upload_bytes(
             object_key=object_key,
             data=file_content,
             content_type=mime_type,
         )
-        
+
         # Create database record
         chat_file = ChatFile(
             id=file_id,
@@ -189,14 +193,14 @@ async def upload_chat_file(
             included_in_context=True,
             extracted_text=extracted_text,
         )
-        
+
         session.add(chat_file)
         session.commit()
         session.refresh(chat_file)
-        
+
         # Get download URL
         download_url = get_presigned_url(object_key, expiration=3600)
-        
+
         return ChatFileResponse(
             id=str(chat_file.id),
             conversation_id=chat_file.conversation_id,
@@ -222,7 +226,7 @@ def list_chat_files(
 ) -> List[ChatFileResponse]:
     """
     List all files in a conversation, or optionally all files across all conversations.
-    
+
     Args:
         conversation_id: The conversation to list files from (ignored if all_conversations=True)
         all_conversations: If True, list files from all conversations instead of just one
@@ -237,9 +241,9 @@ def list_chat_files(
             .where(ChatFile.conversation_id == conversation_id)
             .order_by(ChatFile.category, ChatFile.created_at.desc())
         )
-    
+
     files = session.exec(stmt).all()
-    
+
     result = []
     for f in files:
         download_url = get_presigned_url(f.object_key, expiration=3600)
@@ -257,11 +261,15 @@ def list_chat_files(
                 download_url=download_url,
             )
         )
-    
+
     return result
 
 
-@router.patch("/{conversation_id}/files/{file_id}", status_code=200, dependencies=[Depends(require_auth)])
+@router.patch(
+    "/{conversation_id}/files/{file_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
 def update_chat_file(
     conversation_id: str,
     file_id: str,
@@ -273,28 +281,28 @@ def update_chat_file(
         file_uuid = uuid.UUID(file_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid file ID")
-    
+
     stmt = select(ChatFile).where(
         ChatFile.id == file_uuid,
         ChatFile.conversation_id == conversation_id,
     )
     chat_file = session.exec(stmt).first()
-    
+
     if not chat_file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Update fields
     if update.filename is not None:
         chat_file.filename = update.filename
     if update.included_in_context is not None:
         chat_file.included_in_context = update.included_in_context
-    
+
     session.add(chat_file)
     session.commit()
     session.refresh(chat_file)
-    
+
     download_url = get_presigned_url(chat_file.object_key, expiration=3600)
-    
+
     return ChatFileResponse(
         id=str(chat_file.id),
         conversation_id=chat_file.conversation_id,
@@ -309,7 +317,11 @@ def update_chat_file(
     )
 
 
-@router.delete("/{conversation_id}/files/{file_id}", status_code=204, dependencies=[Depends(require_auth)])
+@router.delete(
+    "/{conversation_id}/files/{file_id}",
+    status_code=204,
+    dependencies=[Depends(require_auth)],
+)
 def delete_chat_file(
     conversation_id: str,
     file_id: str,
@@ -318,7 +330,7 @@ def delete_chat_file(
 ):
     """
     Delete a file from the conversation.
-    
+
     Args:
         conversation_id: The conversation context
         file_id: The file to delete
@@ -328,7 +340,7 @@ def delete_chat_file(
         file_uuid = uuid.UUID(file_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid file ID")
-    
+
     if allow_cross_conversation:
         # Allow deleting files from any conversation
         stmt = select(ChatFile).where(ChatFile.id == file_uuid)
@@ -338,20 +350,20 @@ def delete_chat_file(
             ChatFile.id == file_uuid,
             ChatFile.conversation_id == conversation_id,
         )
-    
+
     chat_file = session.exec(stmt).first()
-    
+
     if not chat_file:
         raise HTTPException(status_code=404, detail="File not found")
-    
+
     # Delete from object storage
     try:
         from backend.app.storage import delete_object
         delete_object(chat_file.object_key)
     except Exception as e:
         logger.warning(f"Failed to delete file from storage: {chat_file.object_key}, error: {e}")
-    
+
     session.delete(chat_file)
     session.commit()
-    
+
     return None

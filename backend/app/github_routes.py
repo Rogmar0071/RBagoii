@@ -51,7 +51,11 @@ class GithubRepoResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.post("/{conversation_id}/github/repos", status_code=201, dependencies=[Depends(require_auth)])
+@router.post(
+    "/{conversation_id}/github/repos",
+    status_code=201,
+    dependencies=[Depends(require_auth)],
+)
 def add_github_repo(
     conversation_id: str,
     repo: GithubRepoRequest,
@@ -63,13 +67,13 @@ def add_github_repo(
     """
     # Parse owner/repo from URL
     import re
-    match = re.search(r'github\.com/([^/]+)/([^/]+)', repo.repo_url)
+    match = re.search(r"github\\.com/([^/]+)/([^/]+)", repo.repo_url)
     if not match:
         raise HTTPException(status_code=400, detail="Invalid GitHub URL")
-    
+
     owner, repo_name = match.groups()
     repo_name = repo_name.rstrip('.git')
-    
+
     # Create a "file" entry to represent the GitHub repo
     # We use the ChatFile table but with a special category
     github_file = ChatFile(
@@ -81,13 +85,16 @@ def add_github_repo(
         object_key=f"github:{repo.repo_url}@{repo.branch}",
         category="github_repo",
         included_in_context=True,
-        extracted_text=f"GitHub Repository: {owner}/{repo_name} (branch: {repo.branch})\nURL: {repo.repo_url}",
+        extracted_text=(
+            f"GitHub Repository: {owner}/{repo_name} (branch: {repo.branch})\n"
+            f"URL: {repo.repo_url}"
+        ),
     )
-    
+
     session.add(github_file)
     session.commit()
     session.refresh(github_file)
-    
+
     return GithubRepoResponse(
         id=str(github_file.id),
         conversation_id=github_file.conversation_id,
@@ -97,7 +104,11 @@ def add_github_repo(
     )
 
 
-@router.get("/{conversation_id}/github/repos", status_code=200, dependencies=[Depends(require_auth)])
+@router.get(
+    "/{conversation_id}/github/repos",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
 def list_github_repos(
     conversation_id: str,
     session: Session = Depends(get_session),
@@ -110,12 +121,12 @@ def list_github_repos(
         .order_by(ChatFile.created_at.desc())
     )
     repos = session.exec(stmt).all()
-    
+
     result = []
     for repo in repos:
         # Parse repo URL and branch from object_key
         import re
-        match = re.search(r'github:(.+)@(.+)', repo.object_key)
+        match = re.search(r"github:(.+)@(.+)", repo.object_key)
         if match:
             repo_url, branch = match.groups()
             result.append(
@@ -127,11 +138,15 @@ def list_github_repos(
                     created_at=repo.created_at.isoformat(),
                 )
             )
-    
+
     return result
 
 
-@router.delete("/{conversation_id}/github/repos/{repo_id}", status_code=204, dependencies=[Depends(require_auth)])
+@router.delete(
+    "/{conversation_id}/github/repos/{repo_id}",
+    status_code=204,
+    dependencies=[Depends(require_auth)],
+)
 def remove_github_repo(
     conversation_id: str,
     repo_id: str,
@@ -142,18 +157,18 @@ def remove_github_repo(
         repo_uuid = uuid.UUID(repo_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid repo ID")
-    
+
     stmt = select(ChatFile).where(
         ChatFile.id == repo_uuid,
         ChatFile.conversation_id == conversation_id,
         ChatFile.category == "github_repo",
     )
     repo = session.exec(stmt).first()
-    
+
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
-    
+
     session.delete(repo)
     session.commit()
-    
+
     return None

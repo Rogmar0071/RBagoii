@@ -937,13 +937,13 @@ def delete_conversation(
         message_count = len(messages)
         for msg in messages:
             db.delete(msg)
-        
+
         # CASCADE DELETE: Delete all files associated with this conversation
         files = db.exec(
             select(ChatFile).where(ChatFile.conversation_id == conversation_id)
         ).all()
         file_count = len(files)
-        
+
         # Delete from object storage first, then from database
         for file in files:
             try:
@@ -953,10 +953,10 @@ def delete_conversation(
             except Exception as e:
                 # Log but continue - don't fail entire deletion if storage cleanup fails
                 logger.warning(f"Failed to delete file from storage: {file.object_key}, error: {e}")
-            
+
             # Delete from database
             db.delete(file)
-        
+
         db.commit()
         # Return counts - maintain backward compatibility with "deleted" field
         return JSONResponse(
@@ -1143,7 +1143,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         filename = file_ref.get("filename", "unnamed")
                         category = file_ref.get("category", "other")
                         file_block += f"\n- {filename} (Category: {category})"
-                        
+
                         # Fetch file content from database if text was extracted
                         try:
                             file_uuid = uuid.UUID(file_id_str)
@@ -1157,7 +1157,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 file_block += f"\n  Content preview:\n{content}\n"
                         except (ValueError, AttributeError):
                             pass  # Invalid UUID or missing data, skip content
-                    
+
                     file_block += "\n--- End of Uploaded Files ---\n"
                     base_system_prompt += file_block
 

@@ -472,19 +472,7 @@ class TestMigrations:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Migration 0003 must add superseded_by_id to global_chat_messages."""
-        import sys
         import sqlalchemy as sa
-        
-        # Remove backend directory from path to import alembic library
-        sys.path = [p for p in sys.path if 'backend' not in p.lower()]
-        
-        # Clear ANY alembic-related modules completely
-        mods_to_remove = [k for k in list(sys.modules.keys()) 
-                         if k == 'alembic' or k.startswith('alembic.')]
-        for mod in mods_to_remove:
-            sys.modules.pop(mod, None)
-        
-        # Now import alembic from site-packages
         from alembic import command
         from alembic.config import Config
 
@@ -514,8 +502,7 @@ class TestMigrations:
         # isolated test DB so Alembic connects to the right file.
         monkeypatch.setenv("DATABASE_URL", db_url)
 
-        alembic_cfg = Config("alembic.ini")  # Run from backend dir
-        alembic_cfg.set_main_option("script_location", "alembic")
+        alembic_cfg = Config("backend/alembic.ini")
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 
         # Stamp at 0002: Alembic believes migrations 0001+0002 already ran.
@@ -539,20 +526,7 @@ class TestMigrations:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """On a greenfield DB (no global_chat_messages), migration 0003 is a no-op."""
-        import sys
         import sqlalchemy as sa
-        
-        # Remove backend directory from path to import alembic library
-        # Keep it removed for the entire test
-        sys.path = [p for p in sys.path if 'backend' not in p.lower()]
-        
-        # Clear ANY alembic-related modules completely
-        mods_to_remove = [k for k in list(sys.modules.keys()) 
-                         if k == 'alembic' or k.startswith('alembic.')]
-        for mod in mods_to_remove:
-            sys.modules.pop(mod, None)
-        
-        # Force fresh import from site-packages
         from alembic import command
         from alembic.config import Config
 
@@ -565,8 +539,7 @@ class TestMigrations:
 
         monkeypatch.setenv("DATABASE_URL", db_url)
 
-        alembic_cfg = Config("alembic.ini")  # Run from backend dir
-        alembic_cfg.set_main_option("script_location", "alembic")
+        alembic_cfg = Config("backend/alembic.ini")
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 
         # Stamp at 0002 to simulate greenfield deployment that already ran
