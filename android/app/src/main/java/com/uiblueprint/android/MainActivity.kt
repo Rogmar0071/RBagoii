@@ -107,6 +107,9 @@ class MainActivity : AppCompatActivity(),
 
         setupChatList()
 
+        binding.btnResourceMenu.setOnClickListener {
+            ResourceActivity.start(this, activeConversationId)
+        }
         binding.btnNewChat.setOnClickListener { createHomeConversation() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
