@@ -398,12 +398,12 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             } catch (e: IOException) {
                 Log.e("ChatActivity", "Network error uploading file", e)
                 runOnUiThread {
-                    Toast.makeText(this, getString(R.string.error_file_upload_failed), Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.error_file_upload_network, e.message ?: "Unknown"), Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error uploading file", e)
                 runOnUiThread {
-                    Toast.makeText(this, getString(R.string.error_file_upload_failed), Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.error_file_upload_generic, e.message ?: "Unknown"), Toast.LENGTH_LONG).show()
                 }
             }
         }
