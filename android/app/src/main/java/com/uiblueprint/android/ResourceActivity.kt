@@ -1,12 +1,16 @@
 package com.uiblueprint.android
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.util.Log
 import android.view.View
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -16,6 +20,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -43,6 +48,12 @@ class ResourceActivity : AppCompatActivity() {
     private val chatFiles = mutableListOf<ChatFile>()
 
     private var conversationId: String? = null
+
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        uri?.let { uploadFile(it) }
+    }
 
     companion object {
         private const val PREFS_NAME = "chat_prefs"
@@ -81,6 +92,14 @@ class ResourceActivity : AppCompatActivity() {
 
         binding.btnApply.setOnClickListener {
             applySelections()
+        }
+
+        binding.btnUploadFile.setOnClickListener {
+            if (conversationId != null) {
+                filePickerLauncher.launch("*/*")
+            } else {
+                Toast.makeText(this, "No active conversation", Toast.LENGTH_SHORT).show()
+            }
         }
 
         // Load files for the current conversation
@@ -126,11 +145,20 @@ class ResourceActivity : AppCompatActivity() {
             try {
                 runOnUiThread {
                     binding.tvNoRepos.visibility = View.GONE
+                    binding.btnLoadRepos.isEnabled = false
                     Toast.makeText(this, "Loading repositories…", Toast.LENGTH_SHORT).show()
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+
+                if (apiKey.isEmpty()) {
+                    runOnUiThread {
+                        Toast.makeText(this, "API key not configured", Toast.LENGTH_LONG).show()
+                        binding.btnLoadRepos.isEnabled = true
+                    }
+                    return@execute
+                }
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/github/user/$username/repos?per_page=30")
@@ -165,27 +193,35 @@ class ResourceActivity : AppCompatActivity() {
                         githubRepos.clear()
                         githubRepos.addAll(repos)
                         repoAdapter.submitList(githubRepos)
+                        binding.rvGithubRepos.visibility = if (repos.isEmpty()) View.GONE else View.VISIBLE
                         binding.tvNoRepos.visibility = if (repos.isEmpty()) View.VISIBLE else View.GONE
+                        binding.btnLoadRepos.isEnabled = true
                         Toast.makeText(this, "Loaded ${repos.size} repositories", Toast.LENGTH_SHORT).show()
                     }
                 } else {
-                    runOnUiThread {
-                        Toast.makeText(
-                            this,
-                            getString(R.string.error_github_load_failed),
-                            Toast.LENGTH_SHORT
-                        ).show()
+                    val errorMsg = when (response.code) {
+                        404 -> "User '$username' not found"
+                        401, 403 -> "Authentication failed. Check API key"
+                        else -> "Failed to load repos (${response.code})"
                     }
-                    Log.e("ResourceActivity", "Failed to load repos: ${response.code}")
+                    runOnUiThread {
+                        Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                        binding.tvNoRepos.visibility = View.VISIBLE
+                        binding.tvNoRepos.text = errorMsg
+                        binding.rvGithubRepos.visibility = View.GONE
+                        binding.btnLoadRepos.isEnabled = true
+                    }
+                    Log.e("ResourceActivity", "Failed to load repos: ${response.code} - ${response.message}")
                 }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error loading repos", e)
                 runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        getString(R.string.error_github_load_failed),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    val errorMsg = "Error: ${e.message ?: "Unknown error"}"
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                    binding.tvNoRepos.visibility = View.VISIBLE
+                    binding.tvNoRepos.text = errorMsg
+                    binding.rvGithubRepos.visibility = View.GONE
+                    binding.btnLoadRepos.isEnabled = true
                 }
             }
         }
@@ -233,13 +269,86 @@ class ResourceActivity : AppCompatActivity() {
                         chatFiles.clear()
                         chatFiles.addAll(files)
                         fileAdapter.submitList(chatFiles)
+                        binding.rvFiles.visibility = if (files.isEmpty()) View.GONE else View.VISIBLE
                         binding.tvNoFiles.visibility = if (files.isEmpty()) View.VISIBLE else View.GONE
                     }
                 } else {
                     Log.e("ResourceActivity", "Failed to load files: ${response.code}")
+                    runOnUiThread {
+                        binding.rvFiles.visibility = View.GONE
+                        binding.tvNoFiles.visibility = View.VISIBLE
+                        binding.tvNoFiles.text = "Failed to load files (${response.code})"
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error loading files", e)
+                runOnUiThread {
+                    binding.rvFiles.visibility = View.GONE
+                    binding.tvNoFiles.visibility = View.VISIBLE
+                    binding.tvNoFiles.text = "Error: ${e.message ?: "Unknown error"}"
+                }
+            }
+        }
+    }
+
+    private fun uploadFile(uri: Uri) {
+        val convId = conversationId ?: run {
+            Toast.makeText(this, "No active conversation", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        executor.execute {
+            try {
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.status_uploading_file), Toast.LENGTH_SHORT).show()
+                }
+
+                val apiKey = prefs.getString("api_key", "") ?: ""
+                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+
+                // Get the actual filename from the URI
+                var filename = "uploaded_file"
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (cursor.moveToFirst() && nameIndex != -1) {
+                        filename = cursor.getString(nameIndex)
+                    }
+                }
+
+                // Copy the file to a temporary location
+                val tempFile = File(cacheDir, filename)
+                contentResolver.openInputStream(uri)?.use { input ->
+                    tempFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+
+                // Upload using ChatFileUploadHelper
+                val success = ChatFileUploadHelper.uploadFile(
+                    context = this,
+                    conversationId = convId,
+                    file = tempFile,
+                    apiKey = apiKey,
+                    baseUrl = baseUrl,
+                )
+
+                runOnUiThread {
+                    if (success) {
+                        Toast.makeText(this, "File uploaded successfully", Toast.LENGTH_SHORT).show()
+                        // Reload files to show the newly uploaded file
+                        loadChatFiles()
+                    } else {
+                        Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                // Clean up temp file
+                tempFile.delete()
+            } catch (e: Exception) {
+                Log.e("ResourceActivity", "Error uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, "Error uploading file: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
