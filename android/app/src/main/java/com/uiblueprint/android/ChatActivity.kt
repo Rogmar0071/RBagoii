@@ -620,6 +620,21 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     JSONObject().apply {
                         put("session_id", JSONObject.NULL)
                         put("domain_profile_id", JSONObject.NULL)
+                        
+                        // Add file context
+                        val includedFiles = chatFiles.filter { it.includedInContext }
+                        if (includedFiles.isNotEmpty()) {
+                            val filesArray = JSONArray()
+                            includedFiles.forEach { file ->
+                                filesArray.put(JSONObject().apply {
+                                    put("id", file.id)
+                                    put("filename", file.filename)
+                                    put("category", file.category)
+                                    put("mime_type", file.mimeType)
+                                })
+                            }
+                            put("files", filesArray)
+                        }
                     },
                 )
             }.toString()
