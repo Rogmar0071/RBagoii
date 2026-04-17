@@ -282,7 +282,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .get()
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 if (response.isSuccessful) {
                     val body = response.body?.string() ?: "[]"
                     val filesArray = JSONArray(body)
@@ -371,7 +371,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .post(requestBody)
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 tempFile.delete()
 
                 if (response.isSuccessful) {
@@ -419,7 +419,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 if (response.isSuccessful) {
                     runOnUiThread {
                         // Update local list
@@ -474,7 +474,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 if (response.isSuccessful) {
                     runOnUiThread {
                         loadChatFiles()
@@ -512,7 +512,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .delete()
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 if (response.isSuccessful) {
                     runOnUiThread {
                         chatFiles.removeIf { it.id == file.id }
@@ -556,7 +556,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .get()
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 if (response.isSuccessful) {
                     val body = response.body?.string() ?: "[]"
                     val filesArray = JSONArray(body)
@@ -660,7 +660,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
                 if (!response.isSuccessful) {
                     Log.e("ChatActivity", "Failed to update file context: ${response.code}")
                 }
@@ -721,7 +721,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .post(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.httpClient.newCall(request).execute()
+                val response = BackendClient.executeWithRetry(request)
 
                 if (response.isSuccessful) {
                     runOnUiThread {
