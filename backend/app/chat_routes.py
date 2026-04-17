@@ -893,10 +893,12 @@ def delete_conversation(
     confirm: bool = Query(default=False),
 ) -> JSONResponse:
     """
-    Delete all messages belonging to the given conversation_id.
+    Delete all messages and files belonging to the given conversation_id.
 
     CONVERSATION_LIFECYCLE_V1:
     - Deletes ALL messages for the specified conversation.
+    - Deletes ALL files uploaded to the conversation (CASCADE).
+    - Deletes file objects from R2/S3 storage.
     - Does NOT affect any other conversation.
 
     RULE 4 — DELETE SAFETY:
@@ -905,7 +907,7 @@ def delete_conversation(
 
     Response::
 
-        { "deleted": <count> }
+        { "deleted_messages": <count>, "deleted_files": <count> }
     """
     # RULE 4: legacy_default is the backward-compatibility containment zone.
     # Silent deletion is not allowed — caller must pass ?confirm=true.
@@ -926,15 +928,48 @@ def delete_conversation(
 
     try:
         from backend.app.models import GlobalChatMessage
+        from backend.app.storage import delete_object
 
+        # Delete all messages
         messages = db.exec(
             select(GlobalChatMessage).where(GlobalChatMessage.conversation_id == conversation_id)
         ).all()
-        count = len(messages)
+        message_count = len(messages)
         for msg in messages:
             db.delete(msg)
+        
+        # CASCADE DELETE: Delete all files associated with this conversation
+        files = db.exec(
+            select(ChatFile).where(ChatFile.conversation_id == conversation_id)
+        ).all()
+        file_count = len(files)
+        
+        # Delete from object storage first, then from database
+        for file in files:
+            try:
+                # Delete from R2/S3
+                delete_object(file.object_key)
+                logger.info(f"Deleted file from storage: {file.object_key}")
+            except Exception as e:
+                # Log but continue - don't fail entire deletion if storage cleanup fails
+                logger.warning(f"Failed to delete file from storage: {file.object_key}, error: {e}")
+            
+            # Delete from database
+            db.delete(file)
+        
         db.commit()
-        return JSONResponse(status_code=200, content={"deleted": count})
+        return JSONResponse(
+            status_code=200,
+            content={"deleted_messages": message_count, "deleted_files": file_count}
+        )
+    except Exception as e:
+        logger.exception("Error deleting conversation")
+        db.rollback()
+        return _error(
+            500,
+            "delete_failed",
+            f"Failed to delete conversation: {str(e)}",
+        )
     finally:
         db.close()
 
