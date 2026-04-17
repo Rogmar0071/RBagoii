@@ -10,8 +10,8 @@ Run automatically via pre-commit hook on README.md changes.
 
 import re
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 
 def extract_section(content: str, section_title: str, level: int = 2) -> str:
@@ -26,7 +26,7 @@ def extract_project_structure(readme_content: str) -> str:
     section = extract_section(readme_content, "Project structure")
     if not section:
         return ""
-    
+
     # Extract just the code block
     code_block = re.search(r'```.*?```', section, re.DOTALL)
     return code_block.group(0) if code_block else ""
@@ -58,31 +58,83 @@ def extract_dev_setup(readme_content: str) -> str:
 
 def generate_ai_context(readme_path: Path) -> str:
     """Generate AI_AGENT_CONTEXT.md content from README.md."""
-    
+
     readme_content = readme_path.read_text(encoding='utf-8')
-    
+
     # Get the project description (first few lines after title)
     description_match = re.search(
         r'^#\s+.*?\n\n>\s+(.*?)\n\n---',
         readme_content,
         re.MULTILINE | re.DOTALL
     )
-    description = description_match.group(1) if description_match else "Convert 10-second Android screen-recording clips into structured blueprints."
-    
+    description = (
+        description_match.group(1)
+        if description_match
+        else "Convert 10-second Android screen-recording clips into structured blueprints."
+    )
+
     # Extract key sections
     project_structure = extract_project_structure(readme_content)
     dev_setup = extract_dev_setup(readme_content)
     testing = extract_testing(readme_content)
     env_vars = extract_env_vars(readme_content)
-    
+
     # Get current date
     current_date = datetime.now().strftime("%Y-%m-%d")
-    
-    # Generate the chunked AI context
-    context = f"""# AI Agent Context - Read First Before Any Mutations
 
-> **REQUIRED READING**: All AI agents must read and understand this file before planning or executing any code changes.
-> **AUTO-GENERATED**: This file is automatically updated when README.md changes. Do not edit manually.
+    # Default fallback content for missing sections
+    default_dev_setup = '''
+Before making ANY code changes:
+
+1. **Setup Pre-commit Hooks**:
+   ```bash
+   ./setup-dev-env.sh  # One-time setup
+   ```
+
+2. **Ruff Configuration** (`pyproject.toml`):
+   - Line length: **100 characters maximum** (E501)
+   - Target Python: 3.11+
+   - Enabled rules: E (errors), F (pyflakes), W (warnings), I (import order)
+'''
+
+    default_testing = '''
+### Test Suites
+
+| Suite | Location | Command | Required |
+|-------|----------|---------|----------|
+| UI Blueprint | `tests/` | `pytest tests/ -v` | ✅ Always |
+| Backend | `backend/tests/` | `pytest backend/tests/ -v` | ✅ Always |
+| Mode Engine | `backend/tests/test_mode_engine.py` | (subset) | ✅ Critical |
+| Mutation Governance | `backend/tests/test_mutation_governance.py` | (subset) | ✅ Critical |
+'''
+
+    default_env_vars = '''
+### Backend Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `API_KEY` | No | (unset) | Service bearer token for protected endpoints |
+| `OPENAI_API_KEY` | No | (unset) | Enables AI features (chat, domain derivation) |
+| `REDIS_URL` | No | (unset) | Enables RQ background job queue |
+| `DATABASE_URL` | No | (in-memory) | PostgreSQL connection string |
+| `MAX_UPLOAD_BYTES` | No | `52428800` | Max file upload size (50 MB) |
+'''
+
+    # Use extracted content or defaults
+    dev_setup_content = dev_setup if dev_setup else default_dev_setup
+    testing_content = testing if testing else default_testing
+    env_vars_content = env_vars if env_vars else default_env_vars
+    project_structure_content = (
+        project_structure if project_structure else "See README.md for full project structure"
+    )
+
+    # Build context using format() to avoid f-string quote issues in Python 3.11
+    context_template = '''# AI Agent Context - Read First Before Any Mutations
+
+> **REQUIRED READING**: All AI agents must read and understand this file
+> before planning or executing any code changes.
+> **AUTO-GENERATED**: This file is automatically updated when README.md changes.
+> Do not edit manually.
 
 ---
 
@@ -100,7 +152,7 @@ def generate_ai_context(readme_path: Path) -> str:
 
 ## 📁 Critical Directory Structure
 
-{project_structure if project_structure else "See README.md for full project structure"}
+{project_structure}
 
 **Key Directories**:
 - `backend/` - FastAPI backend (Python 3.11+)
@@ -118,19 +170,7 @@ def generate_ai_context(readme_path: Path) -> str:
 
 ### **CRITICAL**: Pre-commit Hooks Are Mandatory
 
-{dev_setup if dev_setup else """
-Before making ANY code changes:
-
-1. **Setup Pre-commit Hooks**:
-   ```bash
-   ./setup-dev-env.sh  # One-time setup
-   ```
-
-2. **Ruff Configuration** (`pyproject.toml`):
-   - Line length: **100 characters maximum** (E501)
-   - Target Python: 3.11+
-   - Enabled rules: E (errors), F (pyflakes), W (warnings), I (import order)
-"""}
+{dev_setup}
 
 ### Common Linting Errors to Avoid
 
@@ -193,16 +233,7 @@ All state-changing operations go through governance pipeline:
 
 ## 🧪 Testing Requirements
 
-{testing if testing else """
-### Test Suites
-
-| Suite | Location | Command | Required |
-|-------|----------|---------|----------|
-| UI Blueprint | `tests/` | `pytest tests/ -v` | ✅ Always |
-| Backend | `backend/tests/` | `pytest backend/tests/ -v` | ✅ Always |
-| Mode Engine | `backend/tests/test_mode_engine.py` | (subset) | ✅ Critical |
-| Mutation Governance | `backend/tests/test_mutation_governance.py` | (subset) | ✅ Critical |
-"""}
+{testing}
 
 ### Before Submitting Changes
 
@@ -302,17 +333,7 @@ pre-commit install
 
 ## 🔐 Environment Variables
 
-{env_vars if env_vars else """
-### Backend Configuration
-
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `API_KEY` | No | (unset) | Service bearer token for protected endpoints |
-| `OPENAI_API_KEY` | No | (unset) | Enables AI features (chat, domain derivation) |
-| `REDIS_URL` | No | (unset) | Enables RQ background job queue |
-| `DATABASE_URL` | No | (in-memory) | PostgreSQL connection string |
-| `MAX_UPLOAD_BYTES` | No | `52428800` | Max file upload size (50 MB) |
-"""}
+{env_vars}
 
 ### Never Commit Secrets
 
@@ -447,8 +468,17 @@ pre-commit install
 
 > ⚠️ **Do not edit this file directly.** Changes will be overwritten.
 > Edit README.md instead and run `python scripts/sync_ai_context.py` to regenerate.
-"""
-    
+'''
+
+    context = context_template.format(
+        description=description,
+        project_structure=project_structure_content,
+        dev_setup=dev_setup_content,
+        testing=testing_content,
+        env_vars=env_vars_content,
+        current_date=current_date
+    )
+
     return context
 
 
@@ -457,35 +487,35 @@ def main():
     repo_root = Path(__file__).parent.parent
     readme_path = repo_root / "README.md"
     ai_context_path = repo_root / "AI_AGENT_CONTEXT.md"
-    
+
     if not readme_path.exists():
         print(f"❌ README.md not found at {readme_path}", file=sys.stderr)
         return 1
-    
+
     print("📝 Generating AI_AGENT_CONTEXT.md from README.md...")
-    
+
     try:
         new_content = generate_ai_context(readme_path)
-        
+
         # Check if content changed
         if ai_context_path.exists():
             old_content = ai_context_path.read_text(encoding='utf-8')
             if old_content == new_content:
                 print("✅ AI_AGENT_CONTEXT.md is already up to date")
                 return 0
-        
+
         # Write new content
         ai_context_path.write_text(new_content, encoding='utf-8')
         print(f"✅ Successfully updated {ai_context_path}")
-        
+
         # If running in pre-commit, stage the file
         if len(sys.argv) > 1:
             import subprocess
             subprocess.run(["git", "add", str(ai_context_path)], check=False)
             print("📌 Staged AI_AGENT_CONTEXT.md for commit")
-        
+
         return 0
-        
+
     except Exception as e:
         print(f"❌ Error generating AI_AGENT_CONTEXT.md: {e}", file=sys.stderr)
         return 1

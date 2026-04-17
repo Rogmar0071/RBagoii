@@ -1,7 +1,9 @@
 # AI Agent Context - Read First Before Any Mutations
 
-> **REQUIRED READING**: All AI agents must read and understand this file before planning or executing any code changes.
-> **AUTO-GENERATED**: This file is automatically updated when README.md changes. Do not edit manually.
+> **REQUIRED READING**: All AI agents must read and understand this file
+> before planning or executing any code changes.
+> **AUTO-GENERATED**: This file is automatically updated when README.md changes.
+> Do not edit manually.
 
 ---
 

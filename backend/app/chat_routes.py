@@ -1303,11 +1303,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             )
         except Exception:
             # If even persistence fails, return minimal error response
+            # Don't expose internal exception details to clients
             return JSONResponse(
                 status_code=200,
                 content={
                     "error": "SYSTEM_FAILURE",
-                    "detail": str(e),
+                    "detail": "An unexpected error occurred. Please try again later.",
                     "retry_count": 0,
                 },
             )
