@@ -553,7 +553,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 // Use dummy conversation_id since we're fetching all files
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/_all/files?all_conversations=true")
-                    .addHeader("Authorization", "******")
+                    .addHeader("Authorization", "Bearer $apiKey")
                     .get()
                     .build()
 
@@ -656,7 +656,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/${file.conversationId}/files/${file.id}?allow_cross_conversation=true")
-                    .addHeader("Authorization", "******")
+                    .addHeader("Authorization", "Bearer $apiKey")
                     .addHeader("Content-Type", "application/json")
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
