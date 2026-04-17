@@ -46,30 +46,24 @@
             android:exported="false" />
 
         <activity
-            android:name=".FolderDetailActivity"
-            android:exported="false"
-            android:parentActivityName=".MainActivity"
-            android:windowSoftInputMode="adjustResize" />
-
-        <activity
             android:name=".VideoPlayerActivity"
             android:exported="false"
-            android:parentActivityName=".FolderDetailActivity" />
+            android:parentActivityName=".MainActivity" />
 
         <activity
             android:name=".TextViewerActivity"
             android:exported="false"
-            android:parentActivityName=".FolderDetailActivity" />
+            android:parentActivityName=".MainActivity" />
 
         <activity
             android:name=".ImageViewerActivity"
             android:exported="false"
-            android:parentActivityName=".FolderDetailActivity" />
+            android:parentActivityName=".MainActivity" />
 
         <activity
             android:name=".AudioPlayerActivity"
             android:exported="false"
-            android:parentActivityName=".FolderDetailActivity" />
+            android:parentActivityName=".MainActivity" />
 
         <!-- Foreground service that runs MediaProjection + MediaRecorder -->
         <service
