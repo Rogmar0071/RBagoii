@@ -185,16 +185,8 @@ class ResourceActivity : AppCompatActivity() {
                     Toast.makeText(this, "Loading repositories…", Toast.LENGTH_SHORT).show()
                 }
 
-                val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
-
-                if (apiKey.isEmpty()) {
-                    runOnUiThread {
-                        Toast.makeText(this, "API key not configured", Toast.LENGTH_LONG).show()
-                        binding.btnLoadRepos.isEnabled = true
-                    }
-                    return@execute
-                }
+                val apiKey = BuildConfig.BACKEND_API_KEY
+                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/github/user/$username/repos?per_page=30")
@@ -297,8 +289,8 @@ class ResourceActivity : AppCompatActivity() {
         val convId = conversationId ?: return
         executor.execute {
             try {
-                val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+                val apiKey = BuildConfig.BACKEND_API_KEY
+                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/$convId/files")
@@ -390,8 +382,8 @@ class ResourceActivity : AppCompatActivity() {
                     Toast.makeText(this, getString(R.string.status_uploading_file), Toast.LENGTH_SHORT).show()
                 }
 
-                val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+                val apiKey = BuildConfig.BACKEND_API_KEY
+                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
 
                 // Use the chunked upload helper
                 val success = ChatFileUploadHelper.uploadFile(
@@ -467,8 +459,8 @@ class ResourceActivity : AppCompatActivity() {
                     Toast.makeText(this, "Applying selections…", Toast.LENGTH_SHORT).show()
                 }
 
-                val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+                val apiKey = BuildConfig.BACKEND_API_KEY
+                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
 
                 var successCount = 0
                 var failureCount = 0
