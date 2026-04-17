@@ -38,6 +38,12 @@ Configured pre-commit hooks that run automatically before every commit:
 - **check-merge-conflict**: Catches unresolved merge conflicts
 - **debug-statements**: Prevents debug/breakpoint statements in production
 
+#### AI Agent Context Sync
+- **sync-ai-context**: Automatically updates `AI_AGENT_CONTEXT.md` when `README.md` changes
+  - Ensures AI agents always have current project context
+  - Extracts key sections from README.md
+  - Runs on every commit that modifies README.md
+
 ### 2. Developer Setup Script
 
 **File**: `setup-dev-env.sh`
@@ -87,7 +93,7 @@ Developer writes code → git commit → Pre-commit runs locally
                                    ↓
                                    ├─ Auto-fixes issues
                                    └─ Blocks commit if unfixable
-                                   
+
 Only clean code reaches GitHub → CI passes ✅
 ```
 
@@ -217,7 +223,76 @@ Monitor GitHub Actions for:
 - `pyproject.toml` - Python project dependencies
 - `README.md` - User-facing documentation
 - `.github/workflows/ci.yml` - CI pipeline (unchanged, still validates)
+- `scripts/sync_ai_context.py` - Syncs AI_AGENT_CONTEXT.md from README.md
+- `.github/workflows/sync-ai-context.yml` - CI workflow for auto-syncing
+
+## AI Agent Context Auto-Sync
+
+### Purpose
+
+`AI_AGENT_CONTEXT.md` is a "chunked" version of README.md designed specifically for AI agents to read before making any code changes. It contains:
+- Essential project overview
+- Critical directory structure
+- Linting standards and requirements
+- Mode engine and mutation governance contracts
+- Testing requirements
+- Development workflow guidelines
+
+### How It Works
+
+**Automatic Sync on Commit**:
+```
+Developer edits README.md → git commit → Pre-commit hook runs
+                                       ↓
+                             sync_ai_context.py executes
+                                       ↓
+                             AI_AGENT_CONTEXT.md updates
+                                       ↓
+                             Updated file staged automatically
+```
+
+**CI Enforcement**:
+- GitHub Actions workflow (`.github/workflows/sync-ai-context.yml`) runs on README.md changes
+- On `push`: Automatically commits updated AI_AGENT_CONTEXT.md if out of sync
+- On `pull_request`: Fails CI if AI_AGENT_CONTEXT.md is out of sync
+- Prevents merging PRs with outdated AI context
+
+### Manual Sync
+
+```bash
+# Generate/update AI_AGENT_CONTEXT.md from README.md
+python scripts/sync_ai_context.py
+
+# Or let pre-commit handle it automatically
+git add README.md
+git commit -m "Update README"  # Auto-syncs AI_AGENT_CONTEXT.md
+```
+
+### Benefits for AI Agents
+
+1. **Always Current**: AI agents read up-to-date project information
+2. **Chunked Format**: Optimized for AI consumption (less token overhead)
+3. **Critical Info First**: Most important constraints and rules highlighted
+4. **Prevents Mistakes**: Ensures AI agents understand linting rules, testing requirements, and immutable contracts before making changes
+
+### What Gets Extracted
+
+From README.md, the sync script extracts:
+- Project description and purpose
+- Directory structure
+- Development setup instructions
+- Testing requirements
+- Environment variables
+- Installation commands
+
+Then adds:
+- Code quality standards (E501, W293, W291 errors)
+- Pre-commit hook requirements
+- Backend architecture contracts (Mode Engine, Mutation Governance)
+- AI-specific guidelines and checklists
 
 ## Conclusion
 
 This multi-layered approach ensures linting issues are caught and fixed locally before reaching CI, dramatically reducing build failures and improving developer productivity. The system is easy to adopt (one command), automatic in daily use, and provides clear feedback when issues are detected.
+
+Additionally, the AI Agent Context Auto-Sync system ensures that AI agents always have current, accurate project information before attempting any mutations, preventing architectural violations and linting failures.
