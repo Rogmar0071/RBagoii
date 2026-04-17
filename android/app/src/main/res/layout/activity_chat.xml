@@ -36,6 +36,16 @@
                 android:paddingEnd="8dp" />
 
             <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnResourceMenu"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_search"
+                app:tint="@color/icon_tint"
+                android:contentDescription="@string/label_resource_menu"
+                android:scaleType="center" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
                 android:id="@+id/btnFilesMenu"
                 android:layout_width="40dp"
                 android:layout_height="40dp"

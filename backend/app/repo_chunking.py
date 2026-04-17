@@ -236,7 +236,10 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Only {total_chunks - len(missing)}/{total_chunks} chunks received",
+            detail=(
+                f"Missing chunks: {missing}. "
+                f"Only {total_chunks - len(missing)}/{total_chunks} chunks received"
+            ),
         )
 
     total_written = 0
@@ -286,3 +289,73 @@ def cleanup(upload_id: str) -> None:
     for child in chunk_dir.iterdir():
         child.unlink(missing_ok=True)
     chunk_dir.rmdir()
+
+
+def save_chunk(upload_id: str, chunk_index: int, total_chunks: int, data: bytes) -> dict[str, Any]:
+    """
+    Simplified API for chat file chunked uploads.
+    Save a chunk and return upload progress.
+    """
+    chunk_dir = _chunks_dir(upload_id, create=True)
+    manifest_path = chunk_dir / "_meta.json"
+
+    # Load or create manifest
+    if manifest_path.exists():
+        manifest = load_manifest(upload_id)
+    else:
+        manifest = {
+            "upload_id": upload_id,
+            "total_chunks": total_chunks,
+            "received_chunks": [],
+        }
+
+    # Save chunk
+    _write_chunk_bytes(chunk_dir, chunk_index, data)
+
+    # Update manifest
+    received_chunks = set(int(index) for index in manifest.get("received_chunks", []))
+    received_chunks.add(chunk_index)
+    manifest["received_chunks"] = sorted(received_chunks)
+    manifest["total_chunks"] = total_chunks  # Update in case it changed
+    _write_manifest(upload_id, manifest)
+
+    chunks_received = len(manifest["received_chunks"])
+    return {
+        **manifest,
+        "chunks_received": chunks_received,
+        "complete": chunks_received >= total_chunks,
+    }
+
+
+def assemble_chunks(upload_id: str) -> bytes:
+    """
+    Assemble all chunks into a single byte array.
+    Returns the complete file content.
+    """
+    manifest = load_manifest(upload_id)
+    chunk_dir = _chunks_dir(upload_id, create=False)
+    total_chunks = int(manifest["total_chunks"])
+
+    # Check all chunks are present
+    present_chunk_indexes = {
+        int(path.name.removeprefix("chunk_"))
+        for path in chunk_dir.iterdir()
+        if path.name.startswith("chunk_")
+    }
+    missing = [index for index in range(total_chunks) if index not in present_chunk_indexes]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Missing chunks: {missing}. "
+                f"Only {total_chunks - len(missing)}/{total_chunks} chunks received"
+            ),
+        )
+
+    # Assemble chunks
+    result = bytearray()
+    for index in range(total_chunks):
+        chunk_path = chunk_dir / f"chunk_{index:05d}"
+        result.extend(chunk_path.read_bytes())
+
+    return bytes(result)

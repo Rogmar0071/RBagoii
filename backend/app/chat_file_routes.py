@@ -6,6 +6,8 @@ FastAPI router for chat file management endpoints.
 Endpoints
 ---------
 POST   /api/chat/{conversation_id}/files        Upload a file to a conversation
+POST   /api/chat/{conversation_id}/files/chunks Upload a chunk of a file
+PUT    /api/chat/{conversation_id}/files/chunks/{upload_id}/finalize  Finalize chunked upload
 GET    /api/chat/{conversation_id}/files        List all files in a conversation
 PATCH  /api/chat/{conversation_id}/files/{file_id}   Update file metadata (rename, toggle context)
 DELETE /api/chat/{conversation_id}/files/{file_id}   Delete a file
@@ -19,13 +21,18 @@ import os
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
 from backend.app.models import ChatFile
+from backend.app.repo_chunking import (
+    assemble_chunks,
+    cleanup,
+    save_chunk,
+)
 from backend.app.storage import get_presigned_url, upload_bytes
 
 router = APIRouter(prefix="/api/chat")
@@ -246,6 +253,146 @@ async def upload_chat_file(
         )
     except Exception as e:
         logger.error(f"File upload failed: {e}")
+        raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
+
+
+@router.post(
+    "/{conversation_id}/files/chunks",
+    status_code=202,
+    dependencies=[Depends(require_auth)]
+)
+async def upload_chat_file_chunk(
+    conversation_id: str,
+    chunk: UploadFile,
+    x_upload_id: str = Header(..., alias="X-Upload-Id"),
+    x_chunk_index: int = Header(..., alias="X-Chunk-Index"),
+    x_total_chunks: int = Header(..., alias="X-Total-Chunks"),
+    x_filename: str = Header(..., alias="X-Filename"),
+) -> dict:
+    """
+    Upload a single chunk of a file being uploaded in parts.
+
+    Headers required:
+      X-Upload-Id     — stable UUID for this chunked upload session
+      X-Chunk-Index   — 0-based index of this chunk
+      X-Total-Chunks  — total number of chunks expected
+      X-Filename      — original filename
+
+    When all chunks are received, call PUT /{conversation_id}/files/chunks/{upload_id}/finalize
+    """
+    # Validate upload ID is a UUID
+    try:
+        uuid.UUID(x_upload_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="X-Upload-Id must be a valid UUID")
+
+    if x_chunk_index < 0 or x_total_chunks < 1 or x_chunk_index >= x_total_chunks:
+        raise HTTPException(status_code=400, detail="Invalid chunk index or total")
+
+    # Read chunk data
+    chunk_data = await chunk.read()
+
+    # Save chunk
+    result = save_chunk(
+        upload_id=x_upload_id,
+        chunk_index=x_chunk_index,
+        total_chunks=x_total_chunks,
+        data=chunk_data,
+    )
+
+    return {
+        "upload_id": x_upload_id,
+        "chunk_index": x_chunk_index,
+        "chunks_received": result["chunks_received"],
+        "total_chunks": x_total_chunks,
+        "complete": result["complete"],
+    }
+
+
+@router.put(
+    "/{conversation_id}/files/chunks/{upload_id}/finalize",
+    status_code=201,
+    dependencies=[Depends(require_auth)],
+)
+async def finalize_chat_file_upload(
+    conversation_id: str,
+    upload_id: str,
+    filename: str = Form(...),
+    mime_type: str = Form("application/octet-stream"),
+    session: Session = Depends(get_session),
+) -> ChatFileResponse:
+    """
+    Finalize a chunked upload by assembling all chunks and creating the file record.
+    """
+    try:
+        uuid.UUID(upload_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid upload_id")
+
+    try:
+        # Assemble chunks
+        file_content = assemble_chunks(upload_id)
+        file_size = len(file_content)
+
+        # Categorize file
+        category = categorize_file(filename, mime_type)
+
+        # Extract text content if possible
+        extracted_text = extract_text_content(file_content, mime_type, filename)
+
+        # Generate object key
+        file_id = uuid.uuid4()
+        object_key = f"chat_files/{conversation_id}/{file_id}/{filename}"
+
+        # Upload to storage
+        upload_bytes(
+            object_key=object_key,
+            data=file_content,
+            content_type=mime_type,
+        )
+
+        # Create database record
+        chat_file = ChatFile(
+            id=file_id,
+            conversation_id=conversation_id,
+            filename=filename,
+            mime_type=mime_type,
+            size_bytes=file_size,
+            object_key=object_key,
+            category=category,
+            included_in_context=True,
+            extracted_text=extracted_text,
+        )
+
+        session.add(chat_file)
+        session.commit()
+        session.refresh(chat_file)
+
+        # Clean up chunks
+        cleanup(upload_id)
+
+        # Get download URL
+        download_url = get_presigned_url(object_key, expiration=3600)
+
+        return ChatFileResponse(
+            id=str(chat_file.id),
+            conversation_id=chat_file.conversation_id,
+            filename=chat_file.filename,
+            mime_type=chat_file.mime_type,
+            size_bytes=chat_file.size_bytes,
+            category=chat_file.category,
+            included_in_context=chat_file.included_in_context,
+            created_at=chat_file.created_at.isoformat(),
+            updated_at=chat_file.updated_at.isoformat(),
+            download_url=download_url,
+        )
+    except Exception as e:
+        logger.error(f"Chunked file upload failed: {e}")
+        # Try to clean up on error
+        try:
+            cleanup(upload_id)
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
 
