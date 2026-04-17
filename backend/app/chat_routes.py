@@ -989,6 +989,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     """
     Send a message to the UI Blueprint assistant.
 
+    STRICT_MODE_EXECUTION_SPINE_LOCK_V1 — PHASE 3: API STABILITY LOCK
+    ALL execution paths MUST return HTTP 200
+    Wrap ENTIRE handler in try/except to prevent 502 errors
+
     When the message contains recency keywords (latest, today, current, ...) or
     starts with "search:", a Tavily web search is performed and results are
     injected into the system prompt so the assistant can answer with up-to-date
@@ -1000,32 +1004,36 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     When enabled, the assistant is instructed to respond using typed strict-mode
     JSON with explicit confidence/verifiability metadata.
     """
-    # CONTEXT_ORIGIN_ENFORCEMENT_V1: capture raw context_scope from body before
-    # Pydantic validation so we can distinguish explicit vs implicit_legacy intent.
-    raw_context_scope: str | None = (body or {}).get("context_scope")
-
+    # PHASE 3 — API STABILITY LOCK: Wrap ENTIRE execution in exception boundary
+    # TRY: result = pipeline(...)  RETURN 200 + result
+    # EXCEPT Exception e: RETURN 200 with structured error
     try:
-        request = ChatPostRequest.model_validate(body or {})
-    except ValidationError as exc:
-        if any(error["loc"] == ("message",) for error in exc.errors()):
+        # CONTEXT_ORIGIN_ENFORCEMENT_V1: capture raw context_scope from body before
+        # Pydantic validation so we can distinguish explicit vs implicit_legacy intent.
+        raw_context_scope: str | None = (body or {}).get("context_scope")
+
+        try:
+            request = ChatPostRequest.model_validate(body or {})
+        except ValidationError as exc:
+            if any(error["loc"] == ("message",) for error in exc.errors()):
+                return _error(
+                    400,
+                    "invalid_request",
+                    "message is required and must not be empty.",
+                )
+            if any(error["loc"] == ("conversation_id",) for error in exc.errors()):
+                return _error(
+                    400,
+                    "invalid_request",
+                    "conversation_id is required. Call POST /api/chat/conversation/new "
+                    "to obtain one before sending messages.",
+                )
             return _error(
-                400,
+                422,
                 "invalid_request",
-                "message is required and must not be empty.",
+                "Request body failed validation.",
+                {"errors": exc.errors()},
             )
-        if any(error["loc"] == ("conversation_id",) for error in exc.errors()):
-            return _error(
-                400,
-                "invalid_request",
-                "conversation_id is required. Call POST /api/chat/conversation/new "
-                "to obtain one before sending messages.",
-            )
-        return _error(
-            422,
-            "invalid_request",
-            "Request body failed validation.",
-            {"errors": exc.errors()},
-        )
 
     message = request.message
     context = request.context
@@ -1250,6 +1258,50 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     finally:
         if db is not None:
             db.close()
+    # PHASE 3 — API STABILITY LOCK: Final catch-all exception handler
+    # This should never be reached due to nested try/except, but provides ultimate safety
+    except Exception as e:
+        # PROHIBITIONS: NO uncaught exceptions, NO 5xx responses
+        import json as _json
+
+        logger.exception("Unexpected exception in chat endpoint: %s", e)
+        error_reply = _json.dumps({
+            "error": "SYSTEM_FAILURE",
+            "detail": str(e),
+            "retry_count": 0,
+        })
+        # Try to persist error message if db is available
+        try:
+            db = _db_session()
+            active_conversation_id = (body or {}).get("conversation_id", "unknown")
+            context = ChatContext()
+            assistant_message = _persist_message(
+                db, "assistant", error_reply, context, conversation_id=active_conversation_id
+            )
+            user_message = _persist_message(
+                db, "user", (body or {}).get("message", ""), context, 
+                conversation_id=active_conversation_id
+            )
+            if db is not None:
+                db.close()
+            return _json_response(
+                ChatPostResponse(
+                    reply=error_reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            )
+        except Exception:
+            # If even persistence fails, return minimal error response
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "error": "SYSTEM_FAILURE",
+                    "detail": str(e),
+                    "retry_count": 0,
+                },
+            )
 
 
 # ---------------------------------------------------------------------------

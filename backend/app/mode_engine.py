@@ -912,6 +912,12 @@ def mode_engine_gateway(
 ) -> tuple[str, ModeEngineAuditRecord]:
     """Single mandatory entry/exit point for all AI interactions on POST /api/chat.
 
+    STRICT_MODE_EXECUTION_SPINE_LOCK_V1:
+    - Mode isolation: modes is ONLY source of truth
+    - is_strict = (modes != None AND "strict_mode" IN modes)
+    - IF is_strict == FALSE: BYPASS all validation, return raw AI output
+    - IF is_strict == TRUE: FULL pipeline MUST execute
+
     Both the stub path (no ``OPENAI_API_KEY``) and the live OpenAI path pass
     through this function.
 
@@ -948,8 +954,13 @@ def mode_engine_gateway(
         If the database is configured but the audit write fails
         (``block_if_log_not_written`` invariant).
     """
-    active_modes = resolve_modes(modes)
-    if MODE_STRICT in active_modes:
+    # PHASE 1 — MODE ISOLATION LOCK
+    # modes is the ONLY source of truth
+    # strict_mode is ACTIVE only if: is_strict = (modes != None AND "strict_mode" IN modes)
+    active_modes = resolve_modes(modes) if modes is not None else []
+    is_strict = MODE_STRICT in active_modes
+    
+    if is_strict:
         # Log any configured mode conflicts; execution continues on active_modes.
         apply_mode_conflict_resolution(active_modes)
 
@@ -959,10 +970,13 @@ def mode_engine_gateway(
     )
 
     # ------------------------------------------------------------------
-    # NORMAL MODE (modes == []): skip all validation, no contract
-    # PHASE 8 — NORMAL MODE GUARANTEE
+    # PHASE 1 — MODE ISOLATION: NORMAL MODE PATH
+    # IF is_strict == FALSE:
+    #   - BYPASS: intent extraction, contract construction, validation, governance blocking
+    #   - RETURN raw AI output
+    #   - HTTP status MUST be 200 (handled by caller)
     # ------------------------------------------------------------------
-    if MODE_STRICT not in active_modes:
+    if not is_strict:
         audit.transformed_prompt = base_system_prompt
         raw_output = ai_call(base_system_prompt)
         audit.raw_ai_output = raw_output
@@ -971,33 +985,38 @@ def mode_engine_gateway(
         return raw_output, audit
 
     # ------------------------------------------------------------------
-    # PHASE 1 — Intent Extraction (for strict_mode only)
+    # PHASE 2 — CONTRACT BOUNDARY LOCK (STRICT MODE ONLY)
+    # Contract MUST exist BEFORE validation
+    # Contract MUST be validated BEFORE use
     # ------------------------------------------------------------------
+    # PHASE 1 — Intent Extraction (for strict_mode only)
     intent_obj = extract_intent(user_intent)
 
-    # ------------------------------------------------------------------
     # PHASE 2 — Contract Construction (per request, not reused)
-    # ------------------------------------------------------------------
     contract_obj = construct_contract(intent_obj)
 
-    # ------------------------------------------------------------------
     # CONTRACT BOUNDARY — Contract Validation Gate (MANDATORY)
-    # CONTRACT_EXECUTION_BOUNDARY_LOCK_V1
-    # ------------------------------------------------------------------
+    # IF contract == None OR invalid:
+    #   RETURN structured error:
+    #     error = "CONTRACT_VALIDATION_FAILED"
+    #     retry_count = 0
+    #   TERMINATE (NO AI CALL)
     from backend.app.contract_construction import validate_contract
 
     contract_validation = validate_contract(contract_obj)
 
-    if not contract_validation.passed:
-        # BLOCK execution at boundary — invalid contract
+    if not contract_validation.passed or contract_obj is None:
+        # PHASE 6 — FAILURE TAXONOMY LOCK: use "contract_validation_failure"
         import json as _json
 
         failure: dict[str, Any] = {
-            "error": "VALIDATION_FAILED",
-            "stage": "contract_boundary",
+            "error": "CONTRACT_VALIDATION_FAILED",
+            "status": "blocked",
+            "blocked_reason": "contract_validation_failure",
             "failed_rules": contract_validation.failed_rules,
             "missing_fields": contract_validation.missing_fields,
             "correction_instructions": contract_validation.correction_instructions,
+            "retry_count": 0,
         }
         audit.final_output = _json.dumps(failure)
         audit.validation_results = [contract_validation.to_dict()]
@@ -1011,23 +1030,37 @@ def mode_engine_gateway(
     if not ok:
         import json as _json
 
-        failure: dict[str, Any] = {"error": "PRE_GENERATION_BLOCKED", "reason": reason}
+        # PHASE 6 — FAILURE TAXONOMY: standardize error
+        failure: dict[str, Any] = {
+            "error": "PRE_GENERATION_BLOCKED",
+            "status": "blocked",
+            "blocked_reason": "validation_failure",
+            "reason": reason,
+            "retry_count": 0,
+        }
         audit.final_output = _json.dumps(failure)
         _persist_audit_record(audit)
         return audit.final_output, audit
 
     # ------------------------------------------------------------------
-    # Build mode-injected system prompt (includes conflict constraints)
+    # PHASE 10 — PROMPT INJECTION LOCK
+    # Build mode-injected system prompt (includes MODE ENGINE EXECUTION V2 CONSTRAINTS)
+    # Enforced modes: strict_mode, builder_mode, prediction_mode
     # ------------------------------------------------------------------
     mode_injection = build_mode_system_prompt_injection(active_modes)
     transformed_prompt = base_system_prompt + mode_injection
     audit.transformed_prompt = transformed_prompt
 
     # ------------------------------------------------------------------
-    # Retry loop: generate → validate (4 stages) → retry on failure
-    # PHASE 3 — Contract binding to validation
-    # PHASE 1 — RETRY LOOP FIX: MAX_RETRIES = 2 means 2 retries after initial,
-    # for total of MAX_RETRIES + 1 = 3 attempts
+    # PHASE 7 — RETRY ENGINE LOCK
+    # Retry loop: generate → PARSE FIRST → validate (3 stages) → retry on failure
+    # MAX_RETRIES = 2 (constant)
+    # PHASE 4 — PARSE-FIRST ENFORCEMENT
+    # Flow: raw_output = ai_call(...) → parsed = parse_output(raw_output)
+    #       IF parse FAILS: RETURN blocked with parse_failure, retry_count = MAX_RETRIES
+    # PHASE 5 — VALIDATION PIPELINE LOCK
+    # Order (MANDATORY): structural → logical → compliance
+    # ALL stages MUST execute IF parse succeeds
     # ------------------------------------------------------------------
     current_prompt = transformed_prompt
     raw_output = ""
@@ -1041,19 +1074,58 @@ def mode_engine_gateway(
         audit.raw_ai_output = raw_output
         audit.retry_count = attempt
 
-        # PHASE 4 — Four-stage CONTRACT-DRIVEN validation pipeline
+        # PHASE 4 — PARSE-FIRST ENFORCEMENT
+        # Check if output can be parsed before validation
+        # For typed_structured_json contracts, verify JSON parsing works
+        if contract_obj and contract_obj.output_format == "typed_structured_json":
+            # Check for INSUFFICIENT_DATA fallback first (allowed bypass)
+            uses_insufficient_data = _strict_mode_uses_insufficient_data(raw_output)
+            if not uses_insufficient_data:
+                parsed_output = _parse_typed_output(raw_output)
+                if parsed_output is None:
+                    # PHASE 6 — FAILURE TAXONOMY: "parse_failure"
+                    # PHASE 7 — RETRY ENGINE: set retry_count = MAX_RETRIES on parse failure
+                    import json as _json
+
+                    parse_failure_result = ValidationResult(
+                        stage="parse",
+                        passed=False,
+                        failed_rules=["parse_failure"],
+                        correction_instructions=[
+                            "Output must be valid JSON or INSUFFICIENT GROUNDED KNOWLEDGE"
+                        ],
+                    )
+                    audit.retry_count = MAX_RETRIES
+                    audit.validation_results = [parse_failure_result.to_dict()]
+                    failure_dict = {
+                        "error": "VALIDATION_FAILED",
+                        "status": "blocked",
+                        "blocked_reason": "parse_failure",
+                        "validation_results": [parse_failure_result.to_dict()],
+                        "retry_count": MAX_RETRIES,
+                    }
+                    audit.final_output = _json.dumps(failure_dict)
+                    _persist_audit_record(audit)
+                    return audit.final_output, audit
+
+        # PHASE 5 — VALIDATION PIPELINE LOCK
+        # Three-stage CONTRACT-DRIVEN validation pipeline (MANDATORY ORDER)
+        # 1. structural  2. logical  3. compliance
+        # ALL stages MUST execute IF parse succeeds
+        # EACH stage MUST return: stage, passed, failed_rules, correction_instructions
         v1 = stage_1_structural_validation(raw_output, active_modes, contract_obj)
         v2 = stage_2_logical_validation(raw_output, active_modes, contract_obj)
         v3 = stage_3_compliance_validation(raw_output, active_modes, contract_obj)
-        v4 = _check_response_contract(raw_output, active_modes, contract_obj)
 
-        last_validation_results = [v1, v2, v3, v4]
+        last_validation_results = [v1, v2, v3]
         audit.validation_results = [vr.to_dict() for vr in last_validation_results]
 
         if all(vr.passed for vr in last_validation_results):
+            # PHASE 5 — IF ALL pass: status = "approved"
             # All stages passed — exit retry loop.
             break
 
+        # PHASE 5 — IF ANY stage fails: status = "blocked"
         # Increment attempt counter after failed validation
         attempt += 1
 
@@ -1063,18 +1135,30 @@ def mode_engine_gateway(
 
     # Check if we exhausted retries
     if not all(vr.passed for vr in last_validation_results):
+        # PHASE 6 — FAILURE TAXONOMY: "validation_failure"
+        # PHASE 7 — RETRY ENGINE: FINAL FAILURE MUST RETURN retry_count = MAX_RETRIES
         # No Silent Completion Rule: strict mode must return explicit insufficiency
-        # (embedded in structured failure payload for API consistency).
         import json as _json
 
         audit.retry_count = MAX_RETRIES
-        failure_dict = _build_structured_failure(last_validation_results, MAX_RETRIES)
-        failure_dict["insufficiency_message"] = STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE
+        failure_dict = {
+            "error": "VALIDATION_FAILED",
+            "status": "blocked",
+            "blocked_reason": "validation_failure",
+            "validation_results": audit.validation_results,
+            "retry_count": MAX_RETRIES,
+            "insufficiency_message": STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE,
+        }
         audit.final_output = _json.dumps(failure_dict)
         _persist_audit_record(audit)  # raises if DB configured + write fails
         return audit.final_output, audit
 
     # ------------------------------------------------------------------
+    # PHASE 8 — SUCCESS PATH LOCK
+    # IF status == "approved":
+    #   - RETURN CLEAN output (NO error wrapper)
+    #   - NO JSON failure structure
+    #   - NO retry metadata
     # Hard boundary gate: only validated output exits the system.
     # ------------------------------------------------------------------
     audit.final_output = raw_output
