@@ -130,10 +130,16 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
         binding.btnSend.setOnClickListener { onSendClicked() }
 
-        // GLOBAL_CONVERSATION_ACTIVATION_V1: "+" button starts a new conversation.
+        // Attach button now triggers file upload
         binding.btnAttach.setOnClickListener {
+            filePickerLauncher.launch("*/*")
+        }
+
+        // New conversation button in toolbar
+        binding.btnNewChat.setOnClickListener {
             conversationId = null
             adapter.submitList(emptyList())
+            Toast.makeText(this, "Started new conversation", Toast.LENGTH_SHORT).show()
         }
 
         setupMicButton()
