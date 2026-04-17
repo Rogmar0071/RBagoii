@@ -1035,229 +1035,229 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 {"errors": exc.errors()},
             )
 
-    message = request.message
-    context = request.context
-    agent_mode = request.agent_mode
-    active_modes = [MODE_STRICT] if agent_mode else []
-    # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
-    active_artifacts = request.artifacts or []
-    # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
-    # by the UI or implicitly defaulted by the backend.  Internal-only — never exposed
-    # to prompts, AI output, or API responses.
-    context_scope, context_origin = resolve_context_origin(raw_context_scope=raw_context_scope)
-    logger.debug(
-        "context_origin resolution: scope=%s origin=%s",
-        context_scope,
-        context_origin,
-    )
-    # CONTEXT_ASSEMBLY_ALIGNMENT_V2: resolve execution context surface.
-    # Uses the origin-resolved context_scope (not raw request field) so that
-    # validation operates on the resolved value, not raw input.
-    # No external I/O — deterministic pass-through only.
-    context_surface = resolve_context_surface(
-        context_scope=context_scope,
-        project_id=request.project_id,
-        artifacts=active_artifacts,
-    )
-    resolved_artifacts = context_surface["resolved_artifacts"]
-
-    # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines read isolation.
-    is_stateless = request.force_new_session is True
-
-    # CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK (RULE 4): single source of truth.
-    # conversation_id is now required — no fallback, no branching.
-    active_conversation_id = request.conversation_id
-
-    db = _db_session()
-    try:
-        # RULE 5: always persist messages, regardless of force_new_session.
-        # force_new_session=True skips history READ only (debug/testing override).
-        user_message = _persist_message(
-            db, "user", message, context, conversation_id=active_conversation_id
+        message = request.message
+        context = request.context
+        agent_mode = request.agent_mode
+        active_modes = [MODE_STRICT] if agent_mode else []
+        # ARTIFACT_INGESTION_PIPELINE_V1: normalize artifact list (never None downstream).
+        active_artifacts = request.artifacts or []
+        # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
+        # by the UI or implicitly defaulted by the backend.  Internal-only — never exposed
+        # to prompts, AI output, or API responses.
+        context_scope, context_origin = resolve_context_origin(raw_context_scope=raw_context_scope)
+        logger.debug(
+            "context_origin resolution: scope=%s origin=%s",
+            context_scope,
+            context_origin,
         )
-        if is_stateless:
-            # Stateless: skip history read — context window is empty.
-            logger.debug(
-                "force_new_session=True: skipping history read; "
-                "messages are still persisted under conversation_id=%s",
-                active_conversation_id,
-            )
-            history = []
-        else:
-            history = _load_recent_history(db, conversation_id=active_conversation_id)
+        # CONTEXT_ASSEMBLY_ALIGNMENT_V2: resolve execution context surface.
+        # Uses the origin-resolved context_scope (not raw request field) so that
+        # validation operates on the resolved value, not raw input.
+        # No external I/O — deterministic pass-through only.
+        context_surface = resolve_context_surface(
+            context_scope=context_scope,
+            project_id=request.project_id,
+            artifacts=active_artifacts,
+        )
+        resolved_artifacts = context_surface["resolved_artifacts"]
 
-        # Read OPENAI_API_KEY at call time -- never returned or logged.
-        openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        # CONVERSATION_BOUNDARY_CONTROL_V1: stateless flag determines read isolation.
+        is_stateless = request.force_new_session is True
 
-        # API_EXCEPTION_BOUNDARY_LOCK_V1: wrap ALL execution in exception boundary
-        # to eliminate 502 errors and ensure structured error responses.
+        # CONVERSATION_LIFECYCLE_ENFORCEMENT_LOCK (RULE 4): single source of truth.
+        # conversation_id is now required — no fallback, no branching.
+        active_conversation_id = request.conversation_id
+
+        db = _db_session()
         try:
-            if not openai_api_key:
-                # No OpenAI key — the stub reply still flows through mode_engine_gateway
-                # so that pre-generation constraints, all four validation stages, and
-                # mandatory audit logging run.  The stub path is NOT a bypass.
-                def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
-                    return _stub_reply(message)
-
-                reply, _audit = mode_engine_gateway(
-                    user_intent=message,
-                    modes=active_modes,
-                    ai_call=_stub_ai_call,
-                    base_system_prompt="",
+            # RULE 5: always persist messages, regardless of force_new_session.
+            # force_new_session=True skips history READ only (debug/testing override).
+            user_message = _persist_message(
+                db, "user", message, context, conversation_id=active_conversation_id
+            )
+            if is_stateless:
+                # Stateless: skip history read — context window is empty.
+                logger.debug(
+                    "force_new_session=True: skipping history read; "
+                    "messages are still persisted under conversation_id=%s",
+                    active_conversation_id,
                 )
+                history = []
             else:
-                # Optionally retrieve web results for recency-sensitive queries.
-                search_results: list[dict[str, Any]] = []
-                if _needs_web_search(message):
-                    try:
-                        from backend.app.web_search import TavilyKeyMissing, web_search
+                history = _load_recent_history(db, conversation_id=active_conversation_id)
 
-                        query = _build_search_query(message)
-                        raw = web_search(query, recency_days=7, max_results=5)
-                        search_results = raw.get("results", [])
-                    except TavilyKeyMissing:
-                        logger.info("web_search: TAVILY_API_KEY not set; skipping retrieval.")
-                    except Exception:
-                        logger.warning("web_search call failed; continuing without retrieval.")
+            # Read OPENAI_API_KEY at call time -- never returned or logged.
+            openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
-                # Build base system prompt with ops context + optional retrieval results.
-                if search_results:
-                    base_system_prompt = _build_retrieval_system_prompt(db, search_results)
+            # API_EXCEPTION_BOUNDARY_LOCK_V1: wrap ALL execution in exception boundary
+            # to eliminate 502 errors and ensure structured error responses.
+            try:
+                if not openai_api_key:
+                    # No OpenAI key — the stub reply still flows through mode_engine_gateway
+                    # so that pre-generation constraints, all four validation stages, and
+                    # mandatory audit logging run.  The stub path is NOT a bypass.
+                    def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
+                        return _stub_reply(message)
+
+                    reply, _audit = mode_engine_gateway(
+                        user_intent=message,
+                        modes=active_modes,
+                        ai_call=_stub_ai_call,
+                        base_system_prompt="",
+                    )
                 else:
-                    base_system_prompt = _build_chat_system_prompt(db)
-
-                # When agent_mode is enabled, append strict typed-output requirements.
-                if agent_mode:
-                    base_system_prompt += (
-                        "\n\nAgent mode strict output contract:\n"
-                        "- Return JSON object only.\n"
-                        "- Include fields: claims, uncertainties, generation_mode, mode_label.\n"
-                        "- claims[] fields: statement, confidence (0..1), "
-                        "source_type, verifiability.\n"
-                        "- mode_label must be RETRIEVED, INFERRED, or GENERATED.\n"
-                        "- If requirements cannot be met, return exactly: "
-                        "INSUFFICIENT GROUNDED KNOWLEDGE"
-                    )
-
-                # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
-                # inject user-provided artifacts (order: after ops/retrieval,
-                # before mode injection).
-                # Artifacts are passed verbatim — no preprocessing, no summarization.
-                artifact_block = build_artifact_context_block(resolved_artifacts)
-                if artifact_block:
-                    base_system_prompt += "\n\n" + artifact_block
-
-                # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
-                if context.files:
-                    file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
-                    for file_ref in context.files:
-                        file_id_str = file_ref.get("id", "")
-                        filename = file_ref.get("filename", "unnamed")
-                        category = file_ref.get("category", "other")
-                        file_block += f"\n- {filename} (Category: {category})"
-
-                        # Fetch file content from database if text was extracted
+                    # Optionally retrieve web results for recency-sensitive queries.
+                    search_results: list[dict[str, Any]] = []
+                    if _needs_web_search(message):
                         try:
-                            file_uuid = uuid.UUID(file_id_str)
-                            stmt = select(ChatFile).where(ChatFile.id == file_uuid)
-                            chat_file = db.exec(stmt).first()
-                            if chat_file and chat_file.extracted_text:
-                                # Truncate to reasonable size for context
-                                content = chat_file.extracted_text[:5000]
-                                if len(chat_file.extracted_text) > 5000:
-                                    content += "\n...[truncated]"
-                                file_block += f"\n  Content preview:\n{content}\n"
-                        except (ValueError, AttributeError):
-                            pass  # Invalid UUID or missing data, skip content
+                            from backend.app.web_search import TavilyKeyMissing, web_search
 
-                    file_block += "\n--- End of Uploaded Files ---\n"
-                    base_system_prompt += file_block
+                            query = _build_search_query(message)
+                            raw = web_search(query, recency_days=7, max_results=5)
+                            search_results = raw.get("results", [])
+                        except TavilyKeyMissing:
+                            logger.info("web_search: TAVILY_API_KEY not set; skipping retrieval.")
+                        except Exception:
+                            logger.warning("web_search call failed; continuing without retrieval.")
 
-                # Build the ai_call closure; mode constraints are injected by the gateway.
-                # This is the ONLY path through which _call_openai_chat is reached for
-                # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
-                def _openai_ai_call(system_prompt: str) -> str:
-                    return _call_openai_chat(
-                        message,
-                        openai_api_key,
-                        history[:-1] if history else [],
-                        system_prompt=system_prompt,
+                    # Build base system prompt with ops context + optional retrieval results.
+                    if search_results:
+                        base_system_prompt = _build_retrieval_system_prompt(db, search_results)
+                    else:
+                        base_system_prompt = _build_chat_system_prompt(db)
+
+                    # When agent_mode is enabled, append strict typed-output requirements.
+                    if agent_mode:
+                        base_system_prompt += (
+                            "\n\nAgent mode strict output contract:\n"
+                            "- Return JSON object only.\n"
+                            "- Include fields: claims, uncertainties, generation_mode, mode_label.\n"
+                            "- claims[] fields: statement, confidence (0..1), "
+                            "source_type, verifiability.\n"
+                            "- mode_label must be RETRIEVED, INFERRED, or GENERATED.\n"
+                            "- If requirements cannot be met, return exactly: "
+                            "INSUFFICIENT GROUNDED KNOWLEDGE"
+                        )
+
+                    # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
+                    # inject user-provided artifacts (order: after ops/retrieval,
+                    # before mode injection).
+                    # Artifacts are passed verbatim — no preprocessing, no summarization.
+                    artifact_block = build_artifact_context_block(resolved_artifacts)
+                    if artifact_block:
+                        base_system_prompt += "\n\n" + artifact_block
+
+                    # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
+                    if context.files:
+                        file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
+                        for file_ref in context.files:
+                            file_id_str = file_ref.get("id", "")
+                            filename = file_ref.get("filename", "unnamed")
+                            category = file_ref.get("category", "other")
+                            file_block += f"\n- {filename} (Category: {category})"
+
+                            # Fetch file content from database if text was extracted
+                            try:
+                                file_uuid = uuid.UUID(file_id_str)
+                                stmt = select(ChatFile).where(ChatFile.id == file_uuid)
+                                chat_file = db.exec(stmt).first()
+                                if chat_file and chat_file.extracted_text:
+                                    # Truncate to reasonable size for context
+                                    content = chat_file.extracted_text[:5000]
+                                    if len(chat_file.extracted_text) > 5000:
+                                        content += "\n...[truncated]"
+                                    file_block += f"\n  Content preview:\n{content}\n"
+                            except (ValueError, AttributeError):
+                                pass  # Invalid UUID or missing data, skip content
+
+                        file_block += "\n--- End of Uploaded Files ---\n"
+                        base_system_prompt += file_block
+
+                    # Build the ai_call closure; mode constraints are injected by the gateway.
+                    # This is the ONLY path through which _call_openai_chat is reached for
+                    # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
+                    def _openai_ai_call(system_prompt: str) -> str:
+                        return _call_openai_chat(
+                            message,
+                            openai_api_key,
+                            history[:-1] if history else [],
+                            system_prompt=system_prompt,
+                        )
+
+                    reply, _audit = mode_engine_gateway(
+                        user_intent=message,
+                        modes=active_modes,
+                        ai_call=_openai_ai_call,
+                        base_system_prompt=base_system_prompt,
                     )
 
-                reply, _audit = mode_engine_gateway(
-                    user_intent=message,
-                    modes=active_modes,
-                    ai_call=_openai_ai_call,
-                    base_system_prompt=base_system_prompt,
-                )
+                    # Append citations to the reply if retrieval was performed.
+                    if search_results:
+                        reply += _format_citations(search_results)
 
-                # Append citations to the reply if retrieval was performed.
-                if search_results:
-                    reply += _format_citations(search_results)
-
-            assistant_message = _persist_message(
-                db, "assistant", reply, context, conversation_id=active_conversation_id
-            )
-            return _json_response(
-                ChatPostResponse(
-                    reply=reply,
-                    tools_available=_TOOLS_AVAILABLE,
-                    user_message=user_message,
-                    assistant_message=assistant_message,
+                assistant_message = _persist_message(
+                    db, "assistant", reply, context, conversation_id=active_conversation_id
                 )
-            )
-        except (
-            httpx.TimeoutException,
-            httpx.RequestError,
-            httpx.HTTPStatusError,
-            httpx.ConnectError,
-        ):
-            # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch httpx exceptions to prevent 502 errors.
-            # Return status 200 with structured error in reply field (matching mode_engine pattern).
-            import json as _json
-
-            logger.exception("HTTP exception in chat endpoint")
-            error_reply = _json.dumps({
-                "error": "SYSTEM_FAILURE",
-                "message": "AI provider connection failed",
-                "type": "HTTPError",
-            })
-            assistant_message = _persist_message(
-                db, "assistant", error_reply, context, conversation_id=active_conversation_id
-            )
-            return _json_response(
-                ChatPostResponse(
-                    reply=error_reply,
-                    tools_available=_TOOLS_AVAILABLE,
-                    user_message=user_message,
-                    assistant_message=assistant_message,
+                return _json_response(
+                    ChatPostResponse(
+                        reply=reply,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
                 )
-            )
-        except (KeyError, IndexError, ValueError) as e:
-            # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch parsing errors to prevent 502 errors.
-            # Return status 200 with structured error in reply field.
-            import json as _json
+            except (
+                httpx.TimeoutException,
+                httpx.RequestError,
+                httpx.HTTPStatusError,
+                httpx.ConnectError,
+            ):
+                # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch httpx exceptions to prevent 502 errors.
+                # Return status 200 with structured error in reply field (matching mode_engine pattern).
+                import json as _json
 
-            logger.exception("Parsing exception in chat endpoint: %s", e)
-            error_reply = _json.dumps({
-                "error": "SYSTEM_FAILURE",
-                "message": "Invalid AI response format",
-                "type": type(e).__name__,
-            })
-            assistant_message = _persist_message(
-                db, "assistant", error_reply, context, conversation_id=active_conversation_id
-            )
-            return _json_response(
-                ChatPostResponse(
-                    reply=error_reply,
-                    tools_available=_TOOLS_AVAILABLE,
-                    user_message=user_message,
-                    assistant_message=assistant_message,
+                logger.exception("HTTP exception in chat endpoint")
+                error_reply = _json.dumps({
+                    "error": "SYSTEM_FAILURE",
+                    "message": "AI provider connection failed",
+                    "type": "HTTPError",
+                })
+                assistant_message = _persist_message(
+                    db, "assistant", error_reply, context, conversation_id=active_conversation_id
                 )
-            )
-    finally:
-        if db is not None:
-            db.close()
+                return _json_response(
+                    ChatPostResponse(
+                        reply=error_reply,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+                )
+            except (KeyError, IndexError, ValueError) as e:
+                # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch parsing errors to prevent 502 errors.
+                # Return status 200 with structured error in reply field.
+                import json as _json
+
+                logger.exception("Parsing exception in chat endpoint: %s", e)
+                error_reply = _json.dumps({
+                    "error": "SYSTEM_FAILURE",
+                    "message": "Invalid AI response format",
+                    "type": type(e).__name__,
+                })
+                assistant_message = _persist_message(
+                    db, "assistant", error_reply, context, conversation_id=active_conversation_id
+                )
+                return _json_response(
+                    ChatPostResponse(
+                        reply=error_reply,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+                )
+        finally:
+            if db is not None:
+                db.close()
     # PHASE 3 — API STABILITY LOCK: Final catch-all exception handler
     # This should never be reached due to nested try/except, but provides ultimate safety
     except Exception as e:
