@@ -22,12 +22,7 @@ from backend.app.main import app  # noqa: E402
 
 TOKEN = "test-secret-key"
 
-_TINY_MP4 = (
-    b"\x00\x00\x00\x20ftyp"
-    b"isom\x00\x00\x02\x00"
-    b"isomiso2avc1mp41"
-    b"\x00\x00\x00\x08free"
-)
+_TINY_MP4 = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41\x00\x00\x00\x08free"
 
 
 @pytest.fixture(autouse=True)

@@ -85,18 +85,14 @@ class RuntimeRevalidationResult:
 # ---------------------------------------------------------------------------
 
 
-def _compute_proposal_file_hash(
-    contract_id: str, fpath: str, proposed_changes: str
-) -> str:
+def _compute_proposal_file_hash(contract_id: str, fpath: str, proposed_changes: str) -> str:
     """Return a deterministic SHA-256 fingerprint of a file in the mutation proposal.
 
     The hash encodes the governance contract ID, the file path, and the
     proposed change description so that any drift in any of those values
     produces a different hash, enabling tamper detection.
     """
-    return hashlib.sha256(
-        f"proposal:{contract_id}:{fpath}:{proposed_changes}".encode()
-    ).hexdigest()
+    return hashlib.sha256(f"proposal:{contract_id}:{fpath}:{proposed_changes}".encode()).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -168,14 +164,10 @@ def revalidate_runtime_state(
     # against a different contract version — execution must be blocked.
     # -----------------------------------------------------------------------
     governance_contract_id: str = str(governance_result.get("contract_id", "")).strip()
-    simulation_source_id: str = str(
-        simulation_result.get("source_contract_id", "")
-    ).strip()
+    simulation_source_id: str = str(simulation_result.get("source_contract_id", "")).strip()
 
     if not governance_contract_id:
-        details[CHECK_NO_CONFLICTS] = (
-            "FAILED: governance_result.contract_id is absent or empty"
-        )
+        details[CHECK_NO_CONFLICTS] = "FAILED: governance_result.contract_id is absent or empty"
         return RuntimeRevalidationResult(
             passed=False,
             failed_checks=[CHECK_NO_CONFLICTS],
@@ -268,14 +260,10 @@ def revalidate_runtime_state(
     # If file_snapshot_hashes is absent or empty the check is skipped —
     # "block if mismatch" cannot fire when there is no snapshot to compare.
     # -----------------------------------------------------------------------
-    file_snapshot_hashes: dict[str, str] = dict(
-        simulation_result.get("file_snapshot_hashes") or {}
-    )
+    file_snapshot_hashes: dict[str, str] = dict(simulation_result.get("file_snapshot_hashes") or {})
 
     if file_snapshot_hashes:
-        governance_contract_id: str = str(
-            governance_result.get("contract_id", "")
-        ).strip()
+        governance_contract_id: str = str(governance_result.get("contract_id", "")).strip()
         proposed_changes: str = str(proposal.get("proposed_changes", ""))
 
         mismatched: list[str] = []
@@ -292,8 +280,7 @@ def revalidate_runtime_state(
 
         if mismatched:
             details[CHECK_FILE_HASH_INTEGRITY] = (
-                f"FAILED: content hash mismatch for {len(mismatched)} file(s): "
-                f"{mismatched}"
+                f"FAILED: content hash mismatch for {len(mismatched)} file(s): {mismatched}"
             )
             return RuntimeRevalidationResult(
                 passed=False,
@@ -324,9 +311,7 @@ def revalidate_runtime_state(
     # simulation was produced against the exact governance audit session,
     # not just any result that shares the same contract_id.
     # -----------------------------------------------------------------------
-    governance_audit_id: str = str(
-        governance_result.get("audit_id", "")
-    ).strip()
+    governance_audit_id: str = str(governance_result.get("audit_id", "")).strip()
     sim_governance_audit_id: str = str(
         simulation_result.get("source_governance_audit_id", "")
     ).strip()

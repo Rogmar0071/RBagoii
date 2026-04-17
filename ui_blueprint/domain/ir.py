@@ -207,15 +207,9 @@ class DomainProfile:
             created_at=data.get("created_at", _now_rfc3339()),
             updated_at=data.get("updated_at", _now_rfc3339()),
             derived_from=DerivedFrom.from_dict(data.get("derived_from", {})),
-            capture_protocol=[
-                CaptureStep.from_dict(s) for s in data.get("capture_protocol", [])
-            ],
-            validators=[
-                ProfileValidator.from_dict(v) for v in data.get("validators", [])
-            ],
-            exporters=[
-                ProfileExporter.from_dict(e) for e in data.get("exporters", [])
-            ],
+            capture_protocol=[CaptureStep.from_dict(s) for s in data.get("capture_protocol", [])],
+            validators=[ProfileValidator.from_dict(v) for v in data.get("validators", [])],
+            exporters=[ProfileExporter.from_dict(e) for e in data.get("exporters", [])],
             notes=data.get("notes", ""),
         )
 
@@ -453,8 +447,6 @@ class BlueprintIR:
             completeness=Completeness.from_dict(data.get("completeness", {})),
             entities=[BlueprintEntity.from_dict(e) for e in data.get("entities", [])],
             relations=[BlueprintRelation.from_dict(r) for r in data.get("relations", [])],
-            constraints=[
-                BlueprintConstraint.from_dict(c) for c in data.get("constraints", [])
-            ],
+            constraints=[BlueprintConstraint.from_dict(c) for c in data.get("constraints", [])],
             provenance=[ProvenanceRecord.from_dict(p) for p in data.get("provenance", [])],
         )

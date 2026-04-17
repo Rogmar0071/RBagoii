@@ -195,8 +195,7 @@ def bridge_execution_gate(
         return BridgeGateResult(
             passed=False,
             blocked_reason=(
-                "block_if:runtime_revalidation_failed — "
-                f"{revalidation_result.blocked_reason}"
+                f"block_if:runtime_revalidation_failed — {revalidation_result.blocked_reason}"
             ),
             override_used=False,
             gate_notes=["HARD_BLOCK:runtime_revalidation_failed"],
@@ -227,9 +226,7 @@ def bridge_execution_gate(
                 override_used=False,
                 gate_notes=["HARD_BLOCK:high_risk_without_override"],
             )
-        notes.append(
-            f"override_accepted_for_high_risk: justification={override.justification!r}"
-        )
+        notes.append(f"override_accepted_for_high_risk: justification={override.justification!r}")
 
     # -----------------------------------------------------------------------
     # Condition 5: unresolved_failures_present
@@ -237,9 +234,7 @@ def bridge_execution_gate(
     #  verifies the bridge-specific invariant that execution_without_simulation
     #  is prohibited by confirming the simulation contract field is present)
     # -----------------------------------------------------------------------
-    sim_contract: str = str(
-        simulation_result.get("governance_contract", "")
-    ).strip()
+    sim_contract: str = str(simulation_result.get("governance_contract", "")).strip()
     if sim_contract != "MUTATION_SIMULATION_EXECUTION_V1":
         return BridgeGateResult(
             passed=False,

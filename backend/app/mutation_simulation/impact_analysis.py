@@ -42,9 +42,7 @@ _STRUCTURAL_IMPACT_BY_OP: dict[str, list[str]] = {
 _SCHEMA_RISK_EXTENSIONS: frozenset[str] = frozenset(
     {".json", ".yaml", ".yml", ".proto", ".graphql"}
 )
-_INTERFACE_RISK_EXTENSIONS: frozenset[str] = frozenset(
-    {".py", ".kt", ".java", ".ts", ".js"}
-)
+_INTERFACE_RISK_EXTENSIONS: frozenset[str] = frozenset({".py", ".kt", ".java", ".ts", ".js"})
 
 
 def _extension(path: str) -> str:
@@ -96,9 +94,7 @@ def analyze_impact(
 
     # Structural risk if multiple modules are impacted.
     if len(surface.impacted_modules) > 1:
-        structural.append(
-            f"cross_module_structural_impact:{len(surface.impacted_modules)}_modules"
-        )
+        structural.append(f"cross_module_structural_impact:{len(surface.impacted_modules)}_modules")
 
     # -----------------------------------------------------------------------
     # Behavioral impact
@@ -133,21 +129,15 @@ def analyze_impact(
     data_flow: list[str] = []
 
     if surface.dependency_links:
-        direct_count = sum(
-            1 for lnk in surface.dependency_links if lnk.get("type") == "direct"
-        )
-        indirect_count = sum(
-            1 for lnk in surface.dependency_links if lnk.get("type") == "indirect"
-        )
+        direct_count = sum(1 for lnk in surface.dependency_links if lnk.get("type") == "direct")
+        indirect_count = sum(1 for lnk in surface.dependency_links if lnk.get("type") == "indirect")
         if direct_count:
             data_flow.append(f"direct_dependency_data_flow:{direct_count}_links")
         if indirect_count:
             data_flow.append(f"indirect_dependency_data_flow:{indirect_count}_links")
 
     if len(surface.impacted_modules) > 2:
-        data_flow.append(
-            f"cross_module_data_flow_risk:{len(surface.impacted_modules)}_modules"
-        )
+        data_flow.append(f"cross_module_data_flow_risk:{len(surface.impacted_modules)}_modules")
 
     if not data_flow:
         data_flow.append("no_cross_module_data_flow_impact")

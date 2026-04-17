@@ -72,10 +72,7 @@ def client() -> TestClient:
 _TINY_MP4 = (
     # Minimal valid-ish MP4 stub (not a real playable video, but enough for
     # the upload endpoint which only saves the bytes without playing it).
-    b"\x00\x00\x00\x20ftyp"
-    b"isom\x00\x00\x02\x00"
-    b"isomiso2avc1mp41"
-    b"\x00\x00\x00\x08free"
+    b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41\x00\x00\x00\x08free"
 )
 
 
@@ -340,9 +337,7 @@ class TestChat:
         assert response.status_code == 200
         assert response.json()["schema_version"] == SCHEMA_VERSION
 
-    def test_chat_openai_success(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_chat_openai_success(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """When OPENAI_API_KEY is set and OpenAI responds, reply is returned."""
         from unittest.mock import MagicMock, patch
 
@@ -355,11 +350,8 @@ class TestChat:
             "choices": [{"message": {"content": "Here is how ui-blueprint works."}}]
         }
 
-        with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
-            mock_ctx = MagicMock()
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_ctx.post.return_value = mock_response
+        with patch("backend.app.chat_routes.httpx.post") as mock_post:
+            mock_post.return_value = mock_response
 
             response = client.post(
                 "/api/chat",
@@ -384,15 +376,10 @@ class TestChat:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "Safe reply."}}]
-        }
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Safe reply."}}]}
 
-        with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
-            mock_ctx = MagicMock()
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_ctx.post.return_value = mock_response
+        with patch("backend.app.chat_routes.httpx.post") as mock_post:
+            mock_post.return_value = mock_response
 
             response = client.post(
                 "/api/chat",
@@ -401,7 +388,7 @@ class TestChat:
             )
 
         assert response.status_code == 200
-        payload = mock_ctx.post.call_args.kwargs["json"]
+        payload = mock_post.call_args.kwargs["json"]
         assert "PROMPT-INJECTION DEFENSE" in payload["messages"][0]["content"]
         assert payload["messages"][-1]["content"].startswith("Latest user message")
         assert "<untrusted_text>" in payload["messages"][-1]["content"]
@@ -410,18 +397,15 @@ class TestChat:
     def test_chat_openai_timeout_returns_502(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When OpenAI times out, /api/chat returns 502 ai_provider_error."""
-        from unittest.mock import MagicMock, patch
+        """When OpenAI times out, /api/chat returns 200 with error in reply field."""
+        from unittest.mock import patch
 
         import httpx
 
         monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
 
-        with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
-            mock_ctx = MagicMock()
-            mock_client_cls.return_value.__enter__ = MagicMock(return_value=mock_ctx)
-            mock_client_cls.return_value.__exit__ = MagicMock(return_value=False)
-            mock_ctx.post.side_effect = httpx.TimeoutException("timed out")
+        with patch("backend.app.chat_routes.httpx.post") as mock_post:
+            mock_post.side_effect = httpx.TimeoutException("timed out")
 
             response = client.post(
                 "/api/chat",
@@ -429,10 +413,15 @@ class TestChat:
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
-        assert response.status_code == 502
+        # API_EXCEPTION_BOUNDARY_LOCK_V1: Now returns 200 with error in reply field
+        assert response.status_code == 200
         body = response.json()
-        assert body["error"]["code"] == "ai_provider_error"
-        assert body["error"]["details"]["hint"] == "timeout"
+        # The reply field contains a JSON-encoded error
+        import json
+        error_data = json.loads(body["reply"])
+        assert error_data["error"] == "SYSTEM_FAILURE"
+        assert error_data["message"] == "AI provider connection failed"
+        assert error_data["type"] == "HTTPError"
 
     def test_chat_history_returns_persisted_messages(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
@@ -495,16 +484,18 @@ class TestMigrations:
         # runs 0003 on the next upgrade head call.
         engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
         with engine.begin() as conn:
-            conn.execute(sa.text(
-                "CREATE TABLE global_chat_messages ("
-                "  id TEXT PRIMARY KEY,"
-                "  role TEXT NOT NULL,"
-                "  content TEXT NOT NULL,"
-                "  session_id TEXT,"
-                "  domain_profile_id TEXT,"
-                "  created_at TEXT"
-                ")"
-            ))
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE global_chat_messages ("
+                    "  id TEXT PRIMARY KEY,"
+                    "  role TEXT NOT NULL,"
+                    "  content TEXT NOT NULL,"
+                    "  session_id TEXT,"
+                    "  domain_profile_id TEXT,"
+                    "  created_at TEXT"
+                    ")"
+                )
+            )
         engine.dispose()
 
         # env.py reads DATABASE_URL from the environment; point it at our

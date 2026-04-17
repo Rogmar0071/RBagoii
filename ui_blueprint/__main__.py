@@ -131,7 +131,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Path to source MP4 file (omit when using --synthetic).",
     )
     p_extract.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         required=True,
         metavar="OUT_JSON",
         help="Output path for the blueprint JSON file.",
@@ -230,8 +231,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="results/audio_transcript.json",
         metavar="AUDIO_JSON",
         help=(
-            "Output path for the audio transcript JSON "
-            "(default: results/audio_transcript.json)."
+            "Output path for the audio transcript JSON (default: results/audio_transcript.json)."
         ),
     )
     p_split.add_argument(
@@ -240,8 +240,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="results/combined_analysis.json",
         metavar="COMBINED_JSON",
         help=(
-            "Output path for the combined analysis JSON "
-            "(default: results/combined_analysis.json)."
+            "Output path for the combined analysis JSON (default: results/combined_analysis.json)."
         ),
     )
     p_split.set_defaults(func=_cmd_split_analyze)

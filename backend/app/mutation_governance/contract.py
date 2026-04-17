@@ -42,9 +42,7 @@ class MutationContract:
         "missing_data",
     )
 
-    VALID_OPERATION_TYPES: frozenset[str] = frozenset(
-        op.value for op in OperationType
-    )
+    VALID_OPERATION_TYPES: frozenset[str] = frozenset(op.value for op in OperationType)
 
     def __init__(
         self,
@@ -140,6 +138,4 @@ class MutationGovernanceAuditRecord:
     validation_results: list[dict[str, Any]] = field(default_factory=list)
     blocked_reason: str | None = None
     status: str = "pending"
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

@@ -204,13 +204,10 @@ class SimulationOverride:
         if (
             not isinstance(self.accepted_risks, list)
             or not self.accepted_risks
-            or not all(
-                isinstance(r, str) and r.strip() for r in self.accepted_risks
-            )
+            or not all(isinstance(r, str) and r.strip() for r in self.accepted_risks)
         ):
             raise ValueError(
-                "override.accepted_risks must be a non-empty list of "
-                "non-empty strings"
+                "override.accepted_risks must be a non-empty list of non-empty strings"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -272,9 +269,7 @@ class SimulationResult:
     blocked_reason: str | None = None
     override_used: bool = False
     audit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # Execution boundary — enforced constants
     execution_boundary: dict[str, bool] = field(
         default_factory=lambda: {
@@ -329,6 +324,4 @@ class SimulationAuditRecord:
     decision: bool = False
     override_used: bool = False
     blocked_reason: str | None = None
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

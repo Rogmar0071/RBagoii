@@ -177,10 +177,7 @@ def _validate_governance_result(
 
     proposal = governance_result.get("mutation_proposal")
     if not isinstance(proposal, dict) or not proposal:
-        return (
-            "block_if:mutation_contract_not_validated - "
-            "mutation_proposal is absent or empty"
-        )
+        return "block_if:mutation_contract_not_validated - mutation_proposal is absent or empty"
 
     for field_name in _REQUIRED_PROPOSAL_FIELDS:
         value = proposal.get(field_name)
@@ -292,8 +289,7 @@ def simulation_gateway(
         except ValueError as exc:
             # Invalid override treated as absent - gate will block if needed.
             logger.warning(
-                "mutation_simulation: override rejected - %s; "
-                "treating as no-override",
+                "mutation_simulation: override rejected - %s; treating as no-override",
                 exc,
             )
             sim_override = None
@@ -456,8 +452,7 @@ def _build_reasoning_summary(
         f"OPERATION: {op} on {len(targets)} target file(s): {', '.join(targets[:5])}",
         f"PROPOSED CHANGE: {proposed}",
         "",
-        f"DEPENDENCY SURFACE ({n_impacted_files} impacted file(s), "
-        f"{n_modules} module(s)):",
+        f"DEPENDENCY SURFACE ({n_impacted_files} impacted file(s), {n_modules} module(s)):",
     ]
     if surface.impacted_files:
         for f in sorted(surface.impacted_files)[:10]:
@@ -479,9 +474,7 @@ def _build_reasoning_summary(
         f"{len(high_failures)} high-severity, {len(med_failures)} medium-severity):",
     ]
     for f in failures.predicted_failures[:8]:
-        lines.append(
-            f"  [{f.severity.upper()}] {f.failure_type}: {f.description[:150]}"
-        )
+        lines.append(f"  [{f.severity.upper()}] {f.failure_type}: {f.description[:150]}")
     if len(failures.predicted_failures) > 8:
         lines.append(f"  ... and {len(failures.predicted_failures) - 8} more")
 

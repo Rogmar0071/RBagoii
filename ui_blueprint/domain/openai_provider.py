@@ -188,17 +188,13 @@ class OpenAIDomainDerivationProvider(DomainDerivationProvider):
         self.__api_key = api_key  # name-mangled — never returned or logged
         self._model = model or os.environ.get("OPENAI_MODEL_DOMAIN", _DEFAULT_MODEL)
         self._base_url = base_url or os.environ.get("OPENAI_BASE_URL", _DEFAULT_BASE_URL)
-        self._timeout = timeout or float(
-            os.environ.get("OPENAI_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT)
-        )
+        self._timeout = timeout or float(os.environ.get("OPENAI_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT))
 
     # ------------------------------------------------------------------
     # DomainDerivationProvider interface
     # ------------------------------------------------------------------
 
-    def derive(
-        self, media_input: dict[str, Any], max_candidates: int = 3
-    ) -> list[DomainProfile]:
+    def derive(self, media_input: dict[str, Any], max_candidates: int = 3) -> list[DomainProfile]:
         """
         Call OpenAI to derive domain profile candidates.
 
@@ -214,9 +210,7 @@ class OpenAIDomainDerivationProvider(DomainDerivationProvider):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _call_openai(
-        self, media_input: dict[str, Any], max_candidates: int
-    ) -> list[DomainProfile]:
+    def _call_openai(self, media_input: dict[str, Any], max_candidates: int) -> list[DomainProfile]:
         media_id: str = media_input.get("media_id", "unknown")
         media_type: str = media_input.get("media_type", "video")
         hint: str = media_input.get("hint", "")
@@ -294,15 +288,11 @@ class OpenAIDomainDerivationProvider(DomainDerivationProvider):
 
         candidates_raw: list[dict[str, Any]] = parsed.get("candidates", [])
         if not candidates_raw:
-            raise OpenAIProviderError(
-                "OpenAI returned no candidates", hint="invalid_response"
-            )
+            raise OpenAIProviderError("OpenAI returned no candidates", hint="invalid_response")
 
         return [self._raw_to_profile(raw, media_input) for raw in candidates_raw[:max_candidates]]
 
-    def _raw_to_profile(
-        self, raw: dict[str, Any], media_input: dict[str, Any]
-    ) -> DomainProfile:
+    def _raw_to_profile(self, raw: dict[str, Any], media_input: dict[str, Any]) -> DomainProfile:
         media_id: str = media_input.get("media_id", "unknown")
         confidence: float = float(raw.get("confidence", 0.75))
 

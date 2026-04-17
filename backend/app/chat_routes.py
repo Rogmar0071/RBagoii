@@ -78,38 +78,29 @@ _TOOLS_AVAILABLE = [
 _CHAT_SYSTEM_PROMPT = (
     "You are UI Blueprint Assistant — a high-discipline AI that reasons about system "
     "architecture and structural behavior.\n\n"
-
     "You operate ONLY on data explicitly provided in this conversation.\n\n"
-
     "When reasoning about any codebase, media, or domain, "
     "you apply a three-pass internal model:\n\n"
-
     "PASS 1 — TOPOLOGY RECONSTRUCTION\n"
     "1. Identify system components and their relationships.\n"
     "2. Map data flow and control flow.\n"
     "3. Detect structural boundaries and dependencies.\n\n"
-
     "PASS 2 — INVARIANT DETECTION\n"
     "1. Identify constraints that must not be violated.\n"
     "2. Detect coupling, ownership, and responsibility boundaries.\n"
     "3. Define what must remain stable under change.\n\n"
-
     "PASS 3 — CONTROLLED MODIFICATION\n"
     "1. Propose only changes that preserve invariants.\n"
     "2. Avoid surface-level fixes that break deeper structure.\n"
     "3. Ensure changes align with system integrity.\n\n"
-
     "If required data is missing, explicitly state what is missing and request it.\n"
     "Default stance: "
     "'I only operate on data explicitly provided — please supply the relevant artifact.'\n\n"
-
     "Be concise and practical. Focus on structural causes, not surface symptoms."
 )
 
 _OPS_CONTEXT_HEADER = (
-    "\n\n--- Optional user-provided context ---\n"
-    "{snippet}\n"
-    "--- End of user-provided context ---"
+    "\n\n--- Optional user-provided context ---\n{snippet}\n--- End of user-provided context ---"
 )
 
 # ---------------------------------------------------------------------------
@@ -281,9 +272,7 @@ class ChatPostRequest(BaseModel):
     def _validate_context_scope(self) -> "ChatPostRequest":
         # CONTEXT_ASSEMBLY_ALIGNMENT_V2: project scope requires project_id.
         if self.context_scope == "project" and not self.project_id:
-            raise ValueError(
-                "project_id is required when context_scope is 'project'."
-            )
+            raise ValueError("project_id is required when context_scope is 'project'.")
         return self
 
 
@@ -585,15 +574,15 @@ def _call_openai_chat(
         "temperature": 0.3,
     }
 
-    with httpx.Client(timeout=timeout) as http:
-        response = http.post(
-            url,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+    response = httpx.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
 
     response.raise_for_status()
     data = response.json()
@@ -630,7 +619,7 @@ def _build_search_query(message: str) -> str:
     stripped = message.strip()
     if stripped.lower().startswith(_SEARCH_PREFIX):
         # Strip prefix using its length to handle case-insensitive match.
-        return stripped[len(_SEARCH_PREFIX):].strip()
+        return stripped[len(_SEARCH_PREFIX) :].strip()
     return stripped
 
 
@@ -922,8 +911,7 @@ def delete_conversation(
         return _error(
             400,
             "confirmation_required",
-            "Deleting 'legacy_default' requires explicit confirmation. "
-            "Retry with ?confirm=true.",
+            "Deleting 'legacy_default' requires explicit confirmation. Retry with ?confirm=true.",
         )
 
     db = _db_session()
@@ -938,9 +926,7 @@ def delete_conversation(
         from backend.app.models import GlobalChatMessage
 
         messages = db.exec(
-            select(GlobalChatMessage).where(
-                GlobalChatMessage.conversation_id == conversation_id
-            )
+            select(GlobalChatMessage).where(GlobalChatMessage.conversation_id == conversation_id)
         ).all()
         count = len(messages)
         for msg in messages:
@@ -1008,9 +994,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
     # by the UI or implicitly defaulted by the backend.  Internal-only — never exposed
     # to prompts, AI output, or API responses.
-    context_scope, context_origin = resolve_context_origin(
-        raw_context_scope=raw_context_scope
-    )
+    context_scope, context_origin = resolve_context_origin(raw_context_scope=raw_context_scope)
     logger.debug(
         "context_origin resolution: scope=%s origin=%s",
         context_scope,
@@ -1055,111 +1039,142 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         # Read OPENAI_API_KEY at call time -- never returned or logged.
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
-        if not openai_api_key:
-            # No OpenAI key — the stub reply still flows through mode_engine_gateway
-            # so that pre-generation constraints, all four validation stages, and
-            # mandatory audit logging run.  The stub path is NOT a bypass.
-            def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
-                return _stub_reply(message)
+        # API_EXCEPTION_BOUNDARY_LOCK_V1: wrap ALL execution in exception boundary
+        # to eliminate 502 errors and ensure structured error responses.
+        try:
+            if not openai_api_key:
+                # No OpenAI key — the stub reply still flows through mode_engine_gateway
+                # so that pre-generation constraints, all four validation stages, and
+                # mandatory audit logging run.  The stub path is NOT a bypass.
+                def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
+                    return _stub_reply(message)
 
-            reply, _audit = mode_engine_gateway(
-                user_intent=message,
-                modes=active_modes,
-                ai_call=_stub_ai_call,
-                base_system_prompt="",
-            )
-        else:
-            # Optionally retrieve web results for recency-sensitive queries.
-            search_results: list[dict[str, Any]] = []
-            if _needs_web_search(message):
-                try:
-                    from backend.app.web_search import TavilyKeyMissing, web_search
-
-                    query = _build_search_query(message)
-                    raw = web_search(query, recency_days=7, max_results=5)
-                    search_results = raw.get("results", [])
-                except TavilyKeyMissing:
-                    logger.info("web_search: TAVILY_API_KEY not set; skipping retrieval.")
-                except Exception:
-                    logger.warning("web_search call failed; continuing without retrieval.")
-
-            # Build base system prompt with ops context + optional retrieval results.
-            if search_results:
-                base_system_prompt = _build_retrieval_system_prompt(db, search_results)
+                reply, _audit = mode_engine_gateway(
+                    user_intent=message,
+                    modes=active_modes,
+                    ai_call=_stub_ai_call,
+                    base_system_prompt="",
+                )
             else:
-                base_system_prompt = _build_chat_system_prompt(db)
+                # Optionally retrieve web results for recency-sensitive queries.
+                search_results: list[dict[str, Any]] = []
+                if _needs_web_search(message):
+                    try:
+                        from backend.app.web_search import TavilyKeyMissing, web_search
 
-            # When agent_mode is enabled, append an instruction to use ARTIFACT format.
-            if agent_mode:
-                base_system_prompt += (
-                    "\n\nRespond using structured ARTIFACT sections. "
-                    "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
-                    "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
-                    "ARTIFACT_SOURCES, etc."
-                )
+                        query = _build_search_query(message)
+                        raw = web_search(query, recency_days=7, max_results=5)
+                        search_results = raw.get("results", [])
+                    except TavilyKeyMissing:
+                        logger.info("web_search: TAVILY_API_KEY not set; skipping retrieval.")
+                    except Exception:
+                        logger.warning("web_search call failed; continuing without retrieval.")
 
-            # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
-            # inject user-provided artifacts (order: after ops/retrieval, before mode injection).
-            # Artifacts are passed verbatim — no preprocessing, no summarization.
-            artifact_block = build_artifact_context_block(resolved_artifacts)
-            if artifact_block:
-                base_system_prompt += "\n\n" + artifact_block
+                # Build base system prompt with ops context + optional retrieval results.
+                if search_results:
+                    base_system_prompt = _build_retrieval_system_prompt(db, search_results)
+                else:
+                    base_system_prompt = _build_chat_system_prompt(db)
 
-            # Build the ai_call closure; mode constraints are injected by the gateway.
-            # This is the ONLY path through which _call_openai_chat is reached for
-            # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
-            def _openai_ai_call(system_prompt: str) -> str:
-                return _call_openai_chat(
-                    message,
-                    openai_api_key,
-                    history[:-1] if history else [],
-                    system_prompt=system_prompt,
-                )
+                # When agent_mode is enabled, append an instruction to use ARTIFACT format.
+                if agent_mode:
+                    base_system_prompt += (
+                        "\n\nRespond using structured ARTIFACT sections. "
+                        "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
+                        "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
+                        "ARTIFACT_SOURCES, etc."
+                    )
 
-            try:
+                # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
+                # inject user-provided artifacts (order: after ops/retrieval,
+                # before mode injection).
+                # Artifacts are passed verbatim — no preprocessing, no summarization.
+                artifact_block = build_artifact_context_block(resolved_artifacts)
+                if artifact_block:
+                    base_system_prompt += "\n\n" + artifact_block
+
+                # Build the ai_call closure; mode constraints are injected by the gateway.
+                # This is the ONLY path through which _call_openai_chat is reached for
+                # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
+                def _openai_ai_call(system_prompt: str) -> str:
+                    return _call_openai_chat(
+                        message,
+                        openai_api_key,
+                        history[:-1] if history else [],
+                        system_prompt=system_prompt,
+                    )
+
                 reply, _audit = mode_engine_gateway(
                     user_intent=message,
                     modes=active_modes,
                     ai_call=_openai_ai_call,
                     base_system_prompt=base_system_prompt,
                 )
-            except httpx.TimeoutException:
-                return _error(
-                    502,
-                    "ai_provider_error",
-                    "Chat request timed out.",
-                    {"hint": "timeout"},
-                )
-            except httpx.RequestError:
-                return _error(
-                    502,
-                    "ai_provider_error",
-                    "Network error contacting AI.",
-                    {"hint": "network_error"},
-                )
-            except (httpx.HTTPStatusError, KeyError, IndexError, ValueError):
-                return _error(
-                    502,
-                    "ai_provider_error",
-                    "Invalid response from AI.",
-                    {"hint": "invalid_response"},
-                )
 
-            # Append citations to the reply if retrieval was performed.
-            if search_results:
-                reply += _format_citations(search_results)
+                # Append citations to the reply if retrieval was performed.
+                if search_results:
+                    reply += _format_citations(search_results)
 
-        assistant_message = _persist_message(
-            db, "assistant", reply, context, conversation_id=active_conversation_id
-        )
-        return _json_response(
-            ChatPostResponse(
-                reply=reply,
-                tools_available=_TOOLS_AVAILABLE,
-                user_message=user_message,
-                assistant_message=assistant_message,
+            assistant_message = _persist_message(
+                db, "assistant", reply, context, conversation_id=active_conversation_id
             )
-        )
+            return _json_response(
+                ChatPostResponse(
+                    reply=reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            )
+        except (
+            httpx.TimeoutException,
+            httpx.RequestError,
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+        ):
+            # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch httpx exceptions to prevent 502 errors.
+            # Return status 200 with structured error in reply field (matching mode_engine pattern).
+            import json as _json
+
+            logger.exception("HTTP exception in chat endpoint")
+            error_reply = _json.dumps({
+                "error": "SYSTEM_FAILURE",
+                "message": "AI provider connection failed",
+                "type": "HTTPError",
+            })
+            assistant_message = _persist_message(
+                db, "assistant", error_reply, context, conversation_id=active_conversation_id
+            )
+            return _json_response(
+                ChatPostResponse(
+                    reply=error_reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            )
+        except (KeyError, IndexError, ValueError) as e:
+            # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch parsing errors to prevent 502 errors.
+            # Return status 200 with structured error in reply field.
+            import json as _json
+
+            logger.exception("Parsing exception in chat endpoint: %s", e)
+            error_reply = _json.dumps({
+                "error": "SYSTEM_FAILURE",
+                "message": "Invalid AI response format",
+                "type": type(e).__name__,
+            })
+            assistant_message = _persist_message(
+                db, "assistant", error_reply, context, conversation_id=active_conversation_id
+            )
+            return _json_response(
+                ChatPostResponse(
+                    reply=error_reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            )
     finally:
         if db is not None:
             db.close()
@@ -1224,9 +1239,7 @@ def edit_chat_message(message_id: str, body: dict[str, Any]) -> JSONResponse:
         if original is None:
             return _error(404, "not_found", "Message not found.")
         if original.role != "user":
-            return _error(
-                400, "invalid_request", "Only user messages may be edited."
-            )
+            return _error(400, "invalid_request", "Only user messages may be edited.")
 
         # Create the new (replacement) message, inheriting the original's
         # conversation_id so it stays within the same conversation boundary.

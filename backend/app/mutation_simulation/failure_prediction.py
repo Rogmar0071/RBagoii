@@ -225,8 +225,7 @@ def _evaluate_runtime_failures(
     for risk in real_risks:
         risk_lower = risk.lower()
         if any(
-            kw in risk_lower
-            for kw in ("contract", "schema", "invariant", "protocol", "interface")
+            kw in risk_lower for kw in ("contract", "schema", "invariant", "protocol", "interface")
         ):
             # These belong to contract_violation, skip here.
             continue
@@ -317,11 +316,11 @@ def _evaluate_contract_violations(
 
     # Contract-related risks
     contract_risks = [
-        r for r in risks
+        r
+        for r in risks
         if r.strip().lower() not in ("none", "n/a", "no risk")
         and any(
-            kw in r.lower()
-            for kw in ("contract", "schema", "invariant", "protocol", "interface")
+            kw in r.lower() for kw in ("contract", "schema", "invariant", "protocol", "interface")
         )
     ]
     for risk in contract_risks:
@@ -335,9 +334,7 @@ def _evaluate_contract_violations(
         )
 
     # Missing data violations
-    real_missing = [
-        m for m in missing_data if m.strip().lower() not in ("none", "n/a", "")
-    ]
+    real_missing = [m for m in missing_data if m.strip().lower() not in ("none", "n/a", "")]
     if real_missing:
         entries.append(
             PredictedFailure(

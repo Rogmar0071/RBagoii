@@ -33,7 +33,7 @@ from .contract import (
 # Thresholds
 # ---------------------------------------------------------------------------
 
-_HIGH_MODULE_THRESHOLD = 3   # >= this many impacted modules → elevated risk
+_HIGH_MODULE_THRESHOLD = 3  # >= this many impacted modules → elevated risk
 _HIGH_DEP_LINK_THRESHOLD = 5  # >= this many dep links → elevated risk
 
 
@@ -73,9 +73,7 @@ def score_risk(
         high_triggers.append("unknown_dependencies:incomplete_surface")
 
     if len(surface.impacted_modules) >= _HIGH_MODULE_THRESHOLD:
-        high_triggers.append(
-            f"cross_module_impact:{len(surface.impacted_modules)}_modules"
-        )
+        high_triggers.append(f"cross_module_impact:{len(surface.impacted_modules)}_modules")
 
     if any(
         kw in item
@@ -115,14 +113,10 @@ def score_risk(
         )
 
     if len(surface.impacted_modules) > 1:
-        medium_triggers.append(
-            f"limited_dependency_impact:{len(surface.impacted_modules)}_modules"
-        )
+        medium_triggers.append(f"limited_dependency_impact:{len(surface.impacted_modules)}_modules")
 
     if surface.dependency_links:
-        medium_triggers.append(
-            f"dependency_links_present:{len(surface.dependency_links)}"
-        )
+        medium_triggers.append(f"dependency_links_present:{len(surface.dependency_links)}")
 
     if any(f.severity == "medium" for f in failures.predicted_failures):
         medium_triggers.append("medium_severity_predicted_failure")

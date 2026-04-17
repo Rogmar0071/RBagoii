@@ -242,9 +242,7 @@ def get_domain_profile(domain_profile_id: str) -> JSONResponse:
 
 
 @router.patch("/domains/{domain_profile_id}", status_code=200, dependencies=[Depends(require_auth)])
-async def patch_domain_profile(
-    domain_profile_id: str, body: dict[str, Any]
-) -> JSONResponse:
+async def patch_domain_profile(domain_profile_id: str, body: dict[str, Any]) -> JSONResponse:
     """
     Edit a draft DomainProfile.  Rejected with 409 if not in draft status.
 
@@ -311,9 +309,7 @@ async def patch_domain_profile(
     status_code=200,
     dependencies=[Depends(require_auth)],
 )
-async def confirm_domain_profile(
-    domain_profile_id: str, body: dict[str, Any]
-) -> JSONResponse:
+async def confirm_domain_profile(domain_profile_id: str, body: dict[str, Any]) -> JSONResponse:
     """
     Confirm a draft DomainProfile, making it immutable and ready for compile.
 
@@ -400,8 +396,7 @@ async def compile_blueprint(body: dict[str, Any]) -> JSONResponse:
         return _error(
             400,
             "invalid_request",
-            "domain_profile_id is required."
-            " Derive a domain profile, confirm it, then compile.",
+            "domain_profile_id is required. Derive a domain profile, confirm it, then compile.",
         )
 
     profile, err = _get_profile_or_error(domain_profile_id)
@@ -411,9 +406,7 @@ async def compile_blueprint(body: dict[str, Any]) -> JSONResponse:
     media: dict[str, Any] = body.get("media", {})
 
     try:
-        blueprint = compileBlueprintFromMedia(
-            media=media, confirmed_domain_profile=profile
-        )
+        blueprint = compileBlueprintFromMedia(media=media, confirmed_domain_profile=profile)
     except BlueprintCompileError:
         return _error(
             400,

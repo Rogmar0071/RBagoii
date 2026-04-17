@@ -14,6 +14,7 @@ introduced by the analyze_repo pipeline:
   - repo_structure_json  Compact JSON summary (file tree + analysis excerpt).
 No table changes required.
 """
+
 from __future__ import annotations
 
 revision: str = "0009"

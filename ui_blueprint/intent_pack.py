@@ -42,6 +42,7 @@ def _build_completions_url(base: str) -> str:
         return f"{base}/chat/completions"
     return f"{base}/v1/chat/completions"
 
+
 _SYSTEM_PROMPT = """\
 You are an expert mobile/web UI analyst. You receive structured extraction data from a
 screen recording analysis pipeline (elements detected, UI events, screen chunks) and produce
@@ -110,9 +111,9 @@ def _build_segment_summary(segments: list[dict[str, Any]]) -> str:
         chunks = analysis.get("chunks", [])
 
         # Compact element type list (deduplicated)
-        element_types = list(
-            {e.get("type", "unknown") for e in elements if isinstance(e, dict)}
-        )[:8]
+        element_types = list({e.get("type", "unknown") for e in elements if isinstance(e, dict)})[
+            :8
+        ]
 
         # Compact event list
         event_kinds = list({e.get("kind", "unknown") for e in events if isinstance(e, dict)})[:6]
@@ -124,7 +125,7 @@ def _build_segment_summary(segments: list[dict[str, Any]]) -> str:
         t1 = seg.get("t1_ms", analysis.get("t1_ms", "?"))
 
         lines.append(
-            f"Segment {i+1} [{t0}ms–{t1}ms]: "
+            f"Segment {i + 1} [{t0}ms–{t1}ms]: "
             f"elements=[{', '.join(element_types) or 'none'}] "
             f"events=[{', '.join(event_kinds) or 'none'}] "
             f"key_scenes={key_scenes}"

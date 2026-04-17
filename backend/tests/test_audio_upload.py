@@ -69,8 +69,10 @@ class TestUploadAudio:
         fake_object_key = f"folders/{folder_id}/audio.m4a"
 
         mock_upload = MagicMock(return_value=fake_object_key)
-        with patch("backend.app.storage.storage_available", return_value=True), \
-             patch("backend.app.storage.upload_file", mock_upload):
+        with (
+            patch("backend.app.storage.storage_available", return_value=True),
+            patch("backend.app.storage.upload_file", mock_upload),
+        ):
             resp = client.post(
                 f"/v1/folders/{folder_id}/audio",
                 files={"audio": ("recording.m4a", io.BytesIO(audio_bytes), "audio/mp4")},
@@ -110,8 +112,10 @@ class TestUploadAudio:
 
         fake_object_key = f"folders/{folder_id}/audio.m4a"
         mock_upload = MagicMock(return_value=fake_object_key)
-        with patch("backend.app.storage.storage_available", return_value=True), \
-             patch("backend.app.storage.upload_file", mock_upload):
+        with (
+            patch("backend.app.storage.storage_available", return_value=True),
+            patch("backend.app.storage.upload_file", mock_upload),
+        ):
             resp = client.post(
                 f"/v1/folders/{folder_id}/audio",
                 files={"audio": ("recording.m4a", io.BytesIO(b"audio"), "audio/mp4")},

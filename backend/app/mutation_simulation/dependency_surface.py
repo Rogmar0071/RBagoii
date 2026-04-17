@@ -31,9 +31,7 @@ from .contract import DependencySurface
 _MODULE_ROOTS: tuple[str, ...] = ("backend/", "android/", "scripts/")
 
 # Paths that are explicitly blocked from appearing in target_files.
-_RESTRICTED_PATH_SEGMENTS: frozenset[str] = frozenset(
-    {".env", "secrets", "infra/credentials"}
-)
+_RESTRICTED_PATH_SEGMENTS: frozenset[str] = frozenset({".env", "secrets", "infra/credentials"})
 
 # Map file extensions to a language label used in dependency link descriptions.
 _LANG_MAP: dict[str, str] = {
@@ -92,7 +90,7 @@ def _infer_module(file_path: str) -> str:
     norm = file_path.replace("\\", "/").lstrip("/")
     for root in _MODULE_ROOTS:
         if norm.startswith(root):
-            relative = norm[len(root):]
+            relative = norm[len(root) :]
             break
     else:
         relative = norm
@@ -168,9 +166,7 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
     if blank_entries:
         return DependencySurface(
             complete=False,
-            incomplete_reason=(
-                "dependency_graph_unavailable:target_files_contains_blank_entries"
-            ),
+            incomplete_reason=("dependency_graph_unavailable:target_files_contains_blank_entries"),
         )
 
     # -----------------------------------------------------------------------
@@ -180,9 +176,7 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
     if restricted:
         return DependencySurface(
             complete=False,
-            incomplete_reason=(
-                f"dependency_graph_unavailable:restricted_paths={restricted}"
-            ),
+            incomplete_reason=(f"dependency_graph_unavailable:restricted_paths={restricted}"),
         )
 
     # -----------------------------------------------------------------------
@@ -192,9 +186,7 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
     if out_of_scope:
         return DependencySurface(
             complete=False,
-            incomplete_reason=(
-                f"dependency_graph_unavailable:out_of_scope_paths={out_of_scope}"
-            ),
+            incomplete_reason=(f"dependency_graph_unavailable:out_of_scope_paths={out_of_scope}"),
         )
 
     # -----------------------------------------------------------------------
@@ -228,9 +220,7 @@ def map_dependency_surface(contract_dict: dict[str, Any]) -> DependencySurface:
             dep_module = _infer_module(dep)
             if dep_module:
                 all_modules.add(dep_module)
-            dependency_links.append(
-                {"source": target, "target": dep, "type": "direct"}
-            )
+            dependency_links.append({"source": target, "target": dep, "type": "direct"})
             if dep not in seen:
                 seen.add(dep)
                 all_files.add(dep)

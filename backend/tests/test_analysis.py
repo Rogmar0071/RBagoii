@@ -65,12 +65,7 @@ _AUTH = {"Authorization": f"Bearer {TOKEN}"}
 # Helpers
 # ---------------------------------------------------------------------------
 
-_TINY_MP4 = (
-    b"\x00\x00\x00\x20ftyp"
-    b"isom\x00\x00\x02\x00"
-    b"isomiso2avc1mp41"
-    b"\x00\x00\x00\x08free"
-)
+_TINY_MP4 = b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41\x00\x00\x00\x08free"
 
 
 def _make_zip(files: dict[str, bytes]) -> bytes:
@@ -269,11 +264,13 @@ class TestZipExtraction:
     def test_valid_zip_extracted(self, tmp_path) -> None:
         from backend.app.analysis_job_processor import extract_zip
 
-        zip_bytes = _make_zip({
-            "app/src/main/AndroidManifest.xml": b"<manifest/>",
-            "README.md": b"# Project",
-            "src/main.kt": b"fun main() {}",
-        })
+        zip_bytes = _make_zip(
+            {
+                "app/src/main/AndroidManifest.xml": b"<manifest/>",
+                "README.md": b"# Project",
+                "src/main.kt": b"fun main() {}",
+            }
+        )
         zip_path = tmp_path / "test.zip"
         zip_path.write_bytes(zip_bytes)
         extract_dir = tmp_path / "out"
@@ -332,11 +329,13 @@ class TestZipExtraction:
     def test_irrelevant_files_skipped(self, tmp_path) -> None:
         from backend.app.analysis_job_processor import extract_zip
 
-        zip_bytes = _make_zip({
-            "notes.txt": b"hello",
-            "Thumbs.db": b"binary",
-            "app.kt": b"fun app(){}",
-        })
+        zip_bytes = _make_zip(
+            {
+                "notes.txt": b"hello",
+                "Thumbs.db": b"binary",
+                "app.kt": b"fun app(){}",
+            }
+        )
         zip_path = tmp_path / "test.zip"
         zip_path.write_bytes(zip_bytes)
         extract_dir = tmp_path / "out"
@@ -551,10 +550,12 @@ class TestProcessAnalysisJob:
         from backend.app.analysis_job_processor import process_analysis_job
         from backend.app.models import AnalysisJob
 
-        zip_bytes = _make_zip({
-            "app/src/main/AndroidManifest.xml": b"<manifest/>",
-            "app/src/main/java/Main.kt": b"fun main(){}",
-        })
+        zip_bytes = _make_zip(
+            {
+                "app/src/main/AndroidManifest.xml": b"<manifest/>",
+                "app/src/main/java/Main.kt": b"fun main(){}",
+            }
+        )
         zip_path = tmp_path / "repo.zip"
         zip_path.write_bytes(zip_bytes)
 
