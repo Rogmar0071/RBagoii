@@ -99,7 +99,7 @@ async def get_authenticated_user():
                 headers=headers,
                 timeout=10.0
             )
-            
+
             if response.status_code != 200:
                 logger.error(f"GitHub API error: {response.status_code} - {response.text}")
                 raise HTTPException(
@@ -148,7 +148,7 @@ async def list_user_repos(
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url, headers=headers, params=params, timeout=10.0)
-            
+
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail=f"GitHub user '{username}' not found")
             elif response.status_code != 200:
