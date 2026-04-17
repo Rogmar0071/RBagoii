@@ -486,6 +486,7 @@ class TestMutationGovernanceGateway:
     def test_valid_proposal_returns_approved(self):
         result = mutation_governance_gateway(
             user_intent="Add validation to process()",
+            modes=["strict_mode"],
             ai_call=_make_ai_call(_VALID_OUTPUT),
         )
         assert result.status == "approved"
@@ -493,23 +494,26 @@ class TestMutationGovernanceGateway:
         assert result.governance_contract == "MUTATION_GOVERNANCE_EXECUTION_V1"
 
     def test_execution_boundary_always_enforced(self):
-        result = mutation_governance_gateway(user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT))
+        result = mutation_governance_gateway(
+            user_intent="x", modes=["strict_mode"], ai_call=_make_ai_call(_VALID_OUTPUT)
+        )
         assert result.execution_boundary["no_git_commit"] is True
         assert result.execution_boundary["no_file_write"] is True
         assert result.execution_boundary["no_deployment_trigger"] is True
 
     def test_no_section_label_blocked_with_parse_failure(self):
-        """Output without SECTION_MUTATION_CONTRACT: label is immediately blocked."""
+        """Output without SECTION_MUTATION_CONTRACT: label is blocked in strict mode."""
         result = mutation_governance_gateway(
-            user_intent="x", ai_call=_make_ai_call("no label here")
+            user_intent="x", modes=["strict_mode"], ai_call=_make_ai_call("no label here")
         )
         assert result.status == "blocked"
         assert "parse_failure" in (result.blocked_reason or "")
 
     def test_pure_json_without_label_is_rejected(self):
-        """A perfect JSON response without the section label must be rejected."""
+        """A perfect JSON response without the section label is rejected in strict mode."""
         result = mutation_governance_gateway(
             user_intent="x",
+            modes=["strict_mode"],
             ai_call=_make_ai_call(json.dumps(_VALID_CONTRACT_DICT)),
         )
         assert result.status == "blocked"
@@ -523,7 +527,7 @@ class TestMutationGovernanceGateway:
             "SECTION_MUTATION_CONTRACT:\n" + json.dumps(bad, indent=2)
         )
         result = mutation_governance_gateway(
-            user_intent="expose secrets", ai_call=_make_ai_call(output)
+            user_intent="expose secrets", modes=["strict_mode"], ai_call=_make_ai_call(output)
         )
         assert result.status == "blocked" and result.mutation_proposal is None
 
@@ -535,49 +539,60 @@ class TestMutationGovernanceGateway:
             "SECTION_MUTATION_CONTRACT:\n" + json.dumps(bad, indent=2)
         )
         result = mutation_governance_gateway(
-            user_intent="add button", ai_call=_make_ai_call(output)
+            user_intent="add button", modes=["strict_mode"], ai_call=_make_ai_call(output)
         )
         assert result.status == "blocked"
 
-    def test_all_three_validation_stages_always_run(self):
-        result = mutation_governance_gateway(user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT))
+    def test_all_three_validation_stages_run_in_strict_mode(self):
+        """In strict mode with valid contract, all three validation stages run."""
+        result = mutation_governance_gateway(
+            user_intent="x", modes=["strict_mode"], ai_call=_make_ai_call(_VALID_OUTPUT)
+        )
         assert {vr["stage"] for vr in result.validation_results} == {
             "structural",
             "logical",
             "scope",
         }
 
-    def test_mode_engine_runs_before_contract_validation(self):
-        """mode_engine_gateway runs first; ai_call receives mode-injected prompt."""
+    def test_mode_engine_runs_in_strict_mode(self):
+        """In strict mode, mode_engine_gateway runs first and ai_call receives mode-injected prompt."""
         prompts: list[str] = []
 
         def _cap(p: str) -> str:
             prompts.append(p)
             return _VALID_OUTPUT
 
-        mutation_governance_gateway(user_intent="test ordering", ai_call=_cap)
+        mutation_governance_gateway(
+            user_intent="test ordering", modes=["strict_mode"], ai_call=_cap
+        )
         assert "MODE ENGINE EXECUTION V2 CONSTRAINTS" in " ".join(prompts)
 
-    def test_enforced_modes_include_required_set(self):
+    def test_strict_mode_includes_enforced_modes(self):
+        """In strict mode, enforced modes (prediction_mode, builder_mode) are added."""
         prompts: list[str] = []
 
         def _cap(p: str) -> str:
             prompts.append(p)
             return _VALID_OUTPUT
 
-        mutation_governance_gateway(user_intent="x", modes=None, ai_call=_cap)
+        mutation_governance_gateway(
+            user_intent="x", modes=["strict_mode"], ai_call=_cap
+        )
         combined = " ".join(prompts)
         assert "strict_mode" in combined
         assert "prediction_mode" in combined
         assert "builder_mode" in combined
 
     def test_approved_proposal_has_only_lowercase_json_keys(self):
-        result = mutation_governance_gateway(user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT))
+        result = mutation_governance_gateway(
+            user_intent="x", modes=["strict_mode"], ai_call=_make_ai_call(_VALID_OUTPUT)
+        )
         assert result.status == "approved"
         for key in result.mutation_proposal:
             assert key == key.lower(), f"{key!r} must be lowercase"
 
     def test_structured_result_always_returned_on_invalid_contract(self):
+        """In strict mode, invalid contracts return blocked status with structured result."""
         broken = (
             "SECTION_INTENT_ANALYSIS:\nASSUMPTIONS: s\nALTERNATIVES: a\n"
             "CONFIDENCE: low\nMISSING_DATA: none\n\nSECTION_MUTATION_CONTRACT:\n"
@@ -594,17 +609,22 @@ class TestMutationGovernanceGateway:
                 }
             )
         )
-        result = mutation_governance_gateway(user_intent="broken", ai_call=_make_ai_call(broken))
+        result = mutation_governance_gateway(
+            user_intent="broken", modes=["strict_mode"], ai_call=_make_ai_call(broken)
+        )
         assert result.status == "blocked" and isinstance(result.to_dict(), dict)
 
     def test_audit_written_for_approved(self):
+        """Audit is written for approved proposals in strict mode."""
         from sqlmodel import Session as S
         from sqlmodel import select
 
         import backend.app.database as db
         from backend.app.models import OpsEvent
 
-        mutation_governance_gateway(user_intent="audit test", ai_call=_make_ai_call(_VALID_OUTPUT))
+        mutation_governance_gateway(
+            user_intent="audit test", modes=["strict_mode"], ai_call=_make_ai_call(_VALID_OUTPUT)
+        )
         with S(db.get_engine()) as s:
             events = s.exec(
                 select(OpsEvent).where(
@@ -614,13 +634,16 @@ class TestMutationGovernanceGateway:
         assert len(events) >= 1
 
     def test_audit_written_for_blocked(self):
+        """Audit is written for blocked proposals in strict mode."""
         from sqlmodel import Session as S
         from sqlmodel import select
 
         import backend.app.database as db
         from backend.app.models import OpsEvent
 
-        mutation_governance_gateway(user_intent="blocked", ai_call=_make_ai_call("no label"))
+        mutation_governance_gateway(
+            user_intent="blocked", modes=["strict_mode"], ai_call=_make_ai_call("no label")
+        )
         with S(db.get_engine()) as s:
             events = s.exec(
                 select(OpsEvent).where(
