@@ -472,8 +472,20 @@ class TestMigrations:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Migration 0003 must add superseded_by_id to global_chat_messages."""
+        import sys
         import sqlalchemy as sa
-        import alembic.command as alembic_command
+        
+        # Remove backend directory from path to import alembic library
+        sys.path = [p for p in sys.path if 'backend' not in p.lower()]
+        
+        # Clear ANY alembic-related modules completely
+        mods_to_remove = [k for k in list(sys.modules.keys()) 
+                         if k == 'alembic' or k.startswith('alembic.')]
+        for mod in mods_to_remove:
+            sys.modules.pop(mod, None)
+        
+        # Now import alembic from site-packages
+        from alembic import command
         from alembic.config import Config
 
         db_path = tmp_path / "migration_test.db"
@@ -502,14 +514,15 @@ class TestMigrations:
         # isolated test DB so Alembic connects to the right file.
         monkeypatch.setenv("DATABASE_URL", db_url)
 
-        alembic_cfg = Config("backend/alembic.ini")
+        alembic_cfg = Config("alembic.ini")  # Run from backend dir
+        alembic_cfg.set_main_option("script_location", "alembic")
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 
         # Stamp at 0002: Alembic believes migrations 0001+0002 already ran.
-        alembic_command.stamp(alembic_cfg, "0002")
+        command.stamp(alembic_cfg, "0002")
 
         # Run only migration 0003.
-        alembic_command.upgrade(alembic_cfg, "head")
+        command.upgrade(alembic_cfg, "head")
 
         # Verify the column was added.
         engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
@@ -526,8 +539,21 @@ class TestMigrations:
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """On a greenfield DB (no global_chat_messages), migration 0003 is a no-op."""
+        import sys
         import sqlalchemy as sa
-        import alembic.command as alembic_command
+        
+        # Remove backend directory from path to import alembic library
+        # Keep it removed for the entire test
+        sys.path = [p for p in sys.path if 'backend' not in p.lower()]
+        
+        # Clear ANY alembic-related modules completely
+        mods_to_remove = [k for k in list(sys.modules.keys()) 
+                         if k == 'alembic' or k.startswith('alembic.')]
+        for mod in mods_to_remove:
+            sys.modules.pop(mod, None)
+        
+        # Force fresh import from site-packages
+        from alembic import command
         from alembic.config import Config
 
         db_path = tmp_path / "greenfield_test.db"
@@ -539,13 +565,14 @@ class TestMigrations:
 
         monkeypatch.setenv("DATABASE_URL", db_url)
 
-        alembic_cfg = Config("backend/alembic.ini")
+        alembic_cfg = Config("alembic.ini")  # Run from backend dir
+        alembic_cfg.set_main_option("script_location", "alembic")
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 
         # Stamp at 0002 to simulate greenfield deployment that already ran
         # migrations 0001+0002 but init_db() hasn't run yet.
-        alembic_command.stamp(alembic_cfg, "0002")
+        command.stamp(alembic_cfg, "0002")
 
         # upgrade head should complete without error even though the table
         # is absent (migration 0003 guards with inspector.get_table_names()).
-        alembic_command.upgrade(alembic_cfg, "head")
+        command.upgrade(alembic_cfg, "head")
