@@ -342,44 +342,28 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
 
-                // Get file info
-                val cursor = contentResolver.query(uri, null, null, null, null)
-                val filename = cursor?.use {
-                    if (it.moveToFirst()) {
-                        val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        if (nameIndex >= 0) it.getString(nameIndex) else "file"
-                    } else "file"
-                } ?: "file"
-
-                // Copy file to temp location
-                val tempFile = File(cacheDir, filename)
-                contentResolver.openInputStream(uri)?.use { input ->
-                    tempFile.outputStream().use { output ->
-                        input.copyTo(output)
+                // Use the chunked upload helper
+                val success = ChatFileUploadHelper.uploadFile(
+                    uri = uri,
+                    conversationId = convId,
+                    apiKey = apiKey,
+                    baseUrl = baseUrl,
+                    contentResolver = contentResolver,
+                    cacheDir = cacheDir,
+                    onProgress = { current, total ->
+                        runOnUiThread {
+                            if (total > 1) {
+                                Toast.makeText(
+                                    this,
+                                    "Uploading… chunk $current/$total",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
                     }
-                }
+                )
 
-                val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
-
-                val requestBody = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart(
-                        "file",
-                        filename,
-                        tempFile.asRequestBody(mimeType.toMediaType())
-                    )
-                    .build()
-
-                val request = Request.Builder()
-                    .url("$baseUrl/api/chat/$convId/files")
-                    .addHeader("Authorization", "Bearer $apiKey")
-                    .post(requestBody)
-                    .build()
-
-                val response = BackendClient.executeWithRetry(request)
-                tempFile.delete()
-
-                if (response.isSuccessful) {
+                if (success) {
                     runOnUiThread {
                         Toast.makeText(this, getString(R.string.status_file_uploaded), Toast.LENGTH_SHORT).show()
                         loadChatFiles()
@@ -392,7 +376,6 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                             Toast.LENGTH_SHORT
                         ).show()
                     }
-                    Log.e("ChatActivity", "Upload failed: ${response.code}")
                 }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error uploading file", e)
