@@ -1,65 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.drawerlayout.widget.DrawerLayout
+<LinearLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
-    android:id="@+id/drawerLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:orientation="vertical"
     android:background="@color/black"
     tools:context=".MainActivity">
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         Main content
-         ═══════════════════════════════════════════════════════════════════ -->
+    <!-- Custom dark toolbar row -->
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical"
-        android:background="@color/black">
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="@color/black"
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:gravity="center_vertical">
 
-        <!-- Custom dark toolbar row -->
-        <LinearLayout
-            android:layout_width="match_parent"
+        <TextView
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:background="@color/black"
-            android:paddingStart="4dp"
-            android:paddingEnd="4dp"
-            android:paddingTop="8dp"
-            android:paddingBottom="8dp"
-            android:gravity="center_vertical">
+            android:layout_weight="1"
+            android:paddingStart="8dp"
+            android:text="@string/app_name"
+            android:textColor="@color/text_primary"
+            android:textSize="18sp"
+            android:textStyle="bold" />
 
-            <androidx.appcompat.widget.AppCompatImageButton
-                android:id="@+id/btnDrawerToggle"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_sort_by_size"
-                android:contentDescription="@string/drawer_open"
-                app:tint="@color/icon_tint"
-                android:scaleType="center" />
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:paddingStart="8dp"
-                android:text="@string/app_name"
-                android:textColor="@color/text_primary"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <androidx.appcompat.widget.AppCompatImageButton
-                android:id="@+id/btnNewChat"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_input_add"
-                android:contentDescription="@string/action_new_chat"
-                app:tint="@color/icon_tint"
-                android:scaleType="center" />
-        </LinearLayout>
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnNewChat"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_input_add"
+            android:contentDescription="@string/action_new_chat"
+            app:tint="@color/icon_tint"
+            android:scaleType="center" />
+    </LinearLayout>
 
         <!-- Status strip -->
         <TextView
@@ -282,79 +263,5 @@
                 android:contentDescription="@string/btn_send"
                 android:scaleType="center" />
         </LinearLayout>
-    </LinearLayout>
 
-    <!-- ═══════════════════════════════════════════════════════════════════
-         Drawer panel: Projects list (left side, min 320dp)
-         ═══════════════════════════════════════════════════════════════════ -->
-    <LinearLayout
-        android:id="@+id/drawerPanel"
-        android:layout_width="@dimen/drawer_min_width"
-        android:layout_height="match_parent"
-        android:layout_gravity="start"
-        android:orientation="vertical"
-        android:background="@color/black"
-        android:elevation="8dp">
-
-        <!-- Header row -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:padding="16dp"
-            android:gravity="center_vertical">
-
-            <TextView
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="@string/label_projects"
-                android:textColor="@color/text_primary"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <androidx.appcompat.widget.AppCompatImageButton
-                android:id="@+id/btnCloseDrawer"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:src="@android:drawable/ic_menu_close_clear_cancel"
-                app:tint="@color/icon_tint"
-                android:contentDescription="@string/drawer_close"
-                android:scaleType="center" />
-        </LinearLayout>
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider" />
-
-        <TextView
-            android:id="@+id/tvProjectsEmpty"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:padding="16dp"
-            android:text="@string/label_projects_empty"
-            android:textColor="@color/text_secondary"
-            android:textSize="13sp"
-            android:visibility="gone" />
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rvFolders"
-            android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1"
-            android:clipToPadding="false"
-            android:padding="4dp" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnNewProject"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_margin="12dp"
-            android:text="@string/btn_new_project"
-            android:textColor="@color/text_primary"
-            android:textSize="14sp" />
-    </LinearLayout>
-
-</androidx.drawerlayout.widget.DrawerLayout>
+</LinearLayout>

@@ -1,12 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.drawerlayout.widget.DrawerLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/drawerLayout"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/black"
     tools:context=".ChatActivity">
+
+    <!-- Main content -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="@color/black">
+
+        <!-- App toolbar -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:gravity="center_vertical"
+            android:background="@color/surface">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/app_name"
+                android:textColor="@color/text_primary"
+                android:textStyle="bold"
+                android:textSize="18sp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/btnFilesMenu"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_menu_sort_by_size"
+                app:tint="@color/icon_tint"
+                android:contentDescription="@string/label_chat_files"
+                android:scaleType="center" />
+        </LinearLayout>
 
     <!-- Multi-select contextual toolbar (hidden by default) -->
     <LinearLayout
@@ -159,4 +197,14 @@
             android:scaleType="center" />
     </LinearLayout>
 
-</LinearLayout>
+    </LinearLayout>
+
+    <!-- File management panel (right side drawer, 40% width) -->
+    <include
+        android:id="@+id/filesPanel"
+        layout="@layout/fragment_chat_files"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="end" />
+
+</androidx.drawerlayout.widget.DrawerLayout>

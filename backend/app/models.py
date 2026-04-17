@@ -318,3 +318,47 @@ class AnalysisJob(SQLModel, table=True):
         if "updated_at" not in data or data["updated_at"] is None:
             data["updated_at"] = _utcnow()
         super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# chat_files
+# ---------------------------------------------------------------------------
+
+
+class ChatFile(SQLModel, table=True):
+    """Files uploaded to a chat conversation for AI reference."""
+
+    __tablename__ = "chat_files"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # Conversation this file belongs to
+    conversation_id: str = Field(index=True)
+    # Original filename
+    filename: str = Field(sa_column=Column(sa.Text))
+    # MIME type
+    mime_type: str = Field(sa_column=Column(sa.Text))
+    # File size in bytes
+    size_bytes: int
+    # Object storage key
+    object_key: str = Field(sa_column=Column(sa.Text))
+    # Category for grouping (document, image, code, data, etc.)
+    category: str = Field(default="other")
+    # Whether file is included in AI context
+    included_in_context: bool = Field(default=True)
+    # AI-friendly extracted text content (for searchable files)
+    extracted_text: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
+        super().__init__(**data)

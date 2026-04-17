@@ -11,18 +11,14 @@ import android.content.res.ColorStateList
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.view.MenuItem
 import android.view.View
 import android.widget.EditText
 import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.ActionBarDrawerToggle
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.view.GravityCompat
-import androidx.drawerlayout.widget.DrawerLayout
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import com.google.android.material.chip.Chip
@@ -39,30 +35,20 @@ import java.util.concurrent.Executors
  * Main (Home) screen.
  *
  * Shows:
- *  - A hamburger-icon AppBar that opens the Projects drawer.
- *  - A left-side drawer (~half screen, min 320dp) listing all projects fetched
- *    from GET /v1/folders via a scrollable RecyclerView, plus a "New Project" button.
  *  - Main area: global chat panel with RecyclerView, always-visible Copy/Share/Edit
  *    action rows, multi-select mode, and Agent Mode toggle.
- *
- * All recording, gallery-pick, and analyze actions have been moved to
- * FolderDetailActivity so that each clip is automatically associated with a project.
  */
 class MainActivity : AppCompatActivity(),
-    FolderAdapter.FolderActionListener,
     ChatMessageAdapter.MessageActionListener {
 
     private lateinit var binding: ActivityMainBinding
-    private lateinit var drawerToggle: ActionBarDrawerToggle
     private lateinit var prefs: SharedPreferences
-    private val folderAdapter = FolderAdapter(this)
     private lateinit var chatAdapter: ChatMessageAdapter
     private val homeConversations = mutableListOf<HomeConversation>()
     private var activeConversationId: String? = null
     private var isCreatingConversation = false
 
     private val chatExecutor = Executors.newSingleThreadExecutor { Thread(it, "GlobalChat-worker") }
-    private val projectExecutor = Executors.newSingleThreadExecutor { Thread(it, "NewProject-worker") }
 
     private val attachPickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent(),
@@ -119,23 +105,8 @@ class MainActivity : AppCompatActivity(),
 
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        setupDrawer()
-        setupFolderList()
         setupChatList()
 
-        // Wire hamburger and close-drawer buttons
-        binding.btnDrawerToggle.setOnClickListener {
-            if (binding.drawerLayout.isDrawerOpen(GravityCompat.START)) {
-                binding.drawerLayout.closeDrawer(GravityCompat.START)
-            } else {
-                binding.drawerLayout.openDrawer(GravityCompat.START)
-            }
-        }
-        binding.btnCloseDrawer.setOnClickListener {
-            binding.drawerLayout.closeDrawer(GravityCompat.START)
-        }
-
-        binding.btnNewProject.setOnClickListener { onNewProjectClicked() }
         binding.btnNewChat.setOnClickListener { createHomeConversation() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
@@ -157,7 +128,6 @@ class MainActivity : AppCompatActivity(),
             updateMultiSelectToolbar()
         }
 
-        loadFolders()
         restoreHomeConversations()
         if (activeConversationId != null) {
             loadGlobalChat()
@@ -166,161 +136,9 @@ class MainActivity : AppCompatActivity(),
         }
     }
 
-    override fun onResume() {
-        super.onResume()
-        loadFolders()
-    }
-
-    override fun onPostCreate(savedInstanceState: Bundle?) {
-        super.onPostCreate(savedInstanceState)
-        drawerToggle.syncState()
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (drawerToggle.onOptionsItemSelected(item)) return true
-        return super.onOptionsItemSelected(item)
-    }
-
     override fun onDestroy() {
         super.onDestroy()
         chatExecutor.shutdownNow()
-        projectExecutor.shutdownNow()
-    }
-
-    // -------------------------------------------------------------------------
-    // Drawer setup
-    // -------------------------------------------------------------------------
-
-    private fun setupDrawer() {
-        supportActionBar?.setDisplayHomeAsUpEnabled(true)
-        supportActionBar?.setHomeButtonEnabled(true)
-
-        drawerToggle = ActionBarDrawerToggle(
-            this,
-            binding.drawerLayout,
-            R.string.drawer_open,
-            R.string.drawer_close,
-        )
-        binding.drawerLayout.addDrawerListener(drawerToggle)
-
-        // Adjust drawer width: at least drawer_min_width, or half the screen on wider devices.
-        val screenWidth = resources.displayMetrics.widthPixels
-        val minWidthPx = resources.getDimensionPixelSize(R.dimen.drawer_min_width)
-        val targetWidthPx = maxOf(minWidthPx, screenWidth / 2)
-        val drawerParams = binding.drawerPanel.layoutParams as DrawerLayout.LayoutParams
-        drawerParams.width = targetWidthPx
-        binding.drawerPanel.layoutParams = drawerParams
-    }
-
-    // -------------------------------------------------------------------------
-    // Folder/Project list (RecyclerView in drawer)
-    // -------------------------------------------------------------------------
-
-    private fun setupFolderList() {
-        binding.rvFolders.layoutManager = LinearLayoutManager(this)
-        binding.rvFolders.adapter = folderAdapter
-    }
-
-    private fun loadFolders() {
-        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
-        val apiKey = BuildConfig.BACKEND_API_KEY
-
-        val request = Request.Builder()
-            .url("$baseUrl/v1/folders")
-            .get()
-            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-            .build()
-
-        projectExecutor.execute {
-            try {
-                val response = BackendClient.executeWithRetry(request)
-                response.use { resp ->
-                    val bodyStr = resp.body?.string() ?: ""
-                    if (resp.isSuccessful) {
-                        val foldersArray = runCatching {
-                            JSONObject(bodyStr).getJSONArray("folders")
-                        }.getOrNull() ?: JSONArray()
-                        val items = parseFolderItems(foldersArray)
-                        runOnUiThread {
-                            folderAdapter.submitList(items)
-                            binding.tvProjectsEmpty.visibility =
-                                if (items.isEmpty()) View.VISIBLE else View.GONE
-                        }
-                    }
-                }
-            } catch (_: IOException) {
-                // Best-effort: keep whatever is currently shown.
-            }
-        }
-    }
-
-    private fun parseFolderItems(array: JSONArray): List<FolderItem> {
-        val result = mutableListOf<FolderItem>()
-        for (i in 0 until array.length()) {
-            val obj = array.getJSONObject(i)
-            val id = obj.optString("id")
-            if (id.isBlank()) continue
-            val title = obj.optString("title", "")
-            val status = obj.optString("status", "")
-            val label = if (title.isNotBlank()) title else "Project ${id.take(8)}"
-            result.add(FolderItem(id, status, label))
-        }
-        return result
-    }
-
-    // -------------------------------------------------------------------------
-    // New Project
-    // -------------------------------------------------------------------------
-
-    private fun onNewProjectClicked() {
-        binding.tvStatus.text = getString(R.string.status_creating_project)
-        binding.btnNewProject.isEnabled = false
-
-        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
-        val apiKey = BuildConfig.BACKEND_API_KEY
-
-        val request = Request.Builder()
-            .url("$baseUrl/v1/folders")
-            .post("{}".toRequestBody("application/json".toMediaType()))
-            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-            .build()
-
-        projectExecutor.execute {
-            try {
-                val response = BackendClient.executeWithRetry(request)
-                val folderJson = response.use { resp ->
-                    if (!resp.isSuccessful) throw IOException("HTTP ${resp.code}")
-                    JSONObject(resp.body?.string() ?: "{}")
-                }
-                val folderId = folderJson.getString("id")
-                val title = folderJson.optString("title", "")
-                val label = if (title.isNotBlank()) title else "Project ${folderId.take(8)}"
-                val newItem = FolderItem(folderId, "new", label)
-
-                runOnUiThread {
-                    binding.tvStatus.text = getString(R.string.status_idle)
-                    binding.btnNewProject.isEnabled = true
-                    // Insert at top of list immediately; onResume will reload from server.
-                    folderAdapter.prependIfAbsent(newItem)
-                    binding.tvProjectsEmpty.visibility = View.GONE
-                    binding.drawerLayout.closeDrawers()
-                    val intent = Intent(this, FolderDetailActivity::class.java)
-                    intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_ID, folderId)
-                    intent.putExtra(FolderDetailActivity.EXTRA_FOLDER_TITLE, label)
-                    startActivity(intent)
-                }
-            } catch (e: IOException) {
-                runOnUiThread {
-                    binding.tvStatus.text = getString(R.string.status_idle)
-                    binding.btnNewProject.isEnabled = true
-                    Toast.makeText(
-                        this,
-                        "Failed to create project: ${e.message}",
-                        Toast.LENGTH_LONG,
-                    ).show()
-                }
-            }
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -936,110 +754,6 @@ class MainActivity : AppCompatActivity(),
         )
     }
 
-    // -------------------------------------------------------------------------
-    // Folder rename / delete dialogs
-    // -------------------------------------------------------------------------
-
-    override fun onRenameFolder(folderId: String, currentTitle: String) {
-        val editText = EditText(this).apply {
-            hint = getString(R.string.dialog_rename_hint)
-            setText(currentTitle)
-            selectAll()
-        }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dialog_rename_title))
-            .setView(editText)
-            .setPositiveButton(getString(R.string.dialog_btn_rename)) { _, _ ->
-                val newTitle = editText.text.toString().trim()
-                if (newTitle.isBlank()) {
-                    Toast.makeText(this, getString(R.string.error_title_empty), Toast.LENGTH_SHORT).show()
-                    return@setPositiveButton
-                }
-                callRenameFolder(folderId, newTitle)
-            }
-            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-            .show()
-    }
-
-    override fun onDeleteFolder(folderId: String, currentStatus: String) {
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.dialog_delete_title))
-            .setMessage(getDeleteFolderMessage(currentStatus))
-            .setPositiveButton(getString(R.string.dialog_btn_delete)) { _, _ ->
-                callDeleteFolder(folderId)
-            }
-            .setNegativeButton(getString(R.string.dialog_btn_cancel), null)
-            .show()
-    }
-
-    private fun getDeleteFolderMessage(currentStatus: String?): String {
-        val status = currentStatus?.trim().orEmpty()
-        return if (status.isBlank()) {
-            getString(R.string.dialog_delete_message)
-        } else {
-            getString(R.string.dialog_delete_message_with_status, status)
-        }
-    }
-
-    private fun callRenameFolder(folderId: String, newTitle: String) {
-        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
-        val apiKey = BuildConfig.BACKEND_API_KEY
-        val body = JSONObject().put("title", newTitle).toString()
-            .toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url("$baseUrl/v1/folders/$folderId")
-            .patch(body)
-            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-            .build()
-
-        projectExecutor.execute {
-            try {
-                BackendClient.executeWithRetry(request).use { resp ->
-                    runOnUiThread {
-                        if (resp.isSuccessful) {
-                            loadFolders()
-                        } else {
-                            Toast.makeText(this, getString(R.string.error_rename_failed), Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            } catch (_: IOException) {
-                runOnUiThread {
-                    Toast.makeText(this, getString(R.string.error_rename_failed), Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    private fun callDeleteFolder(folderId: String) {
-        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
-        val apiKey = BuildConfig.BACKEND_API_KEY
-        val request = Request.Builder()
-            .url("$baseUrl/v1/folders/$folderId")
-            .delete()
-            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-            .build()
-
-        projectExecutor.execute {
-            try {
-                BackendClient.executeWithRetry(request).use { resp ->
-                    runOnUiThread {
-                        if (resp.isSuccessful || resp.code == 404) {
-                            loadFolders()
-                        } else {
-                            Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
-            } catch (_: IOException) {
-                runOnUiThread {
-                    Toast.makeText(this, getString(R.string.error_delete_failed), Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
-    data class FolderItem(val id: String, val status: String, val label: String)
     data class HomeConversation(
         val id: String,
         val label: String,

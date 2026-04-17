@@ -45,6 +45,7 @@ from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
+from backend.app.models import ChatFile  # Import ChatFile model
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
 from ui_blueprint.prompt_security import (
@@ -211,6 +212,7 @@ class ChatContext(BaseModel):
 
     session_id: str | None = None
     domain_profile_id: str | None = None
+    files: list[dict[str, Any]] | None = None  # File references for AI context
 
 
 class ChatMessageResponse(BaseModel):
@@ -891,10 +893,12 @@ def delete_conversation(
     confirm: bool = Query(default=False),
 ) -> JSONResponse:
     """
-    Delete all messages belonging to the given conversation_id.
+    Delete all messages and files belonging to the given conversation_id.
 
     CONVERSATION_LIFECYCLE_V1:
     - Deletes ALL messages for the specified conversation.
+    - Deletes ALL files uploaded to the conversation (CASCADE).
+    - Deletes file objects from R2/S3 storage.
     - Does NOT affect any other conversation.
 
     RULE 4 — DELETE SAFETY:
@@ -903,7 +907,7 @@ def delete_conversation(
 
     Response::
 
-        { "deleted": <count> }
+        { "deleted_messages": <count>, "deleted_files": <count> }
     """
     # RULE 4: legacy_default is the backward-compatibility containment zone.
     # Silent deletion is not allowed — caller must pass ?confirm=true.
@@ -924,15 +928,53 @@ def delete_conversation(
 
     try:
         from backend.app.models import GlobalChatMessage
+        from backend.app.storage import delete_object
 
+        # Delete all messages
         messages = db.exec(
             select(GlobalChatMessage).where(GlobalChatMessage.conversation_id == conversation_id)
         ).all()
-        count = len(messages)
+        message_count = len(messages)
         for msg in messages:
             db.delete(msg)
+
+        # CASCADE DELETE: Delete all files associated with this conversation
+        files = db.exec(
+            select(ChatFile).where(ChatFile.conversation_id == conversation_id)
+        ).all()
+        file_count = len(files)
+
+        # Delete from object storage first, then from database
+        for file in files:
+            try:
+                # Delete from R2/S3
+                delete_object(file.object_key)
+                logger.info(f"Deleted file from storage: {file.object_key}")
+            except Exception as e:
+                # Log but continue - don't fail entire deletion if storage cleanup fails
+                logger.warning(f"Failed to delete file from storage: {file.object_key}, error: {e}")
+
+            # Delete from database
+            db.delete(file)
+
         db.commit()
-        return JSONResponse(status_code=200, content={"deleted": count})
+        # Return counts - maintain backward compatibility with "deleted" field
+        return JSONResponse(
+            status_code=200,
+            content={
+                "deleted": message_count,  # Backward compatibility
+                "deleted_messages": message_count,
+                "deleted_files": file_count
+            }
+        )
+    except Exception as e:
+        logger.exception("Error deleting conversation")
+        db.rollback()
+        return _error(
+            500,
+            "delete_failed",
+            f"Failed to delete conversation: {str(e)}",
+        )
     finally:
         db.close()
 
@@ -1092,6 +1134,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 artifact_block = build_artifact_context_block(resolved_artifacts)
                 if artifact_block:
                     base_system_prompt += "\n\n" + artifact_block
+
+                # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
+                if context.files:
+                    file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
+                    for file_ref in context.files:
+                        file_id_str = file_ref.get("id", "")
+                        filename = file_ref.get("filename", "unnamed")
+                        category = file_ref.get("category", "other")
+                        file_block += f"\n- {filename} (Category: {category})"
+
+                        # Fetch file content from database if text was extracted
+                        try:
+                            file_uuid = uuid.UUID(file_id_str)
+                            stmt = select(ChatFile).where(ChatFile.id == file_uuid)
+                            chat_file = db.exec(stmt).first()
+                            if chat_file and chat_file.extracted_text:
+                                # Truncate to reasonable size for context
+                                content = chat_file.extracted_text[:5000]
+                                if len(chat_file.extracted_text) > 5000:
+                                    content += "\n...[truncated]"
+                                file_block += f"\n  Content preview:\n{content}\n"
+                        except (ValueError, AttributeError):
+                            pass  # Invalid UUID or missing data, skip content
+
+                    file_block += "\n--- End of Uploaded Files ---\n"
+                    base_system_prompt += file_block
 
                 # Build the ai_call closure; mode constraints are injected by the gateway.
                 # This is the ONLY path through which _call_openai_chat is reached for
