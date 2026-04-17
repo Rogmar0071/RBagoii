@@ -1131,7 +1131,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         base_system_prompt += (
                             "\n\nAgent mode strict output contract:\n"
                             "- Return JSON object only.\n"
-                            "- Include fields: claims, uncertainties, generation_mode, mode_label.\n"
+                            "- Include fields: claims, uncertainties, generation_mode, "
+                            "mode_label.\n"
                             "- claims[] fields: statement, confidence (0..1), "
                             "source_type, verifiability.\n"
                             "- mode_label must be RETRIEVED, INFERRED, or GENERATED.\n"
@@ -1213,7 +1214,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 httpx.ConnectError,
             ):
                 # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch httpx exceptions to prevent 502 errors.
-                # Return status 200 with structured error in reply field (matching mode_engine pattern).
+                # Return status 200 with structured error in reply field
+                # (matching mode_engine pattern).
                 import json as _json
 
                 logger.exception("HTTP exception in chat endpoint")
@@ -1279,7 +1281,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 db, "assistant", error_reply, context, conversation_id=active_conversation_id
             )
             user_message = _persist_message(
-                db, "user", (body or {}).get("message", ""), context, 
+                db, "user", (body or {}).get("message", ""), context,
                 conversation_id=active_conversation_id
             )
             if db is not None:

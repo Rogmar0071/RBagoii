@@ -413,7 +413,8 @@ def mutation_governance_gateway(
     # ------------------------------------------------------------------
     # Step 6: Audit log (mandatory — raises if DB write fails)
     # PHASE 11 — AUDIT CONSISTENCY LOCK
-    # ALL executions MUST log: selected_modes, status, blocked_reason, retry_count, validation_results
+    # ALL executions MUST log: selected_modes, status, blocked_reason, retry_count,
+    # validation_results
     # ------------------------------------------------------------------
     audit.mutation_proposal = result.mutation_proposal or {}
     audit.validation_results = result.validation_results
@@ -436,7 +437,7 @@ def _build_blocked_result(
     retry_count: int = 0,
 ) -> MutationGovernanceResult:
     """Populate *result* as a blocked proposal and persist the audit record.
-    
+
     PHASE 7 — RETRY ENGINE LOCK: retry_count parameter added to support deterministic reporting.
     """
     result.validation_results = [vr.to_dict() for vr in validation_results]

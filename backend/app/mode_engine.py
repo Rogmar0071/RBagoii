@@ -959,7 +959,7 @@ def mode_engine_gateway(
     # strict_mode is ACTIVE only if: is_strict = (modes != None AND "strict_mode" IN modes)
     active_modes = resolve_modes(modes) if modes is not None else []
     is_strict = MODE_STRICT in active_modes
-    
+
     if is_strict:
         # Log any configured mode conflicts; execution continues on active_modes.
         apply_mode_conflict_resolution(active_modes)
@@ -1134,7 +1134,9 @@ def mode_engine_gateway(
         import json as _json
 
         # Collect failed_rules and correction_instructions from all validation results
-        all_failed = list(dict.fromkeys(r for vr in last_validation_results for r in vr.failed_rules))
+        all_failed = list(
+            dict.fromkeys(r for vr in last_validation_results for r in vr.failed_rules)
+        )
         all_corrections = list(
             dict.fromkeys(r for vr in last_validation_results for r in vr.correction_instructions)
         )
