@@ -1,7 +1,8 @@
-import cv2
-import os
-import json
 import argparse
+import json
+import os
+
+import cv2
 
 
 def analyze_image(image_path):
@@ -19,9 +20,7 @@ def analyze_image(image_path):
         x, y, w, h = cv2.boundingRect(contour)
         # Filter small regions
         if w * h > 500:
-            elements.append({
-                "bbox": [int(x), int(y), int(w), int(h)]
-            })
+            elements.append({"bbox": [int(x), int(y), int(w), int(h)]})
 
     return elements
 
@@ -29,20 +28,24 @@ def analyze_image(image_path):
 def main(input_folder, output_file):
     results = {}
     for file_name in sorted(os.listdir(input_folder)):
-        if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+        if file_name.lower().endswith((".png", ".jpg", ".jpeg")):
             path = os.path.join(input_folder, file_name)
             elements = analyze_image(path)
             results[file_name] = elements
 
-    with open(output_file, 'w') as f:
+    with open(output_file, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Saved analysis results to {output_file}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze frames for UI elements")
-    parser.add_argument("--input-folder", required=True, dest="input_folder", help="Folder with extracted frames")
-    parser.add_argument("--output-file", required=True, dest="output_file", help="Output JSON file path")
+    parser.add_argument(
+        "--input-folder", required=True, dest="input_folder", help="Folder with extracted frames"
+    )
+    parser.add_argument(
+        "--output-file", required=True, dest="output_file", help="Output JSON file path"
+    )
     args = parser.parse_args()
 
     main(args.input_folder, args.output_file)

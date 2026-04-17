@@ -155,12 +155,8 @@ class MutationGovernanceResult:
     gate_result: dict[str, Any] = field(default_factory=dict)
     blocked_reason: str | None = None
     audit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
-    execution_boundary: dict[str, bool] = field(
-        default_factory=lambda: dict(_EXECUTION_BOUNDARY)
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    execution_boundary: dict[str, bool] = field(default_factory=lambda: dict(_EXECUTION_BOUNDARY))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -199,7 +195,7 @@ def _extract_json(text: str) -> dict[str, Any] | None:
         return None
 
     # Take only the text after the label.
-    after = text[idx + len(_LABEL):]
+    after = text[idx + len(_LABEL) :]
 
     # Strip optional markdown code fences (```json … ```).
     after = re.sub(r"```(?:json)?\s*", "", after).strip()
@@ -241,7 +237,7 @@ def mutation_governance_gateway(
     """Single mandatory entry/exit point for the mutation governance pipeline.
 
     ALIGNED WITH DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1:
-    
+
     Pipeline (MUTATION_GOVERNANCE_EXECUTION_V1):
       1. receive_intent        — validate user_intent is non-empty.
       2. mode_resolution       — determine if strict_mode is active.
@@ -283,7 +279,7 @@ def mutation_governance_gateway(
     # ------------------------------------------------------------------
     requested_modes: list[str] = list(modes or [])
     resolved_modes = resolve_modes(requested_modes)
-    
+
     result = MutationGovernanceResult()
     audit = MutationGovernanceAuditRecord(
         contract_id=result.contract_id,
@@ -336,10 +332,13 @@ def mutation_governance_gateway(
     # (including contract boundary failure)
     # ------------------------------------------------------------------
     import json as _json
-    
+
     try:
         mode_output_parsed = _json.loads(mode_output)
-        if isinstance(mode_output_parsed, dict) and mode_output_parsed.get("error") == "VALIDATION_FAILED":
+        if (
+            isinstance(mode_output_parsed, dict)
+            and mode_output_parsed.get("error") == "VALIDATION_FAILED"
+        ):
             # Mode engine returned a failure (could be contract boundary failure)
             # Block this governance request
             validation_failure = MutationValidationResult(

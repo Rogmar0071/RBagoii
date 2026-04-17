@@ -90,9 +90,7 @@ def _build_ai_call() -> Any:
                         "Cannot generate a real mutation proposal."
                     ),
                     "assumptions": ["OPENAI_API_KEY is not set on this server"],
-                    "alternatives": [
-                        "Configure OPENAI_API_KEY to enable AI mutation proposals"
-                    ],
+                    "alternatives": ["Configure OPENAI_API_KEY to enable AI mutation proposals"],
                     "confidence": "low",
                     "risks": ["No real proposal generated — AI not available"],
                     "missing_data": ["OPENAI_API_KEY required"],
@@ -106,8 +104,7 @@ def _build_ai_call() -> Any:
                 "CONFIDENCE: low\n"
                 "MISSING_DATA: OPENAI_API_KEY required\n"
                 "\n"
-                "SECTION_MUTATION_CONTRACT:\n"
-                + contract_json
+                "SECTION_MUTATION_CONTRACT:\n" + contract_json
             )
 
         return _stub

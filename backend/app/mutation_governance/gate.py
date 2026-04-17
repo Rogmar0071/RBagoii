@@ -66,16 +66,11 @@ def mutation_enforcement_gate(
         return GateResult(passed=True)
 
     all_failed_rules = [
-        rule
-        for vr in validation_results
-        if not vr.passed
-        for rule in vr.failed_rules
+        rule for vr in validation_results if not vr.passed for rule in vr.failed_rules
     ]
     # Truncate to a reasonable length for the reason string.
     rule_sample = ", ".join(all_failed_rules[:8])
-    blocked_reason = (
-        f"validation_failed: stages={failed_stages!r}; rules=[{rule_sample}]"
-    )
+    blocked_reason = f"validation_failed: stages={failed_stages!r}; rules=[{rule_sample}]"
     return GateResult(
         passed=False,
         blocked_reason=blocked_reason,

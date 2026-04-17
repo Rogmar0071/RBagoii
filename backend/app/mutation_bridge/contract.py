@@ -73,9 +73,7 @@ class BridgeExecutionOverride:
 
     def _validate(self) -> None:
         if not self.explicit_approval:
-            raise ValueError(
-                "override.explicit_approval must be True for a valid bridge override"
-            )
+            raise ValueError("override.explicit_approval must be True for a valid bridge override")
         jstr = self.justification.strip() if isinstance(self.justification, str) else ""
         if len(jstr) < BRIDGE_OVERRIDE_MIN_JUSTIFICATION_LENGTH:
             raise ValueError(
@@ -89,8 +87,7 @@ class BridgeExecutionOverride:
             or not all(isinstance(r, str) and r.strip() for r in self.accepted_risks)
         ):
             raise ValueError(
-                "override.accepted_risks must be a non-empty list of "
-                "non-empty strings"
+                "override.accepted_risks must be a non-empty list of non-empty strings"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -151,9 +148,7 @@ class BridgeResult:
     # Traceability
     override_used: bool = False
     audit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     # Execution boundary — enforced constants
     execution_boundary: dict[str, bool] = field(
         default_factory=lambda: dict(_BRIDGE_EXECUTION_BOUNDARY)
@@ -209,6 +204,4 @@ class BridgeAuditRecord:
     blocked_reason: str | None = None
     override_used: bool = False
     override_details: dict[str, Any] | None = None
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())

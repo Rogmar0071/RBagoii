@@ -229,9 +229,7 @@ class TestListOpsForFolder:
         fid = folder["id"]
         # Clear ops by using a fresh filter (folder was just created, so
         # there may be a folders.create event; filter to a different event_type)
-        resp = client.get(
-            f"/v1/folders/{fid}/ops?event_type=jobs.start", headers=_auth()
-        )
+        resp = client.get(f"/v1/folders/{fid}/ops?event_type=jobs.start", headers=_auth())
         assert resp.status_code == 200
         assert resp.json()["events"] == []
 
@@ -278,9 +276,7 @@ class TestListOpsForFolder:
         for i in range(5):
             _seed_event(message=f"ev {i}", folder_id=fid)
         resp = client.get(f"/v1/folders/{fid}/ops?limit=2", headers=_auth())
-        folder_events = [
-            e for e in resp.json()["events"] if e.get("folder_id") == fid
-        ]
+        folder_events = [e for e in resp.json()["events"] if e.get("folder_id") == fid]
         assert len(folder_events) <= 2
 
 

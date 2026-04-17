@@ -113,9 +113,7 @@ def _make_openai_intent_response(content: dict) -> MagicMock:
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {
-        "choices": [{"message": {"content": json.dumps(content)}}]
-    }
+    mock_resp.json.return_value = {"choices": [{"message": {"content": json.dumps(content)}}]}
     return mock_resp
 
 
@@ -166,9 +164,7 @@ class TestRequiredKeys:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         body = _post_intent(client, "Build me a todo app")
 
-        assert _REQUIRED_KEYS.issubset(body.keys()), (
-            f"Missing keys: {_REQUIRED_KEYS - body.keys()}"
-        )
+        assert _REQUIRED_KEYS.issubset(body.keys()), f"Missing keys: {_REQUIRED_KEYS - body.keys()}"
 
     def test_intent_subkeys(self, client, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -251,9 +247,7 @@ class TestModeA:
         # At least one of the intent fields must contain the original message text.
         objective = body["intent"]["objective"]
         interpreted = body["intent"]["interpretedMeaning"]
-        assert (
-            msg in objective or msg in interpreted
-        ), (
+        assert msg in objective or msg in interpreted, (
             f"Message not found in intent fields: "
             f"objective={objective!r}, interpretedMeaning={interpreted!r}"
         )
@@ -544,9 +538,7 @@ class TestJsonOutput:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": fenced_text}}]
-        }
+        mock_resp.json.return_value = {"choices": [{"message": {"content": fenced_text}}]}
 
         with patch("backend.app.chat_routes.httpx.Client") as mock_cls:
             mock_http = MagicMock()

@@ -78,38 +78,29 @@ _TOOLS_AVAILABLE = [
 _CHAT_SYSTEM_PROMPT = (
     "You are UI Blueprint Assistant — a high-discipline AI that reasons about system "
     "architecture and structural behavior.\n\n"
-
     "You operate ONLY on data explicitly provided in this conversation.\n\n"
-
     "When reasoning about any codebase, media, or domain, "
     "you apply a three-pass internal model:\n\n"
-
     "PASS 1 — TOPOLOGY RECONSTRUCTION\n"
     "1. Identify system components and their relationships.\n"
     "2. Map data flow and control flow.\n"
     "3. Detect structural boundaries and dependencies.\n\n"
-
     "PASS 2 — INVARIANT DETECTION\n"
     "1. Identify constraints that must not be violated.\n"
     "2. Detect coupling, ownership, and responsibility boundaries.\n"
     "3. Define what must remain stable under change.\n\n"
-
     "PASS 3 — CONTROLLED MODIFICATION\n"
     "1. Propose only changes that preserve invariants.\n"
     "2. Avoid surface-level fixes that break deeper structure.\n"
     "3. Ensure changes align with system integrity.\n\n"
-
     "If required data is missing, explicitly state what is missing and request it.\n"
     "Default stance: "
     "'I only operate on data explicitly provided — please supply the relevant artifact.'\n\n"
-
     "Be concise and practical. Focus on structural causes, not surface symptoms."
 )
 
 _OPS_CONTEXT_HEADER = (
-    "\n\n--- Optional user-provided context ---\n"
-    "{snippet}\n"
-    "--- End of user-provided context ---"
+    "\n\n--- Optional user-provided context ---\n{snippet}\n--- End of user-provided context ---"
 )
 
 # ---------------------------------------------------------------------------
@@ -281,9 +272,7 @@ class ChatPostRequest(BaseModel):
     def _validate_context_scope(self) -> "ChatPostRequest":
         # CONTEXT_ASSEMBLY_ALIGNMENT_V2: project scope requires project_id.
         if self.context_scope == "project" and not self.project_id:
-            raise ValueError(
-                "project_id is required when context_scope is 'project'."
-            )
+            raise ValueError("project_id is required when context_scope is 'project'.")
         return self
 
 
@@ -630,7 +619,7 @@ def _build_search_query(message: str) -> str:
     stripped = message.strip()
     if stripped.lower().startswith(_SEARCH_PREFIX):
         # Strip prefix using its length to handle case-insensitive match.
-        return stripped[len(_SEARCH_PREFIX):].strip()
+        return stripped[len(_SEARCH_PREFIX) :].strip()
     return stripped
 
 
@@ -922,8 +911,7 @@ def delete_conversation(
         return _error(
             400,
             "confirmation_required",
-            "Deleting 'legacy_default' requires explicit confirmation. "
-            "Retry with ?confirm=true.",
+            "Deleting 'legacy_default' requires explicit confirmation. Retry with ?confirm=true.",
         )
 
     db = _db_session()
@@ -938,9 +926,7 @@ def delete_conversation(
         from backend.app.models import GlobalChatMessage
 
         messages = db.exec(
-            select(GlobalChatMessage).where(
-                GlobalChatMessage.conversation_id == conversation_id
-            )
+            select(GlobalChatMessage).where(GlobalChatMessage.conversation_id == conversation_id)
         ).all()
         count = len(messages)
         for msg in messages:
@@ -1008,9 +994,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     # CONTEXT_ORIGIN_ENFORCEMENT_V1: classify whether context was explicitly declared
     # by the UI or implicitly defaulted by the backend.  Internal-only — never exposed
     # to prompts, AI output, or API responses.
-    context_scope, context_origin = resolve_context_origin(
-        raw_context_scope=raw_context_scope
-    )
+    context_scope, context_origin = resolve_context_origin(raw_context_scope=raw_context_scope)
     logger.debug(
         "context_origin resolution: scope=%s origin=%s",
         context_scope,
@@ -1224,9 +1208,7 @@ def edit_chat_message(message_id: str, body: dict[str, Any]) -> JSONResponse:
         if original is None:
             return _error(404, "not_found", "Message not found.")
         if original.role != "user":
-            return _error(
-                400, "invalid_request", "Only user messages may be edited."
-            )
+            return _error(400, "invalid_request", "Only user messages may be edited.")
 
         # Create the new (replacement) message, inheriting the original's
         # conversation_id so it stays within the same conversation boundary.

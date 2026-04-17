@@ -158,17 +158,13 @@ def simulation_decision_gate(
                 override_used=False,
                 gate_notes=["HARD_BLOCK:risk_level==high AND no_valid_override"],
             )
-        notes.append(
-            f"override_accepted_for_high_risk: justification={override.justification!r}"
-        )
+        notes.append(f"override_accepted_for_high_risk: justification={override.justification!r}")
 
     # -----------------------------------------------------------------------
     # Rule 3: predicted_failures_unresolved
     #         (high-severity failures without a valid override)
     # -----------------------------------------------------------------------
-    high_failures = [
-        f for f in failures.predicted_failures if f.severity == "high"
-    ]
+    high_failures = [f for f in failures.predicted_failures if f.severity == "high"]
     if high_failures and not override_valid:
         descriptions = "; ".join(f.description[:120] for f in high_failures)
         return SimulationGateResult(
@@ -181,15 +177,12 @@ def simulation_decision_gate(
             gate_notes=["HARD_BLOCK:predicted_failures_unresolved"],
         )
     if high_failures and override_valid:
-        notes.append(
-            f"override_accepted_for_{len(high_failures)}_high_severity_failure(s)"
-        )
+        notes.append(f"override_accepted_for_{len(high_failures)}_high_severity_failure(s)")
 
     override_used = override_valid and (risk.level == RISK_HIGH or bool(high_failures))
     notes.append(f"risk_level:{risk.level}")
     notes.append(
-        f"predicted_failures:{len(failures.predicted_failures)}_total"
-        f"_{len(high_failures)}_high"
+        f"predicted_failures:{len(failures.predicted_failures)}_total_{len(high_failures)}_high"
     )
 
     return SimulationGateResult(

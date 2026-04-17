@@ -45,10 +45,7 @@ def _verify_governance_authenticity(governance_result: dict[str, Any]) -> str | 
 
     audit_id = governance_result.get("audit_id", "")
     if not isinstance(audit_id, str) or not audit_id.strip():
-        return (
-            "block_if:governance_not_verified — "
-            "audit_id is absent or empty"
-        )
+        return "block_if:governance_not_verified — audit_id is absent or empty"
 
     gate_result = governance_result.get("gate_result")
     if not isinstance(gate_result, dict) or gate_result.get("passed") is not True:
@@ -59,10 +56,7 @@ def _verify_governance_authenticity(governance_result: dict[str, Any]) -> str | 
 
     eb = governance_result.get("execution_boundary")
     if not isinstance(eb, dict):
-        return (
-            "block_if:governance_not_verified — "
-            "execution_boundary dict is absent"
-        )
+        return "block_if:governance_not_verified — execution_boundary dict is absent"
 
     return None
 
@@ -86,10 +80,7 @@ def _verify_simulation_integrity(simulation_result: dict[str, Any]) -> str | Non
         )
 
     if not bool(simulation_result.get("safe_to_execute", False)):
-        return (
-            "block_if:simulation_not_verified — "
-            "safe_to_execute is False"
-        )
+        return "block_if:simulation_not_verified — safe_to_execute is False"
 
     risk_level = str(simulation_result.get("risk_level", "")).strip()
     if risk_level not in _VALID_RISK_LEVELS:
@@ -100,22 +91,13 @@ def _verify_simulation_integrity(simulation_result: dict[str, Any]) -> str | Non
 
     audit_id = simulation_result.get("audit_id", "")
     if not isinstance(audit_id, str) or not audit_id.strip():
-        return (
-            "block_if:simulation_not_verified — "
-            "audit_id is absent or empty"
-        )
+        return "block_if:simulation_not_verified — audit_id is absent or empty"
 
     if "source_governance_audit_id" not in simulation_result:
-        return (
-            "block_if:simulation_not_verified — "
-            "source_governance_audit_id is absent"
-        )
+        return "block_if:simulation_not_verified — source_governance_audit_id is absent"
     sgai = simulation_result.get("source_governance_audit_id", "")
     if not isinstance(sgai, str) or not sgai.strip():
-        return (
-            "block_if:simulation_not_verified — "
-            "source_governance_audit_id is empty"
-        )
+        return "block_if:simulation_not_verified — source_governance_audit_id is empty"
 
     return None
 
@@ -159,8 +141,7 @@ def _perform_staged_execution(
 
     # Build validation: restricted paths
     restricted = [
-        f for f in target_files
-        if any(f.startswith(r) for r in _RESTRICTED_PATH_PREFIXES)
+        f for f in target_files if any(f.startswith(r) for r in _RESTRICTED_PATH_PREFIXES)
     ]
     if restricted:
         return (
@@ -304,9 +285,7 @@ def bridge_gateway(
 
                     if fail_reason or build_status == BUILD_STATUS_FAILED:
                         result.status = BRIDGE_STATUS_BLOCKED
-                        result.blocked_reason = (
-                            fail_reason or "block_if:build_validation_failed"
-                        )
+                        result.blocked_reason = fail_reason or "block_if:build_validation_failed"
                     else:
                         # ------------------------------------------------------------------
                         # Step 7: artifact consistency
@@ -322,9 +301,7 @@ def bridge_gateway(
                                 f"match target_files={target_files!r}"
                             )
                         # Check B: diff_patch must reference at least one target file
-                        elif target_files and not any(
-                            f in diff_patch for f in target_files
-                        ):
+                        elif target_files and not any(f in diff_patch for f in target_files):
                             result.status = BRIDGE_STATUS_BLOCKED
                             result.blocked_reason = (
                                 "block_if:artifact_inconsistency — "
@@ -443,9 +420,7 @@ def _build_execution_summary(
         justification = override_details.get("justification", "")
         accepted_risks = override_details.get("accepted_risks", [])
         lines.append(f"  justification: {justification}")
-        lines.append(
-            f"  accepted_risks: {', '.join(str(r) for r in accepted_risks)}"
-        )
+        lines.append(f"  accepted_risks: {', '.join(str(r) for r in accepted_risks)}")
 
     lines += [
         "",

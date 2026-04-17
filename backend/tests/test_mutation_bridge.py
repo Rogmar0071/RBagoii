@@ -294,9 +294,13 @@ class TestRevalidateRuntimeState:
 
     def test_target_files_empty_in_proposal_passes_check1(self):
         # If proposal has no target_files, check 1 trivially passes (nothing to verify).
-        gov = _make_governance_result(proposal={
-            "target_files": [], "operation_type": "update_file", "proposed_changes": "x",
-        })
+        gov = _make_governance_result(
+            proposal={
+                "target_files": [],
+                "operation_type": "update_file",
+                "proposed_changes": "x",
+            }
+        )
         sim = _make_simulation_result()
         result = revalidate_runtime_state(gov, sim)
         # Checks 1 passes (no files to match), check 2 depends on contract_id
@@ -431,11 +435,14 @@ class TestRevalidateRuntimeState:
 
 class TestBridgeExecutionGate:
     def _revalidation_passed(self) -> RuntimeRevalidationResult:
-        return RuntimeRevalidationResult(passed=True, check_details={
-            CHECK_TARGET_FILES: "PASSED",
-            CHECK_NO_CONFLICTS: "PASSED",
-            CHECK_DEPENDENCY_GRAPH: "PASSED",
-        })
+        return RuntimeRevalidationResult(
+            passed=True,
+            check_details={
+                CHECK_TARGET_FILES: "PASSED",
+                CHECK_NO_CONFLICTS: "PASSED",
+                CHECK_DEPENDENCY_GRAPH: "PASSED",
+            },
+        )
 
     def test_all_conditions_pass_low_risk(self):
         gov = _make_governance_result()
@@ -836,9 +843,7 @@ class TestBridgeGateway:
     def test_audit_called_on_success(self):
         gov = _make_governance_result()
         sim = _make_simulation_result()
-        with patch(
-            "backend.app.mutation_bridge.engine.persist_bridge_audit_record"
-        ) as mock_audit:
+        with patch("backend.app.mutation_bridge.engine.persist_bridge_audit_record") as mock_audit:
             result = bridge_gateway(governance_result=gov, simulation_result=sim)
         mock_audit.assert_called_once()
         assert result.status == BRIDGE_STATUS_EXECUTED
@@ -846,9 +851,7 @@ class TestBridgeGateway:
     def test_audit_called_on_blocked_result(self):
         gov = _make_governance_result(gate_passed=False)
         sim = _make_simulation_result()
-        with patch(
-            "backend.app.mutation_bridge.engine.persist_bridge_audit_record"
-        ) as mock_audit:
+        with patch("backend.app.mutation_bridge.engine.persist_bridge_audit_record") as mock_audit:
             result = bridge_gateway(governance_result=gov, simulation_result=sim)
         mock_audit.assert_called_once()
         assert result.status == BRIDGE_STATUS_BLOCKED
@@ -886,9 +889,7 @@ class TestBridgeGateway:
         sim = _make_simulation_result()
 
         def _forbid_run(*args, **kwargs):  # pragma: no cover
-            raise AssertionError(
-                "bridge_gateway must not invoke subprocess.run (no real git ops)"
-            )
+            raise AssertionError("bridge_gateway must not invoke subprocess.run (no real git ops)")
 
         with patch.object(_sp, "run", side_effect=_forbid_run):
             result = bridge_gateway(governance_result=gov, simulation_result=sim)
@@ -944,9 +945,7 @@ class TestBridgeGateway:
         original = _engine._perform_staged_execution
 
         def _bad_staged(proposal, bridge_id):
-            branch, diff, files, build, fail_reason, actions = original(
-                proposal, bridge_id
-            )
+            branch, diff, files, build, fail_reason, actions = original(proposal, bridge_id)
             # Return a mismatched files list
             return branch, diff, ["backend/app/WRONG.py"], build, fail_reason, actions
 
@@ -966,14 +965,10 @@ class TestBridgeGateway:
         original = _engine._perform_staged_execution
 
         def _empty_diff_staged(proposal, bridge_id):
-            branch, _, files, build, fail_reason, actions = original(
-                proposal, bridge_id
-            )
+            branch, _, files, build, fail_reason, actions = original(proposal, bridge_id)
             return branch, "# empty patch", files, build, fail_reason, actions
 
-        with patch.object(
-            _engine, "_perform_staged_execution", side_effect=_empty_diff_staged
-        ):
+        with patch.object(_engine, "_perform_staged_execution", side_effect=_empty_diff_staged):
             result = bridge_gateway(governance_result=gov, simulation_result=sim)
 
         assert result.status == BRIDGE_STATUS_BLOCKED
@@ -998,9 +993,7 @@ class TestBridgeGateway:
             "backend.app.mutation_bridge.engine.persist_bridge_audit_record",
             side_effect=_capture_audit,
         ):
-            result = bridge_gateway(
-                governance_result=gov, simulation_result=sim, override=ov
-            )
+            result = bridge_gateway(governance_result=gov, simulation_result=sim, override=ov)
 
         assert result.status == BRIDGE_STATUS_EXECUTED
         assert len(captured) == 1
@@ -1062,9 +1055,7 @@ class TestBridgeGateway:
         gov = _make_governance_result()
         sim = _make_simulation_result(risk_level="high")
         ov = _make_valid_override()
-        result = bridge_gateway(
-            governance_result=gov, simulation_result=sim, override=ov
-        )
+        result = bridge_gateway(governance_result=gov, simulation_result=sim, override=ov)
         assert result.override_used is True
         assert "OVERRIDE" in result.execution_summary
         assert "applied: True" in result.execution_summary

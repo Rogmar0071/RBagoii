@@ -160,9 +160,7 @@ class TestAnalyzePipelineAdvancesCursorAndStage:
 
         # The manifest must have been uploaded.
         manifest_key = f"folders/{folder_id}/segments/manifest.json"
-        assert manifest_key in uploaded, (
-            f"manifest.json not uploaded; keys={list(uploaded.keys())}"
-        )
+        assert manifest_key in uploaded, f"manifest.json not uploaded; keys={list(uploaded.keys())}"
         import json as _json
 
         manifest = _json.loads(uploaded[manifest_key])
@@ -178,7 +176,7 @@ class TestAnalyzePipelineAdvancesCursorAndStage:
         # Build a small manifest with 5 segments.
         segments = [
             {
-                "segment_id": f"seg_{i:04d}_{i*10000}_{(i+1)*10000}",
+                "segment_id": f"seg_{i:04d}_{i * 10000}_{(i + 1) * 10000}",
                 "index": i,
                 "t0_ms": i * 10000,
                 "t1_ms": (i + 1) * 10000,
@@ -247,7 +245,7 @@ class TestAnalyzePipelineResumesFromCheckpoint:
 
         segments = [
             {
-                "segment_id": f"seg_{i:04d}_{i*10000}_{(i+1)*10000}",
+                "segment_id": f"seg_{i:04d}_{i * 10000}_{(i + 1) * 10000}",
                 "index": i,
                 "t0_ms": i * 10000,
                 "t1_ms": (i + 1) * 10000,
@@ -310,7 +308,7 @@ class TestAnalyzePipelineResumesFromCheckpoint:
 
         segments = [
             {
-                "segment_id": f"seg_{i:04d}_{i*10000}_{(i+1)*10000}",
+                "segment_id": f"seg_{i:04d}_{i * 10000}_{(i + 1) * 10000}",
                 "index": i,
                 "t0_ms": i * 10000,
                 "t1_ms": (i + 1) * 10000,
@@ -386,7 +384,7 @@ class TestAnalyzePipelineReenqueueUntilDone:
         # 2 segments × 10 s each = 20 s clip.
         segments = [
             {
-                "segment_id": f"seg_{i:04d}_{i*10000}_{(i+1)*10000}",
+                "segment_id": f"seg_{i:04d}_{i * 10000}_{(i + 1) * 10000}",
                 "index": i,
                 "t0_ms": i * 10000,
                 "t1_ms": (i + 1) * 10000,
@@ -447,9 +445,7 @@ class TestAnalyzePipelineReenqueueUntilDone:
 
         # analysis.json must have been uploaded.
         analysis_key = f"folders/{folder_id}/analysis/analysis.json"
-        assert analysis_key in uploaded, (
-            f"analysis.json not uploaded; keys={list(uploaded.keys())}"
-        )
+        assert analysis_key in uploaded, f"analysis.json not uploaded; keys={list(uploaded.keys())}"
 
 
 # ---------------------------------------------------------------------------
@@ -464,9 +460,7 @@ class TestAnalyzeStreamingDownload:
     def test_streaming_download_does_not_buffer_entire_clip(self):
         """Verify get_object_to_file is called for clip download during manifest
         and that get_object_bytes is NOT called for any clip MP4 download."""
-        folder_id, job_id = _make_folder_and_job(
-            clip_object_key="folders/test/clip.mp4"
-        )
+        folder_id, job_id = _make_folder_and_job(clip_object_key="folders/test/clip.mp4")
 
         get_to_file_calls: list[str] = []
         get_bytes_calls: list[str] = []
@@ -516,7 +510,7 @@ class TestAnalyzeStreamingDownload:
         folder_id, job_id = _make_folder_and_job()
         segments = [
             {
-                "segment_id": f"seg_{i:04d}_{i*10000}_{(i+1)*10000}",
+                "segment_id": f"seg_{i:04d}_{i * 10000}_{(i + 1) * 10000}",
                 "index": i,
                 "t0_ms": i * 10000,
                 "t1_ms": (i + 1) * 10000,
@@ -572,10 +566,10 @@ class TestAnalyzeStreamingDownload:
 
 class TestAnalyzeOptions:
     """Tests covering the optional additional analysis feature:
-      - Default path unchanged when options are omitted
-      - Options are persisted in the DB and survive worker restarts
-      - Optional analyses only run when enabled
-      - API accepts and returns all 5 toggles
+    - Default path unchanged when options are omitted
+    - Options are persisted in the DB and survive worker restarts
+    - Optional analyses only run when enabled
+    - API accepts and returns all 5 toggles
     """
 
     # -- helpers -------------------------------------------------------------
@@ -599,7 +593,7 @@ class TestAnalyzeOptions:
 
         segments = [
             {
-                "segment_id": f"seg_{i:04d}_{i*10000}_{(i+1)*10000}",
+                "segment_id": f"seg_{i:04d}_{i * 10000}_{(i + 1) * 10000}",
                 "index": i,
                 "t0_ms": i * 10000,
                 "t1_ms": (i + 1) * 10000,
@@ -655,9 +649,9 @@ class TestAnalyzeOptions:
         ):
             from backend.app.worker import run_analyze_step
 
-            run_analyze_step(job_id)   # manifest → baseline_segments
-            run_analyze_step(job_id)   # baseline_segments → aggregate
-            run_analyze_step(job_id)   # aggregate → succeeded
+            run_analyze_step(job_id)  # manifest → baseline_segments
+            run_analyze_step(job_id)  # baseline_segments → aggregate
+            run_analyze_step(job_id)  # aggregate → succeeded
 
         job = _get_job(job_id)
         assert job.status == "succeeded"
@@ -763,9 +757,7 @@ class TestAnalyzeOptions:
         assert job.status == "succeeded"
 
         optional_enqueues = [t for (_, t) in enqueue_calls if t == "analyze_optional"]
-        assert optional_enqueues == [], (
-            "analyze_optional must not be enqueued when enabled=false"
-        )
+        assert optional_enqueues == [], "analyze_optional must not be enqueued when enabled=false"
 
     # -- test 4 --------------------------------------------------------------
 
@@ -873,7 +865,7 @@ def _make_manifest_bytes_for_folder(
     segments = [
         {
             "segment_id": (
-                f"seg_{i:04d}_{i * segment_size_s * 1000}_{(i+1) * segment_size_s * 1000}"
+                f"seg_{i:04d}_{i * segment_size_s * 1000}_{(i + 1) * segment_size_s * 1000}"
             ),
             "index": i,
             "t0_ms": i * segment_size_s * 1000,
@@ -1026,8 +1018,6 @@ class TestJobSucceedsAfterAggregate:
     def test_job_marks_succeeded_once_aggregate_complete(self):
         """When the aggregate stage finishes, the job must be status='succeeded'
         with progress=100 regardless of optional toggles."""
-
-
 
         folder_id, job_id = _make_folder_and_job()
         n_segments = 2
@@ -1290,9 +1280,7 @@ class TestOptionalAnalyzeJob:
 
         # Only segments 2 and 3 should have been uploaded (not 0 or 1).
         kf_keys = [k for k in uploaded_keys if k.endswith("keyframes.json")]
-        assert len(kf_keys) == 2, (
-            f"Expected 2 keyframes uploads (segments 2+3), got {kf_keys}"
-        )
+        assert len(kf_keys) == 2, f"Expected 2 keyframes uploads (segments 2+3), got {kf_keys}"
         for k in kf_keys:
             assert any(f"seg_{i:04d}_" in k for i in range(2, n_segments)), (
                 f"Unexpected segment key uploaded: {k}"
@@ -1476,6 +1464,4 @@ class TestBaselineSegmentsNonStub:
         # Fallback notes key must be present.
         for key in baseline_keys:
             data = _json.loads(uploaded[key])
-            assert "notes" in data, (
-                f"Expected fallback 'notes' key in {key}. Got: {data}"
-            )
+            assert "notes" in data, f"Expected fallback 'notes' key in {key}. Got: {data}"

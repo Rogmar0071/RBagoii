@@ -19,27 +19,27 @@ os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_verify_execution")
 os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 
 # Mock database dependencies before importing app modules
-sys.modules['sqlmodel'] = Mock()
-sys.modules['alembic'] = Mock()
-sys.modules['psycopg2'] = Mock()
+sys.modules["sqlmodel"] = Mock()
+sys.modules["alembic"] = Mock()
+sys.modules["psycopg2"] = Mock()
 
 # Import after environment setup
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 # Now mock database functions
 def mock_get_engine():
     """Mock database engine that raises RuntimeError (no DB configured)."""
     raise RuntimeError("Database not configured")
 
+
 import backend.app.database
+
 backend.app.database.get_engine = mock_get_engine
 backend.app.database.reset_engine = lambda *args, **kwargs: None
 backend.app.database.init_db = lambda *args, **kwargs: None
 
-from backend.app.contract_construction import ContractObject
-from backend.app.intent_extraction import IntentObject
 from backend.app.mode_engine import MODE_STRICT, ValidationResult, mode_engine_gateway
-
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -49,7 +49,7 @@ from backend.app.mode_engine import MODE_STRICT, ValidationResult, mode_engine_g
 @dataclass
 class ExecutionScenario:
     """Defines a canonical system scenario."""
-    
+
     name: str
     description: str
     modes: list[str]
@@ -63,7 +63,7 @@ class ExecutionScenario:
 @dataclass
 class ExecutionTrace:
     """Full execution trace."""
-    
+
     modes: list[str]
     user_intent: str
     validation_results: list[ValidationResult] = field(default_factory=list)
@@ -79,7 +79,7 @@ class ExecutionTrace:
 
 def get_scenarios() -> list[ExecutionScenario]:
     """Return canonical scenarios."""
-    
+
     return [
         ExecutionScenario(
             name="NORMAL_MODE",
@@ -121,14 +121,14 @@ def get_scenarios() -> list[ExecutionScenario]:
 
 def execute_scenario(scenario: ExecutionScenario) -> ExecutionTrace:
     """Execute scenario and capture trace."""
-    
+
     trace = ExecutionTrace(
         modes=scenario.modes,
         user_intent=scenario.user_intent,
     )
-    
+
     ai_call = MagicMock(return_value=scenario.ai_response)
-    
+
     try:
         output, audit = mode_engine_gateway(
             user_intent=scenario.user_intent,
@@ -136,9 +136,9 @@ def execute_scenario(scenario: ExecutionScenario) -> ExecutionTrace:
             ai_call=ai_call,
             base_system_prompt="",
         )
-        
+
         trace.final_output = output
-        
+
         # Extract validation results
         if audit.validation_results:
             trace.validation_results = [
@@ -151,19 +151,21 @@ def execute_scenario(scenario: ExecutionScenario) -> ExecutionTrace:
                 )
                 for vr in audit.validation_results
             ]
-        
+
         # Check if structured failure
         try:
             failure_json = json.loads(output)
-            if isinstance(failure_json, dict) and ("error" in failure_json or "failed_rules" in failure_json):
+            if isinstance(failure_json, dict) and (
+                "error" in failure_json or "failed_rules" in failure_json
+            ):
                 trace.is_structured_failure = True
                 trace.failure_data = failure_json
         except (json.JSONDecodeError, ValueError):
             pass
-            
+
     except Exception as e:
         trace.final_output = f"ERROR: {e}"
-    
+
     return trace
 
 
@@ -174,10 +176,10 @@ def execute_scenario(scenario: ExecutionScenario) -> ExecutionTrace:
 
 def verify_scenario(scenario: ExecutionScenario, trace: ExecutionTrace) -> tuple[bool, list[str]]:
     """Verify a scenario execution."""
-    
+
     passed = True
     failures = []
-    
+
     # Check validation execution
     if scenario.expect_validation_execution:
         if len(trace.validation_results) == 0:
@@ -187,7 +189,7 @@ def verify_scenario(scenario: ExecutionScenario, trace: ExecutionTrace) -> tuple
         if len(trace.validation_results) > 0:
             passed = False
             failures.append(f"Unexpected validation in {scenario.name}")
-    
+
     # Check validation outcome
     if scenario.expect_validation_passed is not None and trace.validation_results:
         all_passed = all(vr.passed for vr in trace.validation_results)
@@ -196,61 +198,69 @@ def verify_scenario(scenario: ExecutionScenario, trace: ExecutionTrace) -> tuple
             expected = "pass" if scenario.expect_validation_passed else "fail"
             actual = "passed" if all_passed else "failed"
             failures.append(f"Expected validation to {expected}, but it {actual}")
-    
+
     # Check structured failure
     if scenario.expect_structured_failure:
         if not trace.is_structured_failure:
             passed = False
             failures.append("Expected structured failure but got normal output")
-    
+
     # Check normal mode isolation
     if scenario.modes == []:
         if len(trace.validation_results) > 0:
             passed = False
             failures.append("INVARIANT VIOLATION: Normal mode has validation")
-    
+
     # Check strict mode enforcement
     if MODE_STRICT in scenario.modes:
         if len(trace.validation_results) == 0:
             passed = False
             failures.append("INVARIANT VIOLATION: Strict mode without validation")
-    
+
     # Check output consistency
     if scenario.modes == [] and not trace.is_structured_failure:
         if trace.final_output != scenario.ai_response:
             # Normal mode should return raw AI response
             # However, mode engine may modify it, so we'll be lenient here
             pass
-    
+
     return passed, failures
 
 
-def verify_hard_invariants(all_traces: list[tuple[ExecutionScenario, ExecutionTrace]]) -> tuple[bool, list[str]]:
+def verify_hard_invariants(
+    all_traces: list[tuple[ExecutionScenario, ExecutionTrace]],
+) -> tuple[bool, list[str]]:
     """Verify system-level hard invariants."""
-    
+
     passed = True
     failures = []
-    
+
     for scenario, trace in all_traces:
         # INVARIANT 1: NORMAL MODE = ZERO ENFORCEMENT
         if trace.modes == []:
             if len(trace.validation_results) > 0:
                 passed = False
-                failures.append(f"INVARIANT 1 VIOLATED in {scenario.name}: Normal mode has validation")
-        
+                failures.append(
+                    f"INVARIANT 1 VIOLATED in {scenario.name}: Normal mode has validation"
+                )
+
         # INVARIANT 2: STRICT MODE = CONTRACT-ONLY ENFORCEMENT
         if MODE_STRICT in trace.modes:
             if len(trace.validation_results) == 0:
                 passed = False
-                failures.append(f"INVARIANT 2 VIOLATED in {scenario.name}: Strict mode without validation")
-        
+                failures.append(
+                    f"INVARIANT 2 VIOLATED in {scenario.name}: Strict mode without validation"
+                )
+
         # INVARIANT 6: OUTPUT ALWAYS MATCHES VALIDATION RESULT
         if trace.validation_results:
             all_passed = all(vr.passed for vr in trace.validation_results)
             if not all_passed and not trace.is_structured_failure:
                 passed = False
-                failures.append(f"INVARIANT 6 VIOLATED in {scenario.name}: Failed validation without structured failure")
-    
+                failures.append(
+                    f"INVARIANT 6 VIOLATED in {scenario.name}: Failed validation without structured failure"
+                )
+
     return passed, failures
 
 
@@ -261,35 +271,35 @@ def verify_hard_invariants(all_traces: list[tuple[ExecutionScenario, ExecutionTr
 
 def main():
     """Run verification and generate output."""
-    
+
     print("=" * 70)
     print("EXECUTION_PATH_VERIFICATION_LAYER_V1")
     print("=" * 70)
-    
+
     scenarios = get_scenarios()
     all_traces = []
-    
+
     # Execute all scenarios
     print("\nExecuting Scenarios:")
     print("-" * 70)
-    
+
     scenario_results = []
     for scenario in scenarios:
         print(f"\n{scenario.name}: {scenario.description}")
         trace = execute_scenario(scenario)
         all_traces.append((scenario, trace))
-        
+
         # Verify scenario
         passed, failures = verify_scenario(scenario, trace)
         scenario_results.append(passed)
-        
+
         if passed:
-            print(f"  ✓ PASS")
+            print("  ✓ PASS")
         else:
-            print(f"  ✗ FAIL")
+            print("  ✗ FAIL")
             for failure in failures:
                 print(f"    - {failure}")
-        
+
         # Show trace details
         print(f"  Modes: {trace.modes}")
         print(f"  Validation results: {len(trace.validation_results)}")
@@ -297,28 +307,28 @@ def main():
             all_passed = all(vr.passed for vr in trace.validation_results)
             print(f"  All validations passed: {all_passed}")
         print(f"  Structured failure: {trace.is_structured_failure}")
-    
+
     # Verify hard invariants
     print("\n" + "=" * 70)
     print("Hard Invariants Verification:")
     print("-" * 70)
-    
+
     invariants_passed, invariant_failures = verify_hard_invariants(all_traces)
-    
+
     if invariants_passed:
         print("✓ All hard invariants verified")
     else:
         print("✗ Hard invariant violations detected:")
         for failure in invariant_failures:
             print(f"  - {failure}")
-    
+
     # Generate verification outputs
     print("\n" + "=" * 70)
     print("VERIFICATION OUTPUTS (REQUIRED)")
     print("=" * 70)
-    
+
     all_scenarios_passed = all(scenario_results)
-    
+
     outputs = {
         "execution_paths_verified": all_scenarios_passed and invariants_passed,
         "mode_isolation_preserved": all(
@@ -334,12 +344,12 @@ def main():
         "validation_governance_alignment": all_scenarios_passed,
         "output_consistency_verified": all_scenarios_passed,
     }
-    
+
     for key, value in outputs.items():
         status = "YES" if value else "NO"
         symbol = "✓" if value else "✗"
         print(f"{symbol} {key} → {status}")
-    
+
     # Final result
     print("\n" + "=" * 70)
     all_verified = all(outputs.values())

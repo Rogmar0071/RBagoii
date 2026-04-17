@@ -173,9 +173,7 @@ class Job(SQLModel, table=True):
     # User-selected per-job options (JSON).  Persisted at enqueue time and
     # read by the pipeline to decide which optional stages to run.
     # Schema: {"additional_analysis": {"enabled": bool, "keyframes": bool, ...}}
-    analyze_options: Optional[Any] = Field(
-        default=None, sa_column=Column(sa.JSON, nullable=True)
-    )
+    analyze_options: Optional[Any] = Field(default=None, sa_column=Column(sa.JSON, nullable=True))
     # Segment cursor – number of segments processed so far.
     # Used by baseline_segments stage (analyze) and segments stage (analyze_optional).
     analyze_cursor_segment_index: Optional[int] = Field(

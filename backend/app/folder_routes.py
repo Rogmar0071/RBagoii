@@ -95,6 +95,7 @@ class FolderChatPostResponse(BaseModel):
     tools_available: list[str]
     enqueued_job: dict[str, Any] | None = None
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -391,9 +392,7 @@ def _recompute_folder_status(db, folder, folder_id: uuid.UUID) -> None:
 
     from backend.app.models import Job
 
-    remaining = db.exec(
-        select(Job).where(Job.folder_id == folder_id)
-    ).all()
+    remaining = db.exec(select(Job).where(Job.folder_id == folder_id)).all()
 
     if not remaining:
         new_status = "pending"
@@ -481,9 +480,7 @@ def get_folder(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
     # Re-fetch folder in case watchdog updated its status.
     db.refresh(folder)
 
-    jobs = db.exec(
-        select(Job).where(Job.folder_id == fid).order_by(Job.created_at.desc())
-    ).all()
+    jobs = db.exec(select(Job).where(Job.folder_id == fid).order_by(Job.created_at.desc())).all()
     artifacts = db.exec(
         select(Artifact).where(Artifact.folder_id == fid).order_by(Artifact.created_at.desc())
     ).all()
@@ -687,9 +684,7 @@ async def upload_clip(folder_id: str, clip: UploadFile, db=Depends(_db_session))
     try:
         if storage.storage_available():
             try:
-                clip_key = storage.upload_file(
-                    folder_id, storage_filename, tmp_path, content_type
-                )
+                clip_key = storage.upload_file(folder_id, storage_filename, tmp_path, content_type)
             except Exception as exc:
                 logger.error("R2 upload failed: %s", exc)
                 log_event(
@@ -867,9 +862,7 @@ async def upload_audio(
         raise HTTPException(status_code=500, detail="Failed to save uploaded audio") from exc
 
     try:
-        object_key = storage.upload_file(
-            folder_id, storage_filename, tmp_path, "audio/mp4"
-        )
+        object_key = storage.upload_file(folder_id, storage_filename, tmp_path, "audio/mp4")
     except Exception as exc:
         logger.error("Audio R2 upload failed: %s", exc)
         raise HTTPException(status_code=502, detail=f"Storage upload failed: {exc}") from exc
@@ -1435,9 +1428,7 @@ def cancel_folder_upload(folder_id: str, upload_id: str, db=Depends(_db_session)
 
 
 @router.get("/{folder_id}/artifacts/{artifact_id}", dependencies=[Depends(require_auth)])
-def get_artifact(
-    folder_id: str, artifact_id: str, db=Depends(_db_session)
-) -> JSONResponse:
+def get_artifact(folder_id: str, artifact_id: str, db=Depends(_db_session)) -> JSONResponse:
     """
     Return a presigned GET URL for the artifact, or a download redirect.
 
@@ -1475,9 +1466,7 @@ def get_artifact(
 
 
 @router.get("/{folder_id}/artifacts/{artifact_id}/url", dependencies=[Depends(require_auth)])
-def get_artifact_url(
-    folder_id: str, artifact_id: str, db=Depends(_db_session)
-) -> JSONResponse:
+def get_artifact_url(folder_id: str, artifact_id: str, db=Depends(_db_session)) -> JSONResponse:
     """Return a JSON payload containing the artifact's download URL."""
     from backend.app import storage
     from backend.app.models import Artifact
@@ -1747,9 +1736,7 @@ def _call_openai_responses_api(
 
 
 @router.post("/{folder_id}/messages", status_code=201, dependencies=[Depends(require_auth)])
-def post_message(
-    folder_id: str, body: dict[str, Any], db=Depends(_db_session)
-) -> JSONResponse:
+def post_message(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) -> JSONResponse:
     """
     Send a user message to the folder's chat.
 
@@ -1979,10 +1966,7 @@ def _mark_stalled_jobs(db, folder_id: uuid.UUID) -> None:
             source="backend",
             level="warning",
             event_type="jobs.stalled",
-            message=(
-                f"Job {job.id} ({job.type}) marked stalled after "
-                f"{_MAX_JOB_RUNTIME_SECONDS}s"
-            ),
+            message=(f"Job {job.id} ({job.type}) marked stalled after {_MAX_JOB_RUNTIME_SECONDS}s"),
             folder_id=str(folder_id),
             job_id=str(job.id),
             details_json={
@@ -1997,9 +1981,7 @@ def _mark_stalled_jobs(db, folder_id: uuid.UUID) -> None:
         from backend.app.models import Folder
 
         still_running = db.exec(
-            select(Job)
-            .where(Job.folder_id == folder_id)
-            .where(Job.status == "running")
+            select(Job).where(Job.folder_id == folder_id).where(Job.status == "running")
         ).first()
         if still_running is None:
             folder = db.get(Folder, folder_id)
@@ -2080,7 +2062,12 @@ def create_job(folder_id: str, body: dict[str, Any], db=Depends(_db_session)) ->
                 status_code=400, detail="options.additional_analysis must be a JSON object"
             )
         _AA_ALLOWED_KEYS = {
-            "enabled", "keyframes", "ocr", "transcript", "events", "segment_summaries"
+            "enabled",
+            "keyframes",
+            "ocr",
+            "transcript",
+            "events",
+            "segment_summaries",
         }
         unknown_aa = set(aa) - _AA_ALLOWED_KEYS
         if unknown_aa:
@@ -2242,9 +2229,7 @@ def list_jobs(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
 
     _mark_stalled_jobs(db, fid)
 
-    jobs = db.exec(
-        select(Job).where(Job.folder_id == fid).order_by(Job.created_at.desc())
-    ).all()
+    jobs = db.exec(select(Job).where(Job.folder_id == fid).order_by(Job.created_at.desc())).all()
     return JSONResponse(content={"jobs": [_job_dict(j) for j in jobs]})
 
 
@@ -2370,8 +2355,7 @@ def delete_job(folder_id: str, job_id: str, db=Depends(_db_session)) -> JSONResp
         level="info",
         event_type="jobs.delete",
         message=(
-            f"Job {jid} deleted from folder {fid}; "
-            f"{len(deleted_artifact_ids)} artifact(s) removed"
+            f"Job {jid} deleted from folder {fid}; {len(deleted_artifact_ids)} artifact(s) removed"
         ),
         folder_id=str(fid),
         job_id=str(jid),
@@ -2451,9 +2435,11 @@ def get_intent_pack(folder_id: str, db=Depends(_db_session)) -> JSONResponse:
         logger.error("Failed to load IntentPack artifact: %s", exc)
         raise HTTPException(status_code=502, detail="Could not load IntentPack") from exc
 
-    return JSONResponse(content={
-        "folder_id": folder_id,
-        "artifact_id": str(artifact.id),
-        "created_at": _dt(artifact.created_at),
-        "intent_pack": intent_pack,
-    })
+    return JSONResponse(
+        content={
+            "folder_id": folder_id,
+            "artifact_id": str(artifact.id),
+            "created_at": _dt(artifact.created_at),
+            "intent_pack": intent_pack,
+        }
+    )

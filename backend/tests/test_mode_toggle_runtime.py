@@ -30,7 +30,6 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mode_toggle")
 
 from backend.app.main import app
-from backend.app.mode_engine import MODE_STRICT
 from backend.tests.test_utils import _chat_payload
 
 TOKEN = "test-secret-key"
@@ -216,7 +215,11 @@ class TestPhase2ContractActivation:
         try:
             failure = json.loads(reply)
             # Should have validation failure info
-            assert "error" in failure or "failed_rules" in failure or "VALIDATION_FAILED" in str(failure)
+            assert (
+                "error" in failure
+                or "failed_rules" in failure
+                or "VALIDATION_FAILED" in str(failure)
+            )
         except json.JSONDecodeError:
             assert "VALIDATION_FAILED" in reply
 
@@ -518,9 +521,7 @@ class TestPhase6RapidToggle:
         reply4 = r4.json()["reply"]
         # Should match second strict mode behavior
         is_failure_4 = (
-            reply4.startswith("{")
-            or "VALIDATION_FAILED" in reply4
-            or "failed" in reply4.lower()
+            reply4.startswith("{") or "VALIDATION_FAILED" in reply4 or "failed" in reply4.lower()
         )
         assert is_failure_4
 

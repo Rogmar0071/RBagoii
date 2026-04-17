@@ -23,14 +23,15 @@ from typing import Any
 @dataclass
 class IntentObject:
     """Structured intent extracted from user message.
-    
+
     This is a deterministic extraction only - no validation, no mutation.
     """
+
     domain: str = ""
     objective: str = ""
     constraints: list[str] = field(default_factory=list)
     expected_output_type: str = ""
-    
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "domain": self.domain,
@@ -38,7 +39,7 @@ class IntentObject:
             "constraints": self.constraints,
             "expected_output_type": self.expected_output_type,
         }
-    
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "IntentObject":
         return cls(
@@ -51,16 +52,16 @@ class IntentObject:
 
 def extract_intent(user_message: str) -> IntentObject:
     """Extract structured intent from raw user message.
-    
+
     This is a deterministic extraction only - no validation rules,
     no meaning mutation. The extracted intent is used to drive
     contract construction in strict_mode.
-    
+
     Parameters
     ----------
     user_message:
         Raw user message/query
-        
+
     Returns
     -------
     IntentObject
@@ -69,13 +70,13 @@ def extract_intent(user_message: str) -> IntentObject:
     # For now, this is a simple deterministic extraction
     # In a real implementation, this could use pattern matching or NLP
     # but must remain deterministic and not mutate meaning
-    
+
     intent = IntentObject()
-    
+
     # Basic extraction: treat the entire message as the objective
     # More sophisticated extraction can be added later
     intent.objective = user_message.strip()
-    
+
     # Attempt to infer domain from keywords
     lower_msg = user_message.lower()
     if any(kw in lower_msg for kw in ["file", "code", "function", "class", "module"]):
@@ -86,7 +87,7 @@ def extract_intent(user_message: str) -> IntentObject:
         intent.domain = "analysis"
     else:
         intent.domain = "general"
-    
+
     # Attempt to infer expected output type
     if any(kw in lower_msg for kw in ["list", "show", "find"]):
         intent.expected_output_type = "list"
@@ -96,5 +97,5 @@ def extract_intent(user_message: str) -> IntentObject:
         intent.expected_output_type = "structured_proposal"
     else:
         intent.expected_output_type = "text"
-    
+
     return intent

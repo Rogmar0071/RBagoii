@@ -177,8 +177,7 @@ class TestModeToggleRealEntry:
         has_failed_rules = "failed_rules" in output_strict
         has_validation_failed = "VALIDATION_FAILED" in output_strict
         has_structure = any(
-            marker in output_strict
-            for marker in ["ASSUMPTIONS", "CONFIDENCE", "MISSING_DATA"]
+            marker in output_strict for marker in ["ASSUMPTIONS", "CONFIDENCE", "MISSING_DATA"]
         )
 
         assert has_failed_rules or has_validation_failed or has_structure, (
@@ -207,13 +206,11 @@ class TestModeToggleRealEntry:
         )
 
         assert normal_is_free_text, (
-            "FAIL: Normal mode output appears structured. "
-            "Expected raw free text."
+            "FAIL: Normal mode output appears structured. Expected raw free text."
         )
 
         assert strict_is_structured, (
-            "FAIL: Strict mode output is not structured. "
-            "Expected structured format."
+            "FAIL: Strict mode output is not structured. Expected structured format."
         )
 
         print("✓ PASS: Normal mode is free text, strict mode is structured")
@@ -437,8 +434,7 @@ class TestModeToggleRealEntry:
 
         # Should not be JSON structure
         assert not output.strip().startswith("{"), (
-            "FAIL: Normal mode output is JSON structured. "
-            "Expected free text."
+            "FAIL: Normal mode output is JSON structured. Expected free text."
         )
 
         print("\n✓ PASS: Normal mode has zero enforcement")
@@ -482,9 +478,7 @@ class TestModeToggleRealEntry:
         )
         is_json_structured = output.strip().startswith("{")
 
-        enforcement_present = (
-            has_validation_failure or has_structured_output or is_json_structured
-        )
+        enforcement_present = has_validation_failure or has_structured_output or is_json_structured
 
         assert enforcement_present, (
             "FAIL: Strict mode output has NO enforcement evidence. "

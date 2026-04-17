@@ -72,10 +72,7 @@ def client() -> TestClient:
 _TINY_MP4 = (
     # Minimal valid-ish MP4 stub (not a real playable video, but enough for
     # the upload endpoint which only saves the bytes without playing it).
-    b"\x00\x00\x00\x20ftyp"
-    b"isom\x00\x00\x02\x00"
-    b"isomiso2avc1mp41"
-    b"\x00\x00\x00\x08free"
+    b"\x00\x00\x00\x20ftypisom\x00\x00\x02\x00isomiso2avc1mp41\x00\x00\x00\x08free"
 )
 
 
@@ -340,9 +337,7 @@ class TestChat:
         assert response.status_code == 200
         assert response.json()["schema_version"] == SCHEMA_VERSION
 
-    def test_chat_openai_success(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_chat_openai_success(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """When OPENAI_API_KEY is set and OpenAI responds, reply is returned."""
         from unittest.mock import MagicMock, patch
 
@@ -384,9 +379,7 @@ class TestChat:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "choices": [{"message": {"content": "Safe reply."}}]
-        }
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Safe reply."}}]}
 
         with patch("backend.app.chat_routes.httpx.Client") as mock_client_cls:
             mock_ctx = MagicMock()
@@ -495,16 +488,18 @@ class TestMigrations:
         # runs 0003 on the next upgrade head call.
         engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
         with engine.begin() as conn:
-            conn.execute(sa.text(
-                "CREATE TABLE global_chat_messages ("
-                "  id TEXT PRIMARY KEY,"
-                "  role TEXT NOT NULL,"
-                "  content TEXT NOT NULL,"
-                "  session_id TEXT,"
-                "  domain_profile_id TEXT,"
-                "  created_at TEXT"
-                ")"
-            ))
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE global_chat_messages ("
+                    "  id TEXT PRIMARY KEY,"
+                    "  role TEXT NOT NULL,"
+                    "  content TEXT NOT NULL,"
+                    "  session_id TEXT,"
+                    "  domain_profile_id TEXT,"
+                    "  created_at TEXT"
+                    ")"
+                )
+            )
         engine.dispose()
 
         # env.py reads DATABASE_URL from the environment; point it at our

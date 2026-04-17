@@ -235,10 +235,12 @@ def check_code_syntax(directory: str) -> dict[str, Any]:
         except SyntaxError as exc:
             py_errors.append({"path": str(path.relative_to(directory)), "error": str(exc)})
         except Exception as exc:
-            py_errors.append({
-                "path": str(path.relative_to(directory)),
-                "error": f"read_error:{exc}",
-            })
+            py_errors.append(
+                {
+                    "path": str(path.relative_to(directory)),
+                    "error": f"read_error:{exc}",
+                }
+            )
 
     for path in Path(directory).rglob("*.kt"):
         kt_checked += 1
@@ -247,15 +249,19 @@ def check_code_syntax(directory: str) -> dict[str, Any]:
                 source = fh.read()
             # Simple brace-balance check as a lightweight heuristic.
             if source.count("{") != source.count("}"):
-                kt_errors.append({
-                    "path": str(path.relative_to(directory)),
-                    "error": "Unbalanced braces",
-                })
+                kt_errors.append(
+                    {
+                        "path": str(path.relative_to(directory)),
+                        "error": "Unbalanced braces",
+                    }
+                )
         except Exception as exc:
-            kt_errors.append({
-                "path": str(path.relative_to(directory)),
-                "error": f"read_error:{exc}",
-            })
+            kt_errors.append(
+                {
+                    "path": str(path.relative_to(directory)),
+                    "error": f"read_error:{exc}",
+                }
+            )
 
     return {
         "python": {"files_checked": py_checked, "errors": py_errors},
@@ -297,15 +303,19 @@ def verify_assets(directory: str) -> dict[str, Any]:
                 continue
             detected = imghdr.what(str(path))
             if detected is None:
-                invalid.append({
-                    "path": str(path.relative_to(directory)),
-                    "reason": "unrecognised_format",
-                })
+                invalid.append(
+                    {
+                        "path": str(path.relative_to(directory)),
+                        "reason": "unrecognised_format",
+                    }
+                )
         except Exception as exc:
-            invalid.append({
-                "path": str(path.relative_to(directory)),
-                "reason": f"read_error:{exc}",
-            })
+            invalid.append(
+                {
+                    "path": str(path.relative_to(directory)),
+                    "reason": f"read_error:{exc}",
+                }
+            )
 
     return {"assets_checked": assets_checked, "invalid": invalid}
 

@@ -136,46 +136,46 @@ class TestStage1StructuralValidation:
         result = stage_1_structural_validation("", [MODE_STRICT], contract=None)
         assert result.passed is False
         assert "strict_mode_without_contract" in result.failed_rules
-    
+
     def test_normal_mode_skips_validation(self):
         """PHASE 8 GUARANTEE: NORMAL mode = unrestricted, no validation"""
         result = stage_1_structural_validation("any text", [], contract=None)
         assert result.passed is True
         assert result.failed_rules == []
-    
+
     def test_strict_mode_with_contract_validates_sections(self):
         """Contract-driven validation checks required sections"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=["ASSUMPTIONS:", "CONFIDENCE:"],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         # Missing required sections
         result = stage_1_structural_validation("Some text", [MODE_STRICT], contract)
         assert result.passed is False
         assert any("missing_required_section" in rule for rule in result.failed_rules)
-        
+
         # Has required sections
         result = stage_1_structural_validation(
             "ASSUMPTIONS: test\nCONFIDENCE: 0.9", [MODE_STRICT], contract
         )
         assert result.passed is True
-    
+
     def test_strict_mode_allows_insufficient_data(self):
         """INSUFFICIENT_DATA is always valid in strict mode"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=["ASSUMPTIONS:"],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         result = stage_1_structural_validation(
             "INSUFFICIENT_DATA: not enough context", [MODE_STRICT], contract
         )
@@ -188,31 +188,31 @@ class TestStage2LogicalValidation:
         result = stage_2_logical_validation("I think this works", [], contract=None)
         assert result.passed is True
         assert result.failed_rules == []
-    
+
     def test_strict_mode_without_contract_fails(self):
         """strict_mode requires contract"""
         result = stage_2_logical_validation("some text", [MODE_STRICT], contract=None)
         assert result.passed is False
         assert "strict_mode_without_contract" in result.failed_rules
-    
+
     def test_strict_mode_validates_per_contract_rules(self):
         """Contract-driven logical validation"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=[],
             required_elements=[],
             validation_rules=["assumptions_explicit", "confidence_valid"],
             output_format="labeled_sections",
         )
-        
+
         # Missing assumptions
         result = stage_2_logical_validation(
             "ASSUMPTIONS: \nCONFIDENCE: 0.9", [MODE_STRICT], contract
         )
         assert result.passed is False
         assert "undeclared_assumptions" in result.failed_rules
-        
+
         # Valid assumptions and confidence
         result = stage_2_logical_validation(
             "ASSUMPTIONS: test assumption\nCONFIDENCE: 0.9", [MODE_STRICT], contract
@@ -226,24 +226,24 @@ class TestStage3ComplianceValidation:
         result = stage_3_compliance_validation("I think this might work.", [], contract=None)
         assert result.passed is True
         assert result.failed_rules == []
-    
+
     def test_strict_mode_without_contract_fails(self):
         """strict_mode requires contract"""
         result = stage_3_compliance_validation("some text", [MODE_STRICT], contract=None)
         assert result.passed is False
         assert "strict_mode_without_contract" in result.failed_rules
-    
+
     def test_strict_mode_no_guessing_passes(self):
         """Contract prohibits guessing in strict mode"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=[],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         result = stage_3_compliance_validation(
             "The system uses a REST API.", [MODE_STRICT], contract
         )
@@ -252,14 +252,14 @@ class TestStage3ComplianceValidation:
     def test_strict_mode_guessing_detected(self):
         """Contract blocks guessing in strict mode"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=[],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         result = stage_3_compliance_validation(
             "I think the file is in /src.", [MODE_STRICT], contract
         )
@@ -269,14 +269,14 @@ class TestStage3ComplianceValidation:
     def test_strict_mode_insufficient_data_bypasses_compliance(self):
         """INSUFFICIENT_DATA is always valid"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=[],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         result = stage_3_compliance_validation(
             "INSUFFICIENT_DATA: no context provided.", [MODE_STRICT], contract
         )
@@ -288,46 +288,46 @@ class TestResponseContractEnforcement:
         """NORMAL mode skips all contract checks"""
         result = _check_response_contract("Any free text response.", [], contract=None)
         assert result.passed is True
-    
+
     def test_strict_mode_without_contract_fails(self):
         """strict_mode requires contract"""
         result = _check_response_contract("some text", [MODE_STRICT], contract=None)
         assert result.passed is False
         assert "strict_mode_without_contract" in result.failed_rules
-    
+
     def test_strict_mode_validates_output_format(self):
         """Contract-driven output format validation"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=["ASSUMPTIONS:", "CONFIDENCE:"],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         # Missing required sections
         result = _check_response_contract("Some text", [MODE_STRICT], contract)
         assert result.passed is False
         assert any("missing_required_section" in rule for rule in result.failed_rules)
-        
+
         # Has required sections
         result = _check_response_contract(
             "ASSUMPTIONS: test\nCONFIDENCE: 0.9", [MODE_STRICT], contract
         )
         assert result.passed is True
-    
+
     def test_strict_mode_allows_insufficient_data(self):
         """INSUFFICIENT_DATA bypasses contract checks"""
         from backend.app.contract_construction import ContractObject
-        
+
         contract = ContractObject(
             required_sections=["ASSUMPTIONS:"],
             required_elements=[],
             validation_rules=[],
             output_format="labeled_sections",
         )
-        
+
         result = _check_response_contract(
             "INSUFFICIENT_DATA: not enough info", [MODE_STRICT], contract
         )
@@ -645,18 +645,14 @@ class TestMandatoryAudit:
 
         with Session(db_module.get_engine()) as s:
             rows = s.exec(
-                select(OpsEvent).where(
-                    OpsEvent.event_type == "mode_engine.execution_v2.audit"
-                )
+                select(OpsEvent).where(OpsEvent.event_type == "mode_engine.execution_v2.audit")
             ).all()
         assert len(rows) == 1
         assert record.audit_id in rows[0].details_json["audit_id"]
 
         db_module.reset_engine()
 
-    def test_persist_audit_record_raises_when_db_write_fails(
-        self, monkeypatch, tmp_path
-    ):
+    def test_persist_audit_record_raises_when_db_write_fails(self, monkeypatch, tmp_path):
         from sqlmodel import Session
 
         import backend.app.database as db_module
@@ -710,9 +706,7 @@ class TestMandatoryAudit:
         )
         assert resp.status_code == 500
 
-    def test_audit_record_no_silent_fallback_when_db_configured(
-        self, monkeypatch, tmp_path
-    ):
+    def test_audit_record_no_silent_fallback_when_db_configured(self, monkeypatch, tmp_path):
         from sqlmodel import Session
 
         import backend.app.database as db_module
@@ -795,9 +789,7 @@ class TestStubPathThroughGateway:
 
         with Session(db_module.get_engine()) as s:
             rows = s.exec(
-                select(OpsEvent).where(
-                    OpsEvent.event_type == "mode_engine.execution_v2.audit"
-                )
+                select(OpsEvent).where(OpsEvent.event_type == "mode_engine.execution_v2.audit")
             ).all()
         assert len(rows) >= 1
 
@@ -819,9 +811,7 @@ class TestAllAICallsExclusivelyThroughGateway:
     def test_gateway_coverage_constant_declares_post_chat(self):
         assert "POST /api/chat" in _GATEWAY_COVERAGE
 
-    def test_stub_path_uses_gateway_exclusively(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_stub_path_uses_gateway_exclusively(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         import backend.app.chat_routes as cr
@@ -841,9 +831,7 @@ class TestAllAICallsExclusivelyThroughGateway:
         assert resp.status_code == 200
         assert resp.json()["reply"] == "GATEWAY_CONTROLLED_RESPONSE"
 
-    def test_openai_path_uses_gateway_exclusively(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_openai_path_uses_gateway_exclusively(self, client: TestClient, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.chat_routes as cr
@@ -852,9 +840,7 @@ class TestAllAICallsExclusivelyThroughGateway:
 
         def _mock_gateway(**kwargs):
             gateway_called["n"] += 1
-            return "GATEWAY_LIVE_RESPONSE", ModeEngineAuditRecord(
-                user_intent=kwargs["user_intent"]
-            )
+            return "GATEWAY_LIVE_RESPONSE", ModeEngineAuditRecord(user_intent=kwargs["user_intent"])
 
         monkeypatch.setattr(cr, "mode_engine_gateway", _mock_gateway)
 
@@ -887,87 +873,87 @@ class TestAllAICallsExclusivelyThroughGateway:
 
 class TestContractValidationGate:
     """Tests for contract validation boundary."""
-    
+
     def test_valid_contract_passes_validation(self):
         """Valid contract passes the validation gate"""
         from backend.app.contract_construction import ContractObject, validate_contract
-        
+
         contract = ContractObject(
             required_sections=["ASSUMPTIONS:", "CONFIDENCE:"],
             required_elements=[],
             validation_rules=["assumptions_present", "confidence_present"],
             output_format="labeled_sections",
         )
-        
+
         result = validate_contract(contract)
         assert result.passed is True
         assert result.stage == "contract_boundary"
-    
+
     def test_none_contract_fails_validation(self):
         """None contract is rejected at boundary"""
         from backend.app.contract_construction import validate_contract
-        
+
         result = validate_contract(None)
         assert result.passed is False
         assert "contract_is_none" in result.failed_rules
         assert "contract" in result.missing_fields
-    
+
     def test_empty_required_sections_fails(self):
         """Contract with empty required_sections fails"""
         from backend.app.contract_construction import ContractObject, validate_contract
-        
+
         contract = ContractObject(
             required_sections=[],  # Empty - invalid
             required_elements=[],
             validation_rules=["test"],
             output_format="text",
         )
-        
+
         result = validate_contract(contract)
         assert result.passed is False
         assert "required_sections_empty" in result.failed_rules
-    
+
     def test_empty_output_format_fails(self):
         """Contract with empty output_format fails"""
         from backend.app.contract_construction import ContractObject, validate_contract
-        
+
         contract = ContractObject(
             required_sections=["TEST:"],
             required_elements=[],
             validation_rules=[],
             output_format="",  # Empty - invalid
         )
-        
+
         result = validate_contract(contract)
         assert result.passed is False
         assert "output_format_empty" in result.failed_rules
-    
+
     def test_duplicate_sections_detected(self):
         """Contract with duplicate sections fails"""
         from backend.app.contract_construction import ContractObject, validate_contract
-        
+
         contract = ContractObject(
             required_sections=["TEST:", "TEST:"],  # Duplicate
             required_elements=[],
             validation_rules=["test"],
             output_format="text",
         )
-        
+
         result = validate_contract(contract)
         assert result.passed is False
         assert any("duplicate_section" in rule for rule in result.failed_rules)
-    
+
     def test_empty_validation_rule_detected(self):
         """Contract with empty validation rules fails"""
         from backend.app.contract_construction import ContractObject, validate_contract
-        
+
         contract = ContractObject(
             required_sections=["TEST:"],
             required_elements=[],
             validation_rules=["valid_rule", ""],  # Empty rule
             output_format="text",
         )
-        
+
         result = validate_contract(contract)
         assert result.passed is False
         assert "empty_validation_rule" in result.failed_rules
@@ -975,13 +961,13 @@ class TestContractValidationGate:
 
 class TestBoundaryEnforcement:
     """Tests for contract boundary enforcement in mode_engine."""
-    
+
     def test_invalid_contract_blocks_execution(self):
         """Invalid contract blocks execution at boundary"""
-        from backend.app.contract_construction import ContractObject, construct_contract
-        from backend.app.intent_extraction import extract_intent
         from unittest.mock import patch
-        
+
+        from backend.app.contract_construction import ContractObject
+
         # Mock construct_contract to return invalid contract
         def mock_construct(intent):
             return ContractObject(
@@ -989,40 +975,40 @@ class TestBoundaryEnforcement:
                 validation_rules=[],
                 output_format="",  # Invalid
             )
-        
+
         ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
-        
-        with patch('backend.app.mode_engine.construct_contract', side_effect=mock_construct):
+
+        with patch("backend.app.mode_engine.construct_contract", side_effect=mock_construct):
             output, audit = mode_engine_gateway(
                 user_intent="test",
                 modes=[MODE_STRICT],
                 ai_call=ai_call,
                 base_system_prompt="",
             )
-        
+
         # Should return validation failure
         failure = json.loads(output)
         assert failure["error"] == "VALIDATION_FAILED"
         assert failure["stage"] == "contract_boundary"
         assert "failed_rules" in failure
-        
+
         # AI should never be called
         ai_call.assert_not_called()
-    
+
     def test_valid_contract_allows_execution(self):
         """Valid contract allows execution to proceed"""
         ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
-        
+
         output, audit = mode_engine_gateway(
             user_intent="test query",
             modes=[MODE_STRICT],
             ai_call=ai_call,
             base_system_prompt="",
         )
-        
+
         # Should proceed to AI call with valid contract
         ai_call.assert_called()
-        
+
         # Output should not be a boundary failure
         try:
             parsed = json.loads(output)
@@ -1031,31 +1017,31 @@ class TestBoundaryEnforcement:
         except json.JSONDecodeError:
             # Not JSON, which means it's normal output - that's fine
             pass
-    
+
     def test_boundary_failure_recorded_in_audit(self):
         """Boundary failure is recorded in audit trail"""
         from unittest.mock import patch
+
         from backend.app.contract_construction import ContractObject
-        
+
         def mock_construct(intent):
             return ContractObject(
                 required_sections=[],  # Invalid
                 validation_rules=[],
                 output_format="",
             )
-        
+
         ai_call = MagicMock(return_value="test")
-        
-        with patch('backend.app.mode_engine.construct_contract', side_effect=mock_construct):
+
+        with patch("backend.app.mode_engine.construct_contract", side_effect=mock_construct):
             output, audit = mode_engine_gateway(
                 user_intent="test",
                 modes=[MODE_STRICT],
                 ai_call=ai_call,
                 base_system_prompt="",
             )
-        
+
         # Audit should record the validation failure
         assert len(audit.validation_results) > 0
         assert audit.validation_results[0]["stage"] == "contract_boundary"
         assert audit.validation_results[0]["passed"] is False
-

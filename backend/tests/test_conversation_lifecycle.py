@@ -99,9 +99,7 @@ def _get_history(client: TestClient, conversation_id: str) -> list[dict]:
 
 
 class TestConversationIsolation:
-    def test_messages_isolated_between_conversations(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_messages_isolated_between_conversations(self, client: TestClient, monkeypatch):
         """
         Create two conversations A and B.
         Write distinct messages to each.
@@ -132,9 +130,7 @@ class TestConversationIsolation:
             "CRITICAL: conversation bleed — B sees A's message"
         )
 
-    def test_conversation_id_stored_on_message(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_conversation_id_stored_on_message(self, client: TestClient, monkeypatch):
         """Each message returned by the API carries its conversation_id."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -144,9 +140,7 @@ class TestConversationIsolation:
         assert resp["user_message"]["conversation_id"] == cid
         assert resp["assistant_message"]["conversation_id"] == cid
 
-    def test_history_scoped_to_active_conversation(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_history_scoped_to_active_conversation(self, client: TestClient, monkeypatch):
         """
         AI call for conversation A must receive only A's prior messages, not B's.
         """
@@ -205,9 +199,7 @@ class TestConversationIsolation:
 
 
 class TestConversationIdRequired:
-    def test_missing_conversation_id_returns_400(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_missing_conversation_id_returns_400(self, client: TestClient, monkeypatch):
         """POST /api/chat without conversation_id must return 400."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -219,9 +211,7 @@ class TestConversationIdRequired:
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "invalid_request"
 
-    def test_missing_message_still_returns_400(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_missing_message_still_returns_400(self, client: TestClient, monkeypatch):
         """Validation order: missing 'message' returns 400 regardless of conversation_id."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -233,9 +223,7 @@ class TestConversationIdRequired:
         assert resp.status_code == 400
         assert resp.json()["error"]["code"] == "invalid_request"
 
-    def test_explicit_conversation_id_accepted(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_explicit_conversation_id_accepted(self, client: TestClient, monkeypatch):
         """When conversation_id is provided, request is processed normally."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -268,9 +256,7 @@ class TestConversationIdRequired:
 
         with Session(db_module.get_engine()) as s:
             all_msgs = s.exec(select(GlobalChatMessage)).all()
-        assert all_msgs == [], (
-            "No messages must be persisted when conversation_id is absent"
-        )
+        assert all_msgs == [], "No messages must be persisted when conversation_id is absent"
 
 
 # ---------------------------------------------------------------------------
@@ -280,9 +266,7 @@ class TestConversationIdRequired:
 
 
 class TestStatelessOverride:
-    def test_stateless_still_persists_messages(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_stateless_still_persists_messages(self, client: TestClient, monkeypatch):
         """force_new_session=True still writes to DB (RULE 5: history-skip only)."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -301,13 +285,10 @@ class TestStatelessOverride:
         after = _count()
 
         assert after == before + 2, (
-            f"force_new_session=True must persist user+assistant; "
-            f"before={before} after={after}"
+            f"force_new_session=True must persist user+assistant; before={before} after={after}"
         )
 
-    def test_stateless_does_not_read_from_db(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_stateless_does_not_read_from_db(self, client: TestClient, monkeypatch):
         """
         With force_new_session=True, prior messages are not passed to the AI call
         even when they exist in the DB.
@@ -335,9 +316,7 @@ class TestStatelessOverride:
             "force_new_session=True must bypass all DB reads — history must be empty"
         )
 
-    def test_stateless_visible_in_history(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_stateless_visible_in_history(self, client: TestClient, monkeypatch):
         """force_new_session=True messages ARE visible in the conversation history."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -352,9 +331,7 @@ class TestStatelessOverride:
             "force_new_session=True message must appear in history (RULE 5)"
         )
 
-    def test_stateless_response_shape_complete(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_stateless_response_shape_complete(self, client: TestClient, monkeypatch):
         """Stateless response still contains user_message and assistant_message."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -374,9 +351,7 @@ class TestStatelessOverride:
 
 
 class TestConversationDeletion:
-    def test_delete_clears_conversation_messages(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_delete_clears_conversation_messages(self, client: TestClient, monkeypatch):
         """After DELETE, GET returns empty history for the deleted conversation."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -389,9 +364,7 @@ class TestConversationDeletion:
         assert len(history) >= 2
 
         # Delete.
-        del_resp = client.delete(
-            f"/api/chat/conversation/{cid}", headers=_auth()
-        )
+        del_resp = client.delete(f"/api/chat/conversation/{cid}", headers=_auth())
         assert del_resp.status_code == 200, del_resp.text
         body = del_resp.json()
         assert body["deleted"] >= 2
@@ -402,9 +375,7 @@ class TestConversationDeletion:
             f"Expected empty history after delete, got {len(history_after)} messages"
         )
 
-    def test_delete_does_not_affect_other_conversations(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_delete_does_not_affect_other_conversations(self, client: TestClient, monkeypatch):
         """Deleting conversation A must NOT remove messages from conversation B."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -415,17 +386,13 @@ class TestConversationDeletion:
         _post_chat(client, "Delete this message", conversation_id=cid_a)
 
         # Delete A.
-        del_resp = client.delete(
-            f"/api/chat/conversation/{cid_a}", headers=_auth()
-        )
+        del_resp = client.delete(f"/api/chat/conversation/{cid_a}", headers=_auth())
         assert del_resp.status_code == 200
 
         # B must be intact.
         history_b = _get_history(client, conversation_id=cid_b)
         contents_b = {m["content"] for m in history_b}
-        assert "Keep this message" in contents_b, (
-            "CRITICAL: deleting A destroyed B's messages"
-        )
+        assert "Keep this message" in contents_b, "CRITICAL: deleting A destroyed B's messages"
 
     def test_delete_returns_count(self, client: TestClient, monkeypatch):
         """DELETE response reports exact count of deleted messages."""
@@ -435,23 +402,17 @@ class TestConversationDeletion:
         _post_chat(client, "One", conversation_id=cid)
         _post_chat(client, "Two", conversation_id=cid)
 
-        del_resp = client.delete(
-            f"/api/chat/conversation/{cid}", headers=_auth()
-        )
+        del_resp = client.delete(f"/api/chat/conversation/{cid}", headers=_auth())
         assert del_resp.status_code == 200
         # Each _post_chat creates 2 messages (user + assistant).
         assert del_resp.json()["deleted"] == 4
 
-    def test_delete_empty_conversation_returns_zero(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_delete_empty_conversation_returns_zero(self, client: TestClient, monkeypatch):
         """Deleting a conversation that has no messages returns deleted=0."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         cid = _new_conversation(client)
-        del_resp = client.delete(
-            f"/api/chat/conversation/{cid}", headers=_auth()
-        )
+        del_resp = client.delete(f"/api/chat/conversation/{cid}", headers=_auth())
         assert del_resp.status_code == 200
         assert del_resp.json()["deleted"] == 0
 
@@ -461,9 +422,7 @@ class TestConversationDeletion:
         resp = client.delete(f"/api/chat/conversation/{uuid.uuid4()}")
         assert resp.status_code == 401
 
-    def test_delete_legacy_default_explicitly_allowed(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_delete_legacy_default_explicitly_allowed(self, client: TestClient, monkeypatch):
         """legacy_default CAN be cleared by calling DELETE with ?confirm=true."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
@@ -476,9 +435,7 @@ class TestConversationDeletion:
         # No runtime code writes to legacy_default anymore; deletion returns 0.
         assert del_resp.json()["deleted"] >= 0
 
-    def test_delete_legacy_default_without_confirm_rejected(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_delete_legacy_default_without_confirm_rejected(self, client: TestClient, monkeypatch):
         """DELETE legacy_default without ?confirm=true must be rejected (RULE 6)."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 

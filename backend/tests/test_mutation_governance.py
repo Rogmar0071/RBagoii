@@ -64,8 +64,7 @@ _VALID_OUTPUT = (
     "CONFIDENCE: 0.85\n"
     "MISSING_DATA: none\n"
     "\n"
-    "SECTION_MUTATION_CONTRACT:\n"
-    + json.dumps(_VALID_CONTRACT_DICT, indent=2)
+    "SECTION_MUTATION_CONTRACT:\n" + json.dumps(_VALID_CONTRACT_DICT, indent=2)
 )
 
 
@@ -83,6 +82,7 @@ def _configure_sqlite(monkeypatch: pytest.MonkeyPatch, tmp_path):
     db_path = tmp_path / "test_mutation_governance.db"
     db_url = f"sqlite:///{db_path}"
     import backend.app.database as db_module
+
     db_module.reset_engine(db_url)
     db_module.init_db()
     monkeypatch.setenv("DATABASE_URL", db_url)
@@ -94,6 +94,7 @@ def _configure_sqlite(monkeypatch: pytest.MonkeyPatch, tmp_path):
 def _set_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("API_KEY", TOKEN)
     import backend.app.main as m
+
     monkeypatch.setattr(m, "API_KEY", TOKEN)
 
 
@@ -109,6 +110,7 @@ def _auth() -> dict:
 def _make_ai_call(output: str):
     def _call(system_prompt: str) -> str:  # noqa: ARG001
         return output
+
     return _call
 
 
@@ -436,9 +438,7 @@ class TestAuditPersistence:
 
     def test_raises_on_db_write_failure(self):
         record = MutationGovernanceAuditRecord(user_intent="bad", status="blocked")
-        with patch(
-            "backend.app.mutation_governance.audit.persist_mutation_audit_record"
-        ) as m:
+        with patch("backend.app.mutation_governance.audit.persist_mutation_audit_record") as m:
             m.side_effect = RuntimeError("AUDIT_LOG_FAILURE: forced")
             with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
                 m(record)
@@ -446,6 +446,7 @@ class TestAuditPersistence:
     def test_no_db_configured_raises_audit_unavailable(self):
         record = MutationGovernanceAuditRecord(user_intent="test", status="approved")
         import backend.app.database as db_module
+
         original = db_module.get_engine
 
         def _raise():
@@ -492,9 +493,7 @@ class TestMutationGovernanceGateway:
         assert result.governance_contract == "MUTATION_GOVERNANCE_EXECUTION_V1"
 
     def test_execution_boundary_always_enforced(self):
-        result = mutation_governance_gateway(
-            user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT)
-        )
+        result = mutation_governance_gateway(user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT))
         assert result.execution_boundary["no_git_commit"] is True
         assert result.execution_boundary["no_file_write"] is True
         assert result.execution_boundary["no_deployment_trigger"] is True
@@ -541,11 +540,11 @@ class TestMutationGovernanceGateway:
         assert result.status == "blocked"
 
     def test_all_three_validation_stages_always_run(self):
-        result = mutation_governance_gateway(
-            user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT)
-        )
+        result = mutation_governance_gateway(user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT))
         assert {vr["stage"] for vr in result.validation_results} == {
-            "structural", "logical", "scope"
+            "structural",
+            "logical",
+            "scope",
         }
 
     def test_mode_engine_runs_before_contract_validation(self):
@@ -573,9 +572,7 @@ class TestMutationGovernanceGateway:
         assert "builder_mode" in combined
 
     def test_approved_proposal_has_only_lowercase_json_keys(self):
-        result = mutation_governance_gateway(
-            user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT)
-        )
+        result = mutation_governance_gateway(user_intent="x", ai_call=_make_ai_call(_VALID_OUTPUT))
         assert result.status == "approved"
         for key in result.mutation_proposal:
             assert key == key.lower(), f"{key!r} must be lowercase"
@@ -584,15 +581,20 @@ class TestMutationGovernanceGateway:
         broken = (
             "SECTION_INTENT_ANALYSIS:\nASSUMPTIONS: s\nALTERNATIVES: a\n"
             "CONFIDENCE: low\nMISSING_DATA: none\n\nSECTION_MUTATION_CONTRACT:\n"
-            + json.dumps({
-                "target_files": [], "operation_type": "bad", "proposed_changes": "",
-                "assumptions": [], "alternatives": [], "confidence": "?",
-                "risks": [], "missing_data": [],
-            })
+            + json.dumps(
+                {
+                    "target_files": [],
+                    "operation_type": "bad",
+                    "proposed_changes": "",
+                    "assumptions": [],
+                    "alternatives": [],
+                    "confidence": "?",
+                    "risks": [],
+                    "missing_data": [],
+                }
+            )
         )
-        result = mutation_governance_gateway(
-            user_intent="broken", ai_call=_make_ai_call(broken)
-        )
+        result = mutation_governance_gateway(user_intent="broken", ai_call=_make_ai_call(broken))
         assert result.status == "blocked" and isinstance(result.to_dict(), dict)
 
     def test_audit_written_for_approved(self):
@@ -602,9 +604,7 @@ class TestMutationGovernanceGateway:
         import backend.app.database as db
         from backend.app.models import OpsEvent
 
-        mutation_governance_gateway(
-            user_intent="audit test", ai_call=_make_ai_call(_VALID_OUTPUT)
-        )
+        mutation_governance_gateway(user_intent="audit test", ai_call=_make_ai_call(_VALID_OUTPUT))
         with S(db.get_engine()) as s:
             events = s.exec(
                 select(OpsEvent).where(
@@ -620,9 +620,7 @@ class TestMutationGovernanceGateway:
         import backend.app.database as db
         from backend.app.models import OpsEvent
 
-        mutation_governance_gateway(
-            user_intent="blocked", ai_call=_make_ai_call("no label")
-        )
+        mutation_governance_gateway(user_intent="blocked", ai_call=_make_ai_call("no label"))
         with S(db.get_engine()) as s:
             events = s.exec(
                 select(OpsEvent).where(
@@ -641,45 +639,39 @@ class TestDualModeGovernance:
     def test_normal_mode_approves_without_validation(self):
         """PHASE 6: modes == [] → immediate approval, no validation"""
         result = mutation_governance_gateway(
-            user_intent="test query",
-            modes=[],
-            ai_call=_make_ai_call("any free text response")
+            user_intent="test query", modes=[], ai_call=_make_ai_call("any free text response")
         )
         assert result.status == "approved"
         assert result.mutation_proposal is not None
         # No validation stages run in normal mode
         assert result.validation_results == []
         assert result.gate_result == {}
-    
+
     def test_strict_mode_requires_contract_validation(self):
         """PHASE 6: strict_mode → contract-driven validation"""
         result = mutation_governance_gateway(
-            user_intent="test query",
-            modes=["strict_mode"],
-            ai_call=_make_ai_call(_VALID_OUTPUT)
+            user_intent="test query", modes=["strict_mode"], ai_call=_make_ai_call(_VALID_OUTPUT)
         )
         assert result.status == "approved"
         # Validation stages run in strict mode
         assert len(result.validation_results) == 3  # structural, logical, scope
         assert {vr["stage"] for vr in result.validation_results} == {
-            "structural", "logical", "scope"
+            "structural",
+            "logical",
+            "scope",
         }
-    
+
     def test_governance_never_assumes_validation_exists(self):
         """PHASE 6: Governance must not assume validation always exists"""
         # In normal mode, no validation
         result = mutation_governance_gateway(
-            user_intent="test",
-            modes=[],
-            ai_call=_make_ai_call("response")
+            user_intent="test", modes=[], ai_call=_make_ai_call("response")
         )
         assert result.validation_results == []
-        
+
         # In strict mode, validation exists
         result = mutation_governance_gateway(
-            user_intent="test",
-            modes=["strict_mode"],
-            ai_call=_make_ai_call(_VALID_OUTPUT)
+            user_intent="test", modes=["strict_mode"], ai_call=_make_ai_call(_VALID_OUTPUT)
         )
         assert len(result.validation_results) > 0
 
@@ -695,9 +687,7 @@ class TestMutationProposeEndpoint:
         assert resp.status_code == 401
 
     def test_rejects_empty_intent(self, client: TestClient):
-        resp = client.post(
-            "/api/mutations/propose", json={"intent": "   "}, headers=_auth()
-        )
+        resp = client.post("/api/mutations/propose", json={"intent": "   "}, headers=_auth())
         assert resp.status_code == 422
 
     def test_rejects_extra_fields(self, client: TestClient):
@@ -730,9 +720,7 @@ class TestMutationProposeEndpoint:
             "backend.app.mutation_routes._build_ai_call",
             return_value=_make_ai_call(_VALID_OUTPUT),
         ):
-            resp = client.post(
-                "/api/mutations/propose", json={"intent": "x"}, headers=_auth()
-            )
+            resp = client.post("/api/mutations/propose", json={"intent": "x"}, headers=_auth())
         body = resp.json()
         assert body["status"] == "approved"
         for key in body["mutation_proposal"]:
@@ -763,9 +751,7 @@ class TestMutationProposeEndpoint:
             "backend.app.mutation_routes._build_ai_call",
             return_value=_make_ai_call("garbage"),
         ):
-            resp = client.post(
-                "/api/mutations/propose", json={"intent": "x"}, headers=_auth()
-            )
+            resp = client.post("/api/mutations/propose", json={"intent": "x"}, headers=_auth())
         assert resp.status_code == 200
         body = resp.json()
         assert "governance_contract" in body and "execution_boundary" in body

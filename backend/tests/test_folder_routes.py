@@ -280,17 +280,13 @@ class TestPatchFolder:
     def test_rename_title_too_long_returns_422(self, client: TestClient) -> None:
         folder = _create_folder(client)
         fid = folder["id"]
-        resp = client.patch(
-            f"/v1/folders/{fid}", json={"title": "x" * 121}, headers=_auth()
-        )
+        resp = client.patch(f"/v1/folders/{fid}", json={"title": "x" * 121}, headers=_auth())
         assert resp.status_code == 422
 
     def test_rename_title_max_length_succeeds(self, client: TestClient) -> None:
         folder = _create_folder(client)
         fid = folder["id"]
-        resp = client.patch(
-            f"/v1/folders/{fid}", json={"title": "x" * 120}, headers=_auth()
-        )
+        resp = client.patch(f"/v1/folders/{fid}", json={"title": "x" * 120}, headers=_auth())
         assert resp.status_code == 200
 
     def test_rename_updates_title_in_get(self, client: TestClient) -> None:
@@ -301,9 +297,7 @@ class TestPatchFolder:
         assert resp.json()["title"] == "After"
 
     def test_rename_nonexistent_returns_404(self, client: TestClient) -> None:
-        resp = client.patch(
-            f"/v1/folders/{uuid.uuid4()}", json={"title": "X"}, headers=_auth()
-        )
+        resp = client.patch(f"/v1/folders/{uuid.uuid4()}", json={"title": "X"}, headers=_auth())
         assert resp.status_code == 404
 
     def test_rename_requires_auth(self, client: TestClient) -> None:
@@ -427,9 +421,7 @@ class TestUploadAssets:
                 .where(Artifact.type == "repo_zip")
             ).first()
             job = s.exec(
-                select(Job)
-                .where(Job.folder_id == uuid.UUID(fid))
-                .where(Job.type == "analyze_repo")
+                select(Job).where(Job.folder_id == uuid.UUID(fid)).where(Job.type == "analyze_repo")
             ).first()
 
         assert artifact is not None
@@ -505,8 +497,7 @@ class TestUploadAssets:
         chunks = [full_zip[i : i + chunk_size] for i in range(0, len(full_zip), chunk_size)]
         for index, chunk in enumerate(chunks):
             content_range = (
-                f"bytes {index * chunk_size}-"
-                f"{index * chunk_size + len(chunk) - 1}/{len(full_zip)}"
+                f"bytes {index * chunk_size}-{index * chunk_size + len(chunk) - 1}/{len(full_zip)}"
             )
             resp = client.post(
                 f"/v1/folders/{fid}/repo/chunks",
@@ -538,9 +529,7 @@ class TestUploadAssets:
                 .where(Artifact.type == "repo_zip")
             ).first()
             job = s.exec(
-                select(Job)
-                .where(Job.folder_id == uuid.UUID(fid))
-                .where(Job.type == "analyze_repo")
+                select(Job).where(Job.folder_id == uuid.UUID(fid)).where(Job.type == "analyze_repo")
             ).first()
 
         assert artifact is not None
@@ -583,9 +572,7 @@ class TestUploadAssets:
         with Session(db_module.get_engine()) as s:
             artifact = s.get(Artifact, uuid.UUID(artifact_id))
             job = s.exec(
-                select(Job)
-                .where(Job.folder_id == uuid.UUID(fid))
-                .where(Job.type == "analyze_repo")
+                select(Job).where(Job.folder_id == uuid.UUID(fid)).where(Job.type == "analyze_repo")
             ).first()
 
         assert artifact is not None
@@ -712,6 +699,7 @@ class TestUploadAssets:
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         import backend.app.storage as storage
+
         folder = _create_folder(client)
         fid = folder["id"]
 
@@ -786,8 +774,7 @@ class TestUploadAssets:
 
         chunk_size = 4
         chunks = [
-            archive_bytes[i : i + chunk_size]
-            for i in range(0, len(archive_bytes), chunk_size)
+            archive_bytes[i : i + chunk_size] for i in range(0, len(archive_bytes), chunk_size)
         ]
         for index, chunk in enumerate(chunks):
             resp = client.post(
@@ -1358,9 +1345,7 @@ class TestDeleteJob:
         client.delete(f"/v1/folders/{fid}/jobs/{jid}", headers=_auth())
 
         with Session(db_module.get_engine()) as s:
-            remaining = s.exec(
-                select(Artifact).where(Artifact.id == uuid.UUID(aid))
-            ).first()
+            remaining = s.exec(select(Artifact).where(Artifact.id == uuid.UUID(aid))).first()
         assert remaining is None
 
     def test_delete_returns_artifact_ids(self, client: TestClient) -> None:
@@ -1414,9 +1399,7 @@ class TestDeleteJob:
         client.delete(f"/v1/folders/{fid}/jobs/{jid1}", headers=_auth())
 
         with Session(db_module.get_engine()) as s:
-            remaining = s.exec(
-                select(Artifact).where(Artifact.id == uuid.UUID(kept_aid))
-            ).first()
+            remaining = s.exec(select(Artifact).where(Artifact.id == uuid.UUID(kept_aid))).first()
         assert remaining is not None
 
     def test_delete_updates_folder_status_to_pending_when_no_jobs_remain(
@@ -1587,9 +1570,7 @@ class TestArtifactRenameAndClipAnchoring:
         assert resp.status_code == 404
 
     def test_delete_nonexistent_folder_returns_404(self, client: TestClient) -> None:
-        resp = client.delete(
-            f"/v1/folders/{uuid.uuid4()}/jobs/{uuid.uuid4()}", headers=_auth()
-        )
+        resp = client.delete(f"/v1/folders/{uuid.uuid4()}/jobs/{uuid.uuid4()}", headers=_auth())
         assert resp.status_code == 404
 
     def test_delete_requires_auth(self, client: TestClient) -> None:
@@ -1654,6 +1635,7 @@ class TestWatchdog:
         # Override max runtime to 1 second so ANY running job is stalled.
         monkeypatch.setenv("MAX_JOB_RUNTIME_SECONDS", "1")
         import backend.app.folder_routes as fr
+
         monkeypatch.setattr(fr, "_MAX_JOB_RUNTIME_SECONDS", 1)
 
         resp = client.get(f"/v1/folders/{fid}", headers=_auth())
@@ -1687,6 +1669,7 @@ class TestWatchdog:
 
         monkeypatch.setenv("MAX_JOB_RUNTIME_SECONDS", "1")
         import backend.app.folder_routes as fr
+
         monkeypatch.setattr(fr, "_MAX_JOB_RUNTIME_SECONDS", 1)
 
         # Trigger watchdog.
@@ -1708,6 +1691,7 @@ class TestWatchdog:
         # Use a very large max runtime so the job is NOT stalled.
         monkeypatch.setenv("MAX_JOB_RUNTIME_SECONDS", "999999")
         import backend.app.folder_routes as fr
+
         monkeypatch.setattr(fr, "_MAX_JOB_RUNTIME_SECONDS", 999999)
 
         resp = client.get(f"/v1/folders/{fid}", headers=_auth())
@@ -1871,9 +1855,7 @@ class TestWorkerTimeouts:
         assert call_kwargs["job_timeout"] == 1800
         assert call_kwargs["result_ttl"] == 86400
 
-    def test_run_analyze_uses_extract_timeout_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_run_analyze_uses_extract_timeout_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """subprocess.run timeout in run_analyze uses ANALYZE_EXTRACT_TIMEOUT_S."""
         import unittest.mock as mock
 

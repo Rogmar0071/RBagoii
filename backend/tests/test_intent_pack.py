@@ -14,6 +14,7 @@ from ui_blueprint.intent_pack import (
 # _build_segment_summary
 # ---------------------------------------------------------------------------
 
+
 def test_build_segment_summary_empty():
     result = _build_segment_summary([])
     assert "No segment" in result
@@ -42,6 +43,7 @@ def test_build_segment_summary_basic():
 # _empty_intent_pack
 # ---------------------------------------------------------------------------
 
+
 def test_empty_intent_pack_structure():
     pack = _empty_intent_pack("test_reason")
     assert pack["intent_version"] == INTENT_PACK_SCHEMA_VERSION
@@ -56,6 +58,7 @@ def test_empty_intent_pack_structure():
 # generate_intent_pack
 # ---------------------------------------------------------------------------
 
+
 def test_generate_intent_pack_no_segments():
     result = generate_intent_pack([], api_key="test")
     assert result["_meta"]["reason"] == "no_segments"
@@ -65,9 +68,7 @@ def _make_openai_response(content: dict) -> MagicMock:
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
-    mock_response.json.return_value = {
-        "choices": [{"message": {"content": json.dumps(content)}}]
-    }
+    mock_response.json.return_value = {"choices": [{"message": {"content": json.dumps(content)}}]}
     return mock_response
 
 
@@ -143,9 +144,7 @@ def test_generate_intent_pack_invalid_json_returns_empty():
     bad_response = MagicMock()
     bad_response.status_code = 200
     bad_response.raise_for_status = MagicMock()
-    bad_response.json.return_value = {
-        "choices": [{"message": {"content": "not valid json {"}}]
-    }
+    bad_response.json.return_value = {"choices": [{"message": {"content": "not valid json {"}}]}
 
     with patch("ui_blueprint.intent_pack.httpx.Client") as mock_client_cls:
         mock_client = MagicMock()

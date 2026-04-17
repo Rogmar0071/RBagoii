@@ -732,9 +732,7 @@ def _infer_events(
                 "unknown",
             }:
                 bbox = curr_element["bbox"]
-                area_ratio = (bbox["w"] * bbox["h"]) / max(
-                    frame_width * frame_height, 1
-                )
+                area_ratio = (bbox["w"] * bbox["h"]) / max(frame_width * frame_height, 1)
                 if area_ratio > 0.1:
                     curr_center = _bbox_center(bbox)
                     events.append(
@@ -747,9 +745,9 @@ def _infer_events(
                                 "y": round(curr_center[1], 3),
                             },
                             "data": {
-                                    "reason": "element_appeared",
-                                    "area_ratio": round(area_ratio, 4),
-                                },
+                                "reason": "element_appeared",
+                                "area_ratio": round(area_ratio, 4),
+                            },
                             "confidence": 0.55,
                         }
                     )
@@ -1101,10 +1099,14 @@ def extract_segment(
         try:
             cmd = [
                 ffmpeg,
-                "-ss", str(start_s),
-                "-i", clip_path,
-                "-t", str(duration_s),
-                "-c", "copy",
+                "-ss",
+                str(start_s),
+                "-i",
+                clip_path,
+                "-t",
+                str(duration_s),
+                "-c",
+                "copy",
                 "-y",
                 segment_path,
             ]
@@ -1156,11 +1158,16 @@ def extract_keyframes(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
             pattern = os.path.join(tmpdir, "kf_%04d.jpg")
             cmd = [
                 ffmpeg,
-                "-ss", str(start_s),
-                "-i", clip_path,
-                "-t", str(duration_s),
-                "-r", "1",
-                "-q:v", "3",
+                "-ss",
+                str(start_s),
+                "-i",
+                clip_path,
+                "-t",
+                str(duration_s),
+                "-r",
+                "1",
+                "-q:v",
+                "3",
                 "-y",
                 pattern,
             ]
@@ -1221,11 +1228,16 @@ def extract_ocr(clip_path: str, t0_ms: int, t1_ms: int) -> dict[str, Any]:
             pattern = os.path.join(tmpdir, "ocr_%04d.jpg")
             cmd = [
                 ffmpeg,
-                "-ss", str(start_s),
-                "-i", clip_path,
-                "-t", str(duration_s),
-                "-r", "1",
-                "-q:v", "3",
+                "-ss",
+                str(start_s),
+                "-i",
+                clip_path,
+                "-t",
+                str(duration_s),
+                "-r",
+                "1",
+                "-q:v",
+                "3",
                 "-y",
                 pattern,
             ]
@@ -1291,9 +1303,11 @@ def extract_video_track(clip_path: str, output_path: str) -> bool:
         ffmpeg = _ffmpeg_exe()
         cmd = [
             ffmpeg,
-            "-i", clip_path,
+            "-i",
+            clip_path,
             "-an",
-            "-c:v", "copy",
+            "-c:v",
+            "copy",
             "-y",
             output_path,
         ]
@@ -1325,7 +1339,8 @@ def extract_audio_track(clip_path: str, output_path: str) -> bool:
             codec_args = ["-c:a", "copy"]
         cmd = [
             ffmpeg,
-            "-i", clip_path,
+            "-i",
+            clip_path,
             "-vn",
             *codec_args,
             "-y",
@@ -1350,13 +1365,9 @@ def analyze_video_ui(clip_path: str) -> dict[str, Any]:
     try:
         result = extract(Path(clip_path))
         all_events: list[dict[str, Any]] = [
-            event
-            for chunk in result.get("chunks", [])
-            for event in chunk.get("events", [])
+            event for chunk in result.get("chunks", []) for event in chunk.get("events", [])
         ]
-        last_quality = (
-            result["chunks"][-1].get("quality", {}) if result.get("chunks") else {}
-        )
+        last_quality = result["chunks"][-1].get("quality", {}) if result.get("chunks") else {}
         return {
             "elements_catalog": result.get("elements_catalog", []),
             "chunks": result.get("chunks", []),
@@ -1407,9 +1418,7 @@ def split_and_analyze(
     import os
     import tempfile
 
-    def _run(
-        video_path: str, audio_path: str
-    ) -> dict[str, Any]:
+    def _run(video_path: str, audio_path: str) -> dict[str, Any]:
         extract_video_track(clip_path, video_path)
         extract_audio_track(clip_path, audio_path)
         ui_structure = analyze_video_ui(video_path)
@@ -1481,9 +1490,7 @@ def preprocess_ui_tree(ui_tree: dict[str, Any]) -> dict[str, Any]:
     return ui_tree
 
 
-def prune_ui_tree(
-    ui_tree: dict[str, Any], max_nodes: int, max_depth: int
-) -> dict[str, Any]:
+def prune_ui_tree(ui_tree: dict[str, Any], max_nodes: int, max_depth: int) -> dict[str, Any]:
     """Truncate *ui_tree* so that it does not exceed *max_nodes* or *max_depth*.
 
     Children are pruned breadth-first when the node limit would be exceeded,
@@ -1515,9 +1522,7 @@ def segment_ui_tree(ui_tree: dict[str, Any]) -> list[dict[str, Any]] | None:
     """
     start_time_s = time.monotonic()
 
-    def _segment_node(
-        node: dict[str, Any], depth: int
-    ) -> list[dict[str, Any]] | None:
+    def _segment_node(node: dict[str, Any], depth: int) -> list[dict[str, Any]] | None:
         if depth > MAX_UI_DEPTH:
             import warnings
 
@@ -1528,9 +1533,7 @@ def segment_ui_tree(ui_tree: dict[str, Any]) -> list[dict[str, Any]] | None:
             )
             return None
         if (time.monotonic() - start_time_s) * 1000 > MAX_SEGMENTATION_TIME_MS:
-            raise TimeoutError(
-                "[segment_ui_tree] Segmentation time limit exceeded, aborting."
-            )
+            raise TimeoutError("[segment_ui_tree] Segmentation time limit exceeded, aborting.")
 
         segments: list[dict[str, Any]] = []
         for child in node.get("children") or []:

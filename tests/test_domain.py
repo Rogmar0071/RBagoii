@@ -93,18 +93,14 @@ class TestCompileRejectsUnconfirmedDomain:
     ) -> None:
         assert draft_profile.status == DOMAIN_STATUS_DRAFT
         with pytest.raises(BlueprintCompileError, match="confirmed"):
-            compileBlueprintFromMedia(
-                media=sample_media, confirmed_domain_profile=draft_profile
-            )
+            compileBlueprintFromMedia(media=sample_media, confirmed_domain_profile=draft_profile)
 
     def test_compile_archived_domain_raises(
         self, sample_media: dict, draft_profile: DomainProfile
     ) -> None:
         draft_profile.status = "archived"
         with pytest.raises(BlueprintCompileError, match="confirmed"):
-            compileBlueprintFromMedia(
-                media=sample_media, confirmed_domain_profile=draft_profile
-            )
+            compileBlueprintFromMedia(media=sample_media, confirmed_domain_profile=draft_profile)
 
     def test_compile_confirmed_domain_succeeds(
         self, sample_media: dict, confirmed_profile: DomainProfile
@@ -231,9 +227,7 @@ class TestStubProvider:
         assert isinstance(results, list)
         assert len(results) >= 1
 
-    def test_all_candidates_are_draft(
-        self, stub_provider: StubDomainDerivationProvider
-    ) -> None:
+    def test_all_candidates_are_draft(self, stub_provider: StubDomainDerivationProvider) -> None:
         for profile in stub_provider.derive({"media_id": "x"}):
             assert profile.status == DOMAIN_STATUS_DRAFT
 
@@ -248,22 +242,16 @@ class TestStubProvider:
         )
         assert mechanical[0].name != warehouse[0].name
 
-    def test_max_candidates_respected(
-        self, stub_provider: StubDomainDerivationProvider
-    ) -> None:
+    def test_max_candidates_respected(self, stub_provider: StubDomainDerivationProvider) -> None:
         results = stub_provider.derive({"media_id": "x"}, max_candidates=2)
         assert len(results) <= 2
 
-    def test_derived_from_set_to_stub(
-        self, stub_provider: StubDomainDerivationProvider
-    ) -> None:
+    def test_derived_from_set_to_stub(self, stub_provider: StubDomainDerivationProvider) -> None:
         profile = stub_provider.derive({"media_id": "vid_42"})[0]
         assert profile.derived_from.provider == "stub"
         assert profile.derived_from.media_id == "vid_42"
 
-    def test_capture_protocol_non_empty(
-        self, stub_provider: StubDomainDerivationProvider
-    ) -> None:
+    def test_capture_protocol_non_empty(self, stub_provider: StubDomainDerivationProvider) -> None:
         profile = stub_provider.derive({"media_id": "x"})[0]
         assert len(profile.capture_protocol) >= 1
         step = profile.capture_protocol[0]
@@ -271,15 +259,11 @@ class TestStubProvider:
         assert step.title
         assert step.instructions
 
-    def test_validators_non_empty(
-        self, stub_provider: StubDomainDerivationProvider
-    ) -> None:
+    def test_validators_non_empty(self, stub_provider: StubDomainDerivationProvider) -> None:
         profile = stub_provider.derive({"media_id": "x"})[0]
         assert len(profile.validators) >= 1
 
-    def test_exporters_non_empty(
-        self, stub_provider: StubDomainDerivationProvider
-    ) -> None:
+    def test_exporters_non_empty(self, stub_provider: StubDomainDerivationProvider) -> None:
         profile = stub_provider.derive({"media_id": "x"})[0]
         assert len(profile.exporters) >= 1
 
@@ -302,9 +286,7 @@ class TestDomainProfileModel:
         p = DomainProfile(
             name="Test Domain",
             status=DOMAIN_STATUS_DRAFT,
-            derived_from=DerivedFrom(
-                media_id="m1", provider="stub", provider_version="1.0"
-            ),
+            derived_from=DerivedFrom(media_id="m1", provider="stub", provider_version="1.0"),
             capture_protocol=[
                 CaptureStep(
                     step_id="s1",
@@ -313,12 +295,8 @@ class TestDomainProfileModel:
                     required=True,
                 )
             ],
-            validators=[
-                ProfileValidator(id="v1", type="min_entity_count", params={"min": 1})
-            ],
-            exporters=[
-                ProfileExporter(id="e1", type="generic_blueprint_json", params={})
-            ],
+            validators=[ProfileValidator(id="v1", type="min_entity_count", params={"min": 1})],
+            exporters=[ProfileExporter(id="e1", type="generic_blueprint_json", params={})],
             notes="test notes",
         )
         d = p.to_dict()

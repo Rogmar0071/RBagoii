@@ -207,9 +207,7 @@ def build_ops_context_snippet(db) -> str:
     from backend.app.models import OpsEvent
 
     events = db.exec(
-        select(OpsEvent)
-        .order_by(OpsEvent.created_at.desc())
-        .limit(_OPS_WINDOW_LIMIT)
+        select(OpsEvent).order_by(OpsEvent.created_at.desc()).limit(_OPS_WINDOW_LIMIT)
     ).all()
 
     if not events:
@@ -219,9 +217,7 @@ def build_ops_context_snippet(db) -> str:
     for ev in reversed(events):
         ts = ev.created_at.strftime("%H:%M:%S") if ev.created_at else "??:??:??"
         fid_part = f" folder={str(ev.folder_id)[:8]}" if ev.folder_id else ""
-        lines.append(
-            f"{ts} [{ev.source}/{ev.level}] {ev.event_type}: {ev.message}{fid_part}"
-        )
+        lines.append(f"{ts} [{ev.source}/{ev.level}] {ev.event_type}: {ev.message}{fid_part}")
     return "\n".join(lines)
 
 

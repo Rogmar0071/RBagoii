@@ -2,46 +2,42 @@
 """
 PHASE 9 — Hard Invariants Validation
 
-This script verifies that all hard invariants from 
+This script verifies that all hard invariants from
 DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1 are correctly implemented.
 """
 
 import sys
 
+
 def check_invariants():
     """Verify all hard invariants are implemented."""
-    
+
     print("=" * 70)
     print("PHASE 9: HARD INVARIANTS VALIDATION")
     print("=" * 70)
-    
+
+    from backend.app.contract_construction import ContractObject, construct_contract
+    from backend.app.intent_extraction import extract_intent
     from backend.app.mode_engine import (
-        mode_engine_gateway,
+        MODE_STRICT,
+        _check_response_contract,
         stage_1_structural_validation,
         stage_2_logical_validation,
         stage_3_compliance_validation,
-        _check_response_contract,
-        MODE_STRICT,
     )
-    from backend.app.intent_extraction import extract_intent
-    from backend.app.contract_construction import construct_contract, ContractObject
     from backend.app.mutation_governance.engine import mutation_governance_gateway
-    
+
     results = []
-    
+
     # INVARIANT 1: Governance NEVER assumes validation exists
     print("\n1. Checking: Governance NEVER assumes validation exists...")
     try:
         # In normal mode, validation should not exist
         def dummy_ai(_):
             return "response"
-        
+
         try:
-            result = mutation_governance_gateway(
-                user_intent="test",
-                modes=[],
-                ai_call=dummy_ai
-            )
+            result = mutation_governance_gateway(user_intent="test", modes=[], ai_call=dummy_ai)
             if result.validation_results == []:
                 print("   ✓ PASS: Normal mode has no validation results")
                 results.append(True)
@@ -54,7 +50,7 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # INVARIANT 2: Validation ONLY runs in strict_mode WITH contract
     print("\n2. Checking: Validation ONLY runs in strict_mode WITH contract...")
     try:
@@ -69,7 +65,7 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # INVARIANT 3: No contract → no strict validation
     print("\n3. Checking: No contract → no strict validation...")
     try:
@@ -83,13 +79,14 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # INVARIANT 4: No fallback strict_mode anywhere
     print("\n4. Checking: No fallback strict_mode anywhere...")
     try:
         # This is a design check - normal mode should stay normal
         # Check that resolve_modes doesn't inject strict_mode when not requested
         from backend.app.mode_engine import resolve_modes
+
         modes = resolve_modes([])
         if modes == []:
             print("   ✓ PASS: Empty modes stay empty (no fallback injection)")
@@ -100,7 +97,7 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # INVARIANT 5: No generic validation anywhere
     print("\n5. Checking: No generic validation (all validation is contract-driven)...")
     try:
@@ -109,18 +106,17 @@ def check_invariants():
             required_sections=["TEST"],
             required_elements=[],
             validation_rules=[],
-            output_format="text"
+            output_format="text",
         )
         v1 = stage_1_structural_validation("TEST: yes", [MODE_STRICT], contract)
         v2 = stage_2_logical_validation("TEST: yes", [MODE_STRICT], contract)
         v3 = stage_3_compliance_validation("TEST: yes", [MODE_STRICT], contract)
         v4 = _check_response_contract("TEST: yes", [MODE_STRICT], contract)
-        
+
         # All should have contract_reference when contract is provided
-        has_refs = all([
-            getattr(v, 'contract_reference', None) is not None
-            for v in [v1, v2, v3, v4]
-        ])
+        has_refs = all(
+            [getattr(v, "contract_reference", None) is not None for v in [v1, v2, v3, v4]]
+        )
         if has_refs:
             print("   ✓ PASS: All validations include contract_reference")
             results.append(True)
@@ -130,16 +126,16 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # INVARIANT 6: Contract MUST be generated per request (no reuse)
     print("\n6. Checking: Contract generated per request...")
     try:
         intent1 = extract_intent("test query 1")
         contract1 = construct_contract(intent1)
-        
+
         intent2 = extract_intent("test query 2")
         contract2 = construct_contract(intent2)
-        
+
         # Contracts should be different objects
         if contract1 is not contract2:
             print("   ✓ PASS: Contracts are new objects per request")
@@ -150,7 +146,7 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # INVARIANT 7: Contract MUST NOT leak into normal mode
     print("\n7. Checking: Contract does not leak into normal mode...")
     try:
@@ -162,19 +158,19 @@ def check_invariants():
     except Exception as e:
         print(f"   ✗ FAIL: Exception: {e}")
         results.append(False)
-    
+
     # Summary
     print("\n" + "=" * 70)
     print("VALIDATION SUMMARY")
     print("=" * 70)
-    
+
     passed = sum(results)
     total = len(results)
-    
+
     print(f"\nInvariants Checked: {total}")
     print(f"Passed: {passed}")
     print(f"Failed: {total - passed}")
-    
+
     if passed == total:
         print("\n✓ ALL HARD INVARIANTS VALIDATED")
         return 0

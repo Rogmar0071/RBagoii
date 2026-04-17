@@ -48,9 +48,7 @@ def require_auth(authorization: str | None = Header(default=None)) -> None:
             "Set API_KEY to a strong secret before deployment."
         )
     if authorization is None or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401, detail="Missing or invalid Authorization header"
-        )
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
     token = authorization.removeprefix("Bearer ").strip()
     if token != api_key:
         raise HTTPException(status_code=403, detail="Invalid API key")

@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from backend.app.contract_construction import ContractObject, construct_contract
-from backend.app.intent_extraction import IntentObject, extract_intent
+from backend.app.intent_extraction import extract_intent
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +38,7 @@ MODE_DEBUG = "debug_mode"
 MODE_BUILDER = "builder_mode"
 MODE_AUDIT = "audit_mode"
 
-SUPPORTED_MODES = frozenset(
-    {MODE_STRICT, MODE_PREDICTION, MODE_DEBUG, MODE_BUILDER, MODE_AUDIT}
-)
+SUPPORTED_MODES = frozenset({MODE_STRICT, MODE_PREDICTION, MODE_DEBUG, MODE_BUILDER, MODE_AUDIT})
 
 # Lower index = higher priority (strict_mode has highest priority).
 MODE_PRIORITY_ORDER = [MODE_STRICT, MODE_PREDICTION, MODE_DEBUG, MODE_AUDIT, MODE_BUILDER]
@@ -125,9 +123,7 @@ class ModeEngineAuditRecord:
     validation_results: list[dict[str, Any]] = field(default_factory=list)
     retry_count: int = 0
     final_output: str = ""
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +222,7 @@ def build_mode_system_prompt_injection(modes: list[str]) -> str:
 
     if MODE_AUDIT in modes:
         lines.append(
-            "AUDIT MODE: Your response MUST include a "
-            "RISK_IDENTIFICATION: <risks or none> section."
+            "AUDIT MODE: Your response MUST include a RISK_IDENTIFICATION: <risks or none> section."
         )
 
     if MODE_BUILDER in modes:
@@ -284,7 +279,7 @@ def stage_1_structural_validation(
     ai_output: str, modes: list[str], contract: ContractObject | None = None
 ) -> ValidationResult:
     """Validate that required fields are present in *ai_output*.
-    
+
     CONTRACT-DRIVEN VALIDATION (DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1):
     - When modes == []: skip validation completely
     - When modes == ["strict_mode"] and contract exists: validate against contract
@@ -293,7 +288,7 @@ def stage_1_structural_validation(
     # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="structural", passed=True)
-    
+
     # STRICT MODE WITHOUT CONTRACT: invalid state, block
     if contract is None:
         return ValidationResult(
@@ -304,29 +299,25 @@ def stage_1_structural_validation(
                 "strict_mode requires a contract to be generated for this request"
             ],
         )
-    
+
     # STRICT MODE WITH CONTRACT: validate against contract
     missing: list[str] = []
     failed: list[str] = []
     corrections: list[str] = []
-    
+
     # Check required sections from contract
     for section in contract.required_sections:
         if section not in ai_output:
             missing.append(section)
             failed.append(f"missing_required_section:{section}")
-            corrections.append(
-                f"Contract requires section '{section}' to be present in response"
-            )
-    
+            corrections.append(f"Contract requires section '{section}' to be present in response")
+
     # Check for empty output
     if not ai_output.strip():
         failed.append("strict_mode:empty_output")
         missing.append("non_empty_output")
-        corrections.append(
-            "Provide a non-empty response or state INSUFFICIENT_DATA: <reason>"
-        )
-    
+        corrections.append("Provide a non-empty response or state INSUFFICIENT_DATA: <reason>")
+
     # Special handling: allow INSUFFICIENT_DATA as valid response
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
     if uses_insufficient_data:
@@ -336,7 +327,7 @@ def stage_1_structural_validation(
             passed=True,
             contract_reference=contract.to_dict(),
         )
-    
+
     return ValidationResult(
         stage="structural",
         passed=len(failed) == 0,
@@ -356,7 +347,7 @@ def stage_2_logical_validation(
     ai_output: str, modes: list[str], contract: ContractObject | None = None
 ) -> ValidationResult:
     """Validate logical consistency of *ai_output*.
-    
+
     CONTRACT-DRIVEN VALIDATION:
     - When modes == []: skip validation
     - When modes == ["strict_mode"] with contract: validate required elements
@@ -364,7 +355,7 @@ def stage_2_logical_validation(
     # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="logical", passed=True)
-    
+
     # STRICT MODE WITHOUT CONTRACT: invalid state
     if contract is None:
         return ValidationResult(
@@ -373,7 +364,7 @@ def stage_2_logical_validation(
             failed_rules=["strict_mode_without_contract"],
             correction_instructions=["strict_mode requires a contract"],
         )
-    
+
     # Allow INSUFFICIENT_DATA to bypass logical validation
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
     if uses_insufficient_data:
@@ -382,26 +373,22 @@ def stage_2_logical_validation(
             passed=True,
             contract_reference=contract.to_dict(),
         )
-    
+
     failed: list[str] = []
     corrections: list[str] = []
-    
+
     # Validate based on contract validation rules
     for rule in contract.validation_rules:
         if rule == "assumptions_explicit" and "ASSUMPTIONS:" in ai_output:
-            assumptions_text = (
-                ai_output.split("ASSUMPTIONS:", 1)[1].split("\n")[0].strip()
-            )
+            assumptions_text = ai_output.split("ASSUMPTIONS:", 1)[1].split("\n")[0].strip()
             if not assumptions_text:
                 failed.append("undeclared_assumptions")
                 corrections.append(
                     "Contract requires ASSUMPTIONS: section to contain explicit content"
                 )
-        
+
         elif rule == "confidence_valid" and "CONFIDENCE:" in ai_output:
-            conf_text = (
-                ai_output.split("CONFIDENCE:", 1)[1].split("\n")[0].strip().lower()
-            )
+            conf_text = ai_output.split("CONFIDENCE:", 1)[1].split("\n")[0].strip().lower()
             _VALID_CATEGORICAL = {"low", "medium", "high", "very low", "very high"}
             is_numeric = False
             try:
@@ -412,10 +399,8 @@ def stage_2_logical_validation(
             is_categorical = any(cat in conf_text for cat in _VALID_CATEGORICAL)
             if not is_numeric and not is_categorical:
                 failed.append("invalid_confidence")
-                corrections.append(
-                    "Contract requires CONFIDENCE: to be 0-1 or low/medium/high"
-                )
-        
+                corrections.append("Contract requires CONFIDENCE: to be 0-1 or low/medium/high")
+
         elif rule == "alternatives_present" and "ALTERNATIVES:" in ai_output:
             alt_section = ai_output.split("ALTERNATIVES:", 1)[1]
             alt_lines = [
@@ -460,7 +445,7 @@ def stage_3_compliance_validation(
     ai_output: str, modes: list[str], contract: ContractObject | None = None
 ) -> ValidationResult:
     """Validate mode-specific compliance rules on *ai_output*.
-    
+
     CONTRACT-DRIVEN VALIDATION:
     - When modes == []: skip validation
     - When modes == ["strict_mode"] with contract: validate compliance per contract
@@ -468,7 +453,7 @@ def stage_3_compliance_validation(
     # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="compliance", passed=True)
-    
+
     # STRICT MODE WITHOUT CONTRACT: invalid state
     if contract is None:
         return ValidationResult(
@@ -477,7 +462,7 @@ def stage_3_compliance_validation(
             failed_rules=["strict_mode_without_contract"],
             correction_instructions=["strict_mode requires a contract"],
         )
-    
+
     # Allow INSUFFICIENT_DATA to bypass compliance validation
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
     if uses_insufficient_data:
@@ -486,7 +471,7 @@ def stage_3_compliance_validation(
             passed=True,
             contract_reference=contract.to_dict(),
         )
-    
+
     failed: list[str] = []
     corrections: list[str] = []
 
@@ -522,7 +507,7 @@ def _check_response_contract(
     ai_output: str, modes: list[str], contract: ContractObject | None = None
 ) -> ValidationResult:
     """Enforce response_contract invariants based on contract.
-    
+
     CONTRACT-DRIVEN VALIDATION:
     - When modes == []: skip validation
     - When modes == ["strict_mode"] with contract: check output_format compliance
@@ -530,7 +515,7 @@ def _check_response_contract(
     # NORMAL MODE: skip all validation
     if MODE_STRICT not in modes:
         return ValidationResult(stage="response_contract", passed=True)
-    
+
     # STRICT MODE WITHOUT CONTRACT: invalid state
     if contract is None:
         return ValidationResult(
@@ -539,7 +524,7 @@ def _check_response_contract(
             failed_rules=["strict_mode_without_contract"],
             correction_instructions=["strict_mode requires a contract"],
         )
-    
+
     # Allow INSUFFICIENT_DATA as valid response
     uses_insufficient_data = _strict_mode_uses_insufficient_data(ai_output)
     if uses_insufficient_data:
@@ -548,28 +533,24 @@ def _check_response_contract(
             passed=True,
             contract_reference=contract.to_dict(),
         )
-    
+
     failed: list[str] = []
     corrections: list[str] = []
-    
+
     # Check output format compliance per contract
     if contract.output_format == "structured_json":
         # For JSON output, check if required sections are present
         for section in contract.required_sections:
             if section not in ai_output:
                 failed.append(f"missing_required_section:{section}")
-                corrections.append(
-                    f"Contract requires {section} section in output"
-                )
-    
+                corrections.append(f"Contract requires {section} section in output")
+
     elif contract.output_format == "labeled_sections":
         # For labeled sections, check if required sections are present
         for section in contract.required_sections:
             if section not in ai_output:
                 failed.append(f"missing_required_section:{section}")
-                corrections.append(
-                    f"Contract requires {section} section in output"
-                )
+                corrections.append(f"Contract requires {section} section in output")
 
     return ValidationResult(
         stage="response_contract",
@@ -597,9 +578,7 @@ def _build_feedback_prompt(
     if all_missing:
         feedback += f"Missing fields: {', '.join(all_missing)}\n"
     if all_corrections:
-        feedback += "Required corrections:\n" + "\n".join(
-            f"  - {c}" for c in all_corrections
-        )
+        feedback += "Required corrections:\n" + "\n".join(f"  - {c}" for c in all_corrections)
     feedback += "\n--- END CORRECTION FEEDBACK ---"
     return base_prompt + feedback
 
@@ -609,17 +588,13 @@ def _build_structured_failure(
     retry_count: int,
 ) -> dict[str, Any]:
     """Return a structured failure dict after retry exhaustion."""
-    all_failed = list(
-        dict.fromkeys(r for vr in validation_results for r in vr.failed_rules)
-    ) or ["validation_failed:unknown"]
-    all_missing = list(
-        dict.fromkeys(r for vr in validation_results for r in vr.missing_fields)
-    )
+    all_failed = list(dict.fromkeys(r for vr in validation_results for r in vr.failed_rules)) or [
+        "validation_failed:unknown"
+    ]
+    all_missing = list(dict.fromkeys(r for vr in validation_results for r in vr.missing_fields))
     all_corrections = list(
         dict.fromkeys(r for vr in validation_results for r in vr.correction_instructions)
-    ) or [
-        "Respond with ARTIFACT_<NAME>: <value> sections or INSUFFICIENT_DATA: <reason>"
-    ]
+    ) or ["Respond with ARTIFACT_<NAME>: <value> sections or INSUFFICIENT_DATA: <reason>"]
     return {
         "error": "VALIDATION_FAILED",
         "failed_rules": all_failed,
@@ -780,7 +755,7 @@ def mode_engine_gateway(
     # PHASE 1 — Intent Extraction (for strict_mode only)
     # ------------------------------------------------------------------
     intent_obj = extract_intent(user_intent)
-    
+
     # ------------------------------------------------------------------
     # PHASE 2 — Contract Construction (per request, not reused)
     # ------------------------------------------------------------------
@@ -791,13 +766,13 @@ def mode_engine_gateway(
     # CONTRACT_EXECUTION_BOUNDARY_LOCK_V1
     # ------------------------------------------------------------------
     from backend.app.contract_construction import validate_contract
-    
+
     contract_validation = validate_contract(contract_obj)
-    
+
     if not contract_validation.passed:
         # BLOCK execution at boundary — invalid contract
         import json as _json
-        
+
         failure: dict[str, Any] = {
             "error": "VALIDATION_FAILED",
             "stage": "contract_boundary",
@@ -858,9 +833,7 @@ def mode_engine_gateway(
 
         if attempt < MAX_RETRIES:
             # Build corrective feedback for the next attempt.
-            current_prompt = _build_feedback_prompt(
-                transformed_prompt, last_validation_results
-            )
+            current_prompt = _build_feedback_prompt(transformed_prompt, last_validation_results)
         else:
             # ----------------------------------------------------------
             # PHASE 5 — Retry exhaustion: structured failure with contract reference

@@ -40,9 +40,7 @@ class DomainDerivationProvider(abc.ABC):
     """
 
     @abc.abstractmethod
-    def derive(
-        self, media_input: dict[str, Any], max_candidates: int = 3
-    ) -> list[DomainProfile]:
+    def derive(self, media_input: dict[str, Any], max_candidates: int = 3) -> list[DomainProfile]:
         """
         Derive domain profile candidates from media_input.
 
@@ -78,11 +76,17 @@ _STUB_TEMPLATES: list[dict[str, Any]] = [
             ("left-side", "Left side", "Move around to capture the left side.", True),
             ("right-side", "Right side", "Move around to capture the right side.", True),
             (
-            "joints-close-up", "Joints & fasteners",
-            "Close-up pass over all joints and fasteners.", True),
+                "joints-close-up",
+                "Joints & fasteners",
+                "Close-up pass over all joints and fasteners.",
+                True,
+            ),
             (
-            "labels-close-up", "Labels & markings",
-            "Close-up of any labels, part numbers, or serial marks.", False),
+                "labels-close-up",
+                "Labels & markings",
+                "Close-up of any labels, part numbers, or serial marks.",
+                False,
+            ),
         ],
         "validators": [
             ("min-one-structural", "min_entity_count", {"min": 1, "entity_type": "structural"}),
@@ -101,13 +105,25 @@ _STUB_TEMPLATES: list[dict[str, Any]] = [
         "name": "Warehouse Pallet Inspection",
         "keywords": ["pallet", "case", "carton", "warehouse", "shelf", "barcode", "sku", "label"],
         "capture_protocol": [
-            ("pallet-front", "Pallet front", "Film the full pallet from the front at 2-3 metres.",
-                True),
+            (
+                "pallet-front",
+                "Pallet front",
+                "Film the full pallet from the front at 2-3 metres.",
+                True,
+            ),
             ("stack-top", "Top of stack", "Sweep across the top of the stack.", True),
-            ("barcode-close-up", "Barcode close-up",
-                "Close-up pass over visible barcodes and placards.", True),
-            ("corner-view", "Corner view", "Film at least one corner view to capture stack depth.",
-                False),
+            (
+                "barcode-close-up",
+                "Barcode close-up",
+                "Close-up pass over visible barcodes and placards.",
+                True,
+            ),
+            (
+                "corner-view",
+                "Corner view",
+                "Film at least one corner view to capture stack depth.",
+                False,
+            ),
         ],
         "validators": [
             ("pallet-base-detected", "entity_required", {"entity_type": "pallet"}),
@@ -125,12 +141,24 @@ _STUB_TEMPLATES: list[dict[str, Any]] = [
         "name": "Retail Shelf Audit",
         "keywords": ["shelf", "product", "retail", "store", "facing", "sku", "planogram"],
         "capture_protocol": [
-            ("full-bay", "Full shelf bay", "Stand back 1-2 m and film the full bay left-to-right.",
-                True),
-            ("shelf-level-pan", "Shelf level pan",
-                "Capture each shelf level with a slow horizontal pan.", True),
-            ("price-labels", "Price labels", "Close-up pass over price labels and product panels.",
-                False),
+            (
+                "full-bay",
+                "Full shelf bay",
+                "Stand back 1-2 m and film the full bay left-to-right.",
+                True,
+            ),
+            (
+                "shelf-level-pan",
+                "Shelf level pan",
+                "Capture each shelf level with a slow horizontal pan.",
+                True,
+            ),
+            (
+                "price-labels",
+                "Price labels",
+                "Close-up pass over price labels and product panels.",
+                False,
+            ),
         ],
         "validators": [
             ("shelf-detected", "entity_required", {"entity_type": "shelf"}),
@@ -148,8 +176,12 @@ _STUB_TEMPLATES: list[dict[str, Any]] = [
         "capture_protocol": [
             ("front-view", "Front view", "Film the object from the front.", True),
             ("sides-back", "Sides and back", "Film the sides and back.", True),
-            ("features-close-up", "Distinctive features",
-                "Capture close-ups of distinctive features.", False),
+            (
+                "features-close-up",
+                "Distinctive features",
+                "Capture close-ups of distinctive features.",
+                False,
+            ),
         ],
         "validators": [
             ("one-entity", "min_entity_count", {"min": 1}),
@@ -172,8 +204,9 @@ def _score(template: dict[str, Any], hint: str) -> float:
     return min(1.0, template["confidence"] * (0.5 + matches / len(keywords)))
 
 
-def _build_profile(template: dict[str, Any], media_input: dict[str, Any],
-    score: float) -> DomainProfile:
+def _build_profile(
+    template: dict[str, Any], media_input: dict[str, Any], score: float
+) -> DomainProfile:
     media_id: str = media_input.get("media_id", "unknown")
     capture_protocol = [
         CaptureStep(step_id=sid, title=title, instructions=instr, required=req)
@@ -214,16 +247,11 @@ class StubDomainDerivationProvider(DomainDerivationProvider):
     Replace with a real implementation that calls an LLM or vision API.
     """
 
-    def derive(
-        self, media_input: dict[str, Any], max_candidates: int = 3
-    ) -> list[DomainProfile]:
+    def derive(self, media_input: dict[str, Any], max_candidates: int = 3) -> list[DomainProfile]:
         hint: str = media_input.get("hint", "")
         scored = sorted(
             [(_score(t, hint), t) for t in _STUB_TEMPLATES],
             key=lambda x: x[0],
             reverse=True,
         )
-        return [
-            _build_profile(t, media_input, s)
-            for s, t in scored[:max(1, max_candidates)]
-        ]
+        return [_build_profile(t, media_input, s) for s, t in scored[: max(1, max_candidates)]]

@@ -136,6 +136,7 @@ class TestWebSearchEndpoint:
         with patch("backend.app.web_search.TavilyClient", return_value=mock_client):
             # Clear cache first
             import backend.app.web_search as ws_module
+
             ws_module._cache.clear()
 
             resp = client.post(
@@ -158,6 +159,7 @@ class TestWebSearchEndpoint:
         monkeypatch.setenv("TAVILY_API_KEY", "fake-key")
 
         import backend.app.web_search as ws_module
+
         ws_module._cache.clear()
 
         call_count = {"n": 0}
@@ -188,6 +190,7 @@ class TestWebSearchEndpoint:
         monkeypatch.setenv("TAVILY_API_KEY", "fake-key")
 
         import backend.app.web_search as ws_module
+
         ws_module._cache.clear()
 
         mock_client = MagicMock()
@@ -252,6 +255,7 @@ class TestNeedsWebSearch:
         monkeypatch.setenv("TAVILY_API_KEY", "tvly-fake")
 
         import backend.app.web_search as ws_module
+
         ws_module._cache.clear()
 
         mock_tavily = MagicMock()

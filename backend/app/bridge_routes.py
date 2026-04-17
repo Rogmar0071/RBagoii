@@ -112,9 +112,7 @@ class BridgeExecuteRequest(BaseModel):
             return None
         explicit_approval = value.get("explicit_approval")
         if explicit_approval is not True:
-            raise ValueError(
-                "override.explicit_approval must be true."
-            )
+            raise ValueError("override.explicit_approval must be true.")
         justification = value.get("justification", "")
         if (
             not isinstance(justification, str)
@@ -126,13 +124,9 @@ class BridgeExecuteRequest(BaseModel):
             )
         accepted_risks = value.get("accepted_risks")
         if not isinstance(accepted_risks, list) or not accepted_risks:
-            raise ValueError(
-                "override.accepted_risks must be a non-empty list of strings."
-            )
+            raise ValueError("override.accepted_risks must be a non-empty list of strings.")
         if not all(isinstance(r, str) and r.strip() for r in accepted_risks):
-            raise ValueError(
-                "override.accepted_risks entries must all be non-empty strings."
-            )
+            raise ValueError("override.accepted_risks entries must all be non-empty strings.")
         return value
 
 

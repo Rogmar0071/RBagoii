@@ -237,8 +237,8 @@ _EXTRACTOR_TIMEOUT_SECONDS_DEFAULT = 900
 # ---------------------------------------------------------------------------
 
 _ANALYZE_STEP_MAX_SECONDS_DEFAULT = 30
-_ANALYZE_FRAMES_PER_STEP_DEFAULT = 5   # legacy
-_ANALYZE_FRAME_FPS_DEFAULT = 1          # legacy
+_ANALYZE_FRAMES_PER_STEP_DEFAULT = 5  # legacy
+_ANALYZE_FRAME_FPS_DEFAULT = 1  # legacy
 _SEGMENT_SIZE_S_DEFAULT = 10
 _MAX_SEGMENTS_DEFAULT = 600
 
@@ -355,12 +355,18 @@ def _extract_frames_chunk(
     pattern = os.path.join(out_dir, "frame_%05d.jpg")
     cmd = [
         ffmpeg_exe,
-        "-ss", str(start_time_s),
-        "-i", clip_path,
-        "-frames:v", str(frames_per_step),
-        "-r", str(desired_fps),
-        "-q:v", "2",
-        "-start_number", str(start_number),
+        "-ss",
+        str(start_time_s),
+        "-i",
+        clip_path,
+        "-frames:v",
+        str(frames_per_step),
+        "-r",
+        str(desired_fps),
+        "-q:v",
+        "2",
+        "-start_number",
+        str(start_number),
         "-y",
         pattern,
     ]
@@ -369,11 +375,7 @@ def _extract_frames_chunk(
     step_max = int(os.environ.get("ANALYZE_STEP_MAX_SECONDS", _ANALYZE_STEP_MAX_SECONDS_DEFAULT))
     subprocess.run(cmd, capture_output=True, timeout=step_max * 2)
 
-    produced = sorted(
-        os.path.join(out_dir, f)
-        for f in os.listdir(out_dir)
-        if f.endswith(".jpg")
-    )
+    produced = sorted(os.path.join(out_dir, f) for f in os.listdir(out_dir) if f.endswith(".jpg"))
     return produced
 
 
@@ -595,11 +597,13 @@ def _analyze_optional_keyframes(job_id: str, folder_id: str, job) -> None:
         fname = f"frame_{idx:05d}.jpg"
         object_key = f"folders/{folder_id}/frames/{fname}"
         timestamp_s = round(idx / desired_fps, 3)
-        frames.append({
-            "index": idx,
-            "timestamp_s": timestamp_s,
-            "object_key": object_key,
-        })
+        frames.append(
+            {
+                "index": idx,
+                "timestamp_s": timestamp_s,
+                "object_key": object_key,
+            }
+        )
 
     import json as _json
 
@@ -660,12 +664,8 @@ def _analyze_manifest(job_id: str, folder_id: str, job) -> None:
         raise RuntimeError("Folder has no clip to analyze")
 
     clip_key = job.analyze_clip_object_key or folder.clip_object_key
-    segment_size_s = int(
-        os.environ.get("ANALYZE_SEGMENT_SIZE_S", _SEGMENT_SIZE_S_DEFAULT)
-    )
-    max_segments = int(
-        os.environ.get("ANALYZE_MAX_SEGMENTS", _MAX_SEGMENTS_DEFAULT)
-    )
+    segment_size_s = int(os.environ.get("ANALYZE_SEGMENT_SIZE_S", _SEGMENT_SIZE_S_DEFAULT))
+    max_segments = int(os.environ.get("ANALYZE_MAX_SEGMENTS", _MAX_SEGMENTS_DEFAULT))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         clip_path = os.path.join(tmpdir, "clip.mp4")
@@ -691,9 +691,7 @@ def _analyze_manifest(job_id: str, folder_id: str, job) -> None:
         t0_ms = t
         t1_ms = min(t + segment_ms, duration_ms)
         segment_id = _build_segment_id(idx, t0_ms, t1_ms)
-        segments.append(
-            {"segment_id": segment_id, "index": idx, "t0_ms": t0_ms, "t1_ms": t1_ms}
-        )
+        segments.append({"segment_id": segment_id, "index": idx, "t0_ms": t0_ms, "t1_ms": t1_ms})
         t = t1_ms
         idx += 1
 
@@ -765,9 +763,7 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
     from backend.app import storage
 
     cursor: int = job.analyze_cursor_segment_index or 0
-    step_max = int(
-        os.environ.get("ANALYZE_STEP_MAX_SECONDS", _ANALYZE_STEP_MAX_SECONDS_DEFAULT)
-    )
+    step_max = int(os.environ.get("ANALYZE_STEP_MAX_SECONDS", _ANALYZE_STEP_MAX_SECONDS_DEFAULT))
     step_start = time.monotonic()
 
     # Load manifest to know segment boundaries.
@@ -779,8 +775,7 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
 
     if manifest_bytes is None:
         raise RuntimeError(
-            "Segments manifest not found for baseline_segments stage; "
-            "run from manifest stage first"
+            "Segments manifest not found for baseline_segments stage; run from manifest stage first"
         )
 
     manifest = _json.loads(manifest_bytes)
@@ -876,8 +871,7 @@ def _analyze_baseline_segments(job_id: str, folder_id: str, job) -> None:
         level="info",
         event_type="jobs.progress",
         message=(
-            f"Job analyze baseline_segments step: {job_id} "
-            f"cursor {cursor}→{new_cursor}/{total}"
+            f"Job analyze baseline_segments step: {job_id} cursor {cursor}→{new_cursor}/{total}"
         ),
         folder_id=folder_id,
         job_id=job_id,
@@ -995,9 +989,7 @@ def _analyze_aggregate(job_id: str, folder_id: str, job) -> None:
     md_bytes = "\n".join(md_lines).encode("utf-8")
 
     try:
-        md_key = storage.upload_bytes(
-            folder_id, "analysis/analysis.md", md_bytes, "text/markdown"
-        )
+        md_key = storage.upload_bytes(folder_id, "analysis/analysis.md", md_bytes, "text/markdown")
         _create_artifact(folder_id, "analysis_md", md_key, job_id=job_id)
     except Exception:
         pass
@@ -1216,9 +1208,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
     from backend.app import storage
 
     cursor: int = job.analyze_cursor_segment_index or 0
-    step_max = int(
-        os.environ.get("ANALYZE_STEP_MAX_SECONDS", _ANALYZE_STEP_MAX_SECONDS_DEFAULT)
-    )
+    step_max = int(os.environ.get("ANALYZE_STEP_MAX_SECONDS", _ANALYZE_STEP_MAX_SECONDS_DEFAULT))
     step_start = time.monotonic()
 
     options = _get_analyze_options(job)
@@ -1233,9 +1223,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
         "segment_summaries": ("segment_summary_json", "summary.json"),
     }
     enabled_analyses = {
-        toggle: info
-        for toggle, info in _OPTIONAL_TYPES.items()
-        if aa.get(toggle, False)
+        toggle: info for toggle, info in _OPTIONAL_TYPES.items() if aa.get(toggle, False)
     }
 
     # Load manifest.
@@ -1392,9 +1380,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
                             "summary": {
                                 "element_count": len(catalog),
                                 "event_count": len(events),
-                                "event_kinds": list(
-                                    {e.get("kind", "unknown") for e in events}
-                                ),
+                                "event_kinds": list({e.get("kind", "unknown") for e in events}),
                                 "quality": quality,
                             },
                         }
@@ -1443,8 +1429,7 @@ def _analyze_optional_segments(job_id: str, folder_id: str, job) -> None:
         level="info",
         event_type="jobs.progress",
         message=(
-            f"Job analyze_optional segments step: {job_id} "
-            f"cursor {cursor}→{new_cursor}/{total}"
+            f"Job analyze_optional segments step: {job_id} cursor {cursor}→{new_cursor}/{total}"
         ),
         folder_id=folder_id,
         job_id=job_id,
@@ -1504,9 +1489,7 @@ def run_analyze_optional_step(job_id: str) -> None:
     folder_id = str(job.folder_id)
 
     if job.status in ("succeeded", "failed"):
-        logger.info(
-            "run_analyze_optional_step: job %s already %s, skipping", job_id, job.status
-        )
+        logger.info("run_analyze_optional_step: job %s already %s, skipping", job_id, job.status)
         return
 
     if not job.analyze_stage:
@@ -1600,9 +1583,7 @@ def _analyze_summarize(job_id: str, folder_id: str, job) -> None:
         )
         if result.returncode != 0:
             stderr_tail = (result.stderr or "")[-1000:].strip()
-            raise RuntimeError(
-                f"Extraction failed (rc={result.returncode}). stderr: {stderr_tail}"
-            )
+            raise RuntimeError(f"Extraction failed (rc={result.returncode}). stderr: {stderr_tail}")
         logger.info("run_analyze_step: summarize extraction finished for job %s", job_id)
 
         _update_job(job_id, progress=90)
@@ -1631,9 +1612,7 @@ def _analyze_summarize(job_id: str, folder_id: str, job) -> None:
         if os.path.exists(md_path):
             with open(md_path, "rb") as fh:
                 md_bytes = fh.read()
-            md_key = storage.upload_bytes(
-                folder_id, "analysis.md", md_bytes, "text/markdown"
-            )
+            md_key = storage.upload_bytes(folder_id, "analysis.md", md_bytes, "text/markdown")
             _create_artifact(folder_id, "analysis_md", md_key, job_id=job_id)
             _log_event(
                 source="worker",
@@ -1691,9 +1670,7 @@ def run_analyze_step(job_id: str) -> None:
 
     # Guard: if job is already succeeded/failed, do not re-run.
     if job.status in ("succeeded", "failed"):
-        logger.info(
-            "run_analyze_step: job %s already %s, skipping", job_id, job.status
-        )
+        logger.info("run_analyze_step: job %s already %s, skipping", job_id, job.status)
         return
 
     if stage in ("manifest", "prepare"):
@@ -1745,9 +1722,7 @@ def run_analyze_step(job_id: str) -> None:
         )
 
     except Exception as exc:
-        logger.exception(
-            "run_analyze_step failed for job %s (stage=%s)", job_id, stage
-        )
+        logger.exception("run_analyze_step failed for job %s (stage=%s)", job_id, stage)
         _update_job(job_id, status="failed", error=str(exc))
         _update_folder_status(folder_id, "failed")
         _log_event(
@@ -1846,8 +1821,7 @@ def run_analyze(job_id: str) -> None:
                     stderr_tail,
                 )
                 raise RuntimeError(
-                    f"Extraction failed (rc={result.returncode}). "
-                    f"stderr: {stderr_tail}"
+                    f"Extraction failed (rc={result.returncode}). stderr: {stderr_tail}"
                 )
             logger.info("run_analyze: extraction finished for job %s", job_id)
 
@@ -1886,9 +1860,7 @@ def run_analyze(job_id: str) -> None:
             if os.path.exists(md_path):
                 with open(md_path, "rb") as fh:
                     md_bytes = fh.read()
-                md_key = storage.upload_bytes(
-                    folder_id, "analysis.md", md_bytes, "text/markdown"
-                )
+                md_key = storage.upload_bytes(folder_id, "analysis.md", md_bytes, "text/markdown")
                 _create_artifact(folder_id, "analysis_md", md_key, job_id=job_id)
                 _log_event(
                     source="worker",
@@ -2087,9 +2059,7 @@ def run_blueprint(job_id: str) -> None:
             # Generate and upload a Markdown summary (blueprint_md artifact).
             analysis_data = json.loads(analysis_bytes)
             bp_md_bytes = _analysis_to_blueprint_md(analysis_data).encode("utf-8")
-            md_key = storage.upload_bytes(
-                folder_id, "blueprint.md", bp_md_bytes, "text/markdown"
-            )
+            md_key = storage.upload_bytes(folder_id, "blueprint.md", bp_md_bytes, "text/markdown")
             _create_artifact(folder_id, "blueprint_md", md_key, job_id=job_id)
             _log_event(
                 source="worker",
@@ -2332,15 +2302,45 @@ def run_analyze_repo_step(job_id: str) -> None:
             text_files: list[tuple[int, str, str]] = []  # (size, path, content)
 
             _BINARY_EXTENSIONS = {
-                ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
-                ".mp4", ".mov", ".avi", ".mkv", ".webm",
-                ".mp3", ".wav", ".ogg", ".flac",
-                ".pdf", ".doc", ".docx", ".xls", ".xlsx",
-                ".zip", ".tar", ".gz", ".bz2", ".7z",
-                ".exe", ".dll", ".so", ".dylib",
-                ".class", ".jar", ".pyc",
-                ".ttf", ".otf", ".woff", ".woff2",
-                ".db", ".sqlite",
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".bmp",
+                ".ico",
+                ".webp",
+                ".mp4",
+                ".mov",
+                ".avi",
+                ".mkv",
+                ".webm",
+                ".mp3",
+                ".wav",
+                ".ogg",
+                ".flac",
+                ".pdf",
+                ".doc",
+                ".docx",
+                ".xls",
+                ".xlsx",
+                ".zip",
+                ".tar",
+                ".gz",
+                ".bz2",
+                ".7z",
+                ".exe",
+                ".dll",
+                ".so",
+                ".dylib",
+                ".class",
+                ".jar",
+                ".pyc",
+                ".ttf",
+                ".otf",
+                ".woff",
+                ".woff2",
+                ".db",
+                ".sqlite",
             }
 
             with zipfile.ZipFile(tmp_path, "r") as zf:
@@ -2376,37 +2376,60 @@ def run_analyze_repo_step(job_id: str) -> None:
 
                 # Detect test files early so the final return can be a single expression.
                 _TEST_KEYWORDS = ("test/", "tests/", "__tests__/")
-                is_test = (
-                    any(kw in path_lower for kw in _TEST_KEYWORDS)
-                    or filename.startswith("test_")
+                is_test = any(kw in path_lower for kw in _TEST_KEYWORDS) or filename.startswith(
+                    "test_"
                 )
 
                 # Priority 1: Entry points
                 _ENTRY_POINTS = {
-                    "main.py", "__main__.py", "app.kt", "mainactivity.kt",
-                    "index.js", "index.ts", "app.py", "server.py", "manage.py", "settings.py",
+                    "main.py",
+                    "__main__.py",
+                    "app.kt",
+                    "mainactivity.kt",
+                    "index.js",
+                    "index.ts",
+                    "app.py",
+                    "server.py",
+                    "manage.py",
+                    "settings.py",
                 }
                 if filename in _ENTRY_POINTS:
                     return 1
 
                 # Priority 2: Domain / business logic
                 _DOMAIN_KEYWORDS = (
-                    "domain/", "service/", "services/", "core/", "usecase/", "usecases/",
+                    "domain/",
+                    "service/",
+                    "services/",
+                    "core/",
+                    "usecase/",
+                    "usecases/",
                 )
                 if any(kw in path_lower for kw in _DOMAIN_KEYWORDS):
                     return 2
 
                 # Priority 3: Routes / API layer
                 _ROUTE_KEYWORDS = (
-                    "routes/", "api/", "handler/", "handlers/",
-                    "controller/", "controllers/", "endpoint/", "endpoints/",
+                    "routes/",
+                    "api/",
+                    "handler/",
+                    "handlers/",
+                    "controller/",
+                    "controllers/",
+                    "endpoint/",
+                    "endpoints/",
                 )
                 if any(kw in path_lower for kw in _ROUTE_KEYWORDS):
                     return 3
 
                 # Priority 4: Models / data
                 _MODEL_KEYWORDS = (
-                    "model/", "models/", "schema/", "schemas/", "entity/", "entities/",
+                    "model/",
+                    "models/",
+                    "schema/",
+                    "schemas/",
+                    "entity/",
+                    "entities/",
                 )
                 if any(kw in path_lower for kw in _MODEL_KEYWORDS):
                     return 4
@@ -2418,13 +2441,32 @@ def run_analyze_repo_step(job_id: str) -> None:
             text_files.sort(key=lambda t: (_file_priority(t[1]), t[0]))
 
             _EXT_TO_LANG: dict[str, str] = {
-                ".py": "python", ".kt": "kotlin", ".java": "java", ".js": "javascript",
-                ".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript",
-                ".go": "go", ".rs": "rust", ".c": "c", ".cpp": "cpp", ".h": "c",
-                ".cs": "csharp", ".rb": "ruby", ".swift": "swift", ".sh": "bash",
-                ".xml": "xml", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
-                ".toml": "toml", ".md": "markdown", ".html": "html", ".css": "css",
-                ".sql": "sql", ".gradle": "groovy",
+                ".py": "python",
+                ".kt": "kotlin",
+                ".java": "java",
+                ".js": "javascript",
+                ".ts": "typescript",
+                ".tsx": "typescript",
+                ".jsx": "javascript",
+                ".go": "go",
+                ".rs": "rust",
+                ".c": "c",
+                ".cpp": "cpp",
+                ".h": "c",
+                ".cs": "csharp",
+                ".rb": "ruby",
+                ".swift": "swift",
+                ".sh": "bash",
+                ".xml": "xml",
+                ".json": "json",
+                ".yaml": "yaml",
+                ".yml": "yaml",
+                ".toml": "toml",
+                ".md": "markdown",
+                ".html": "html",
+                ".css": "css",
+                ".sql": "sql",
+                ".gradle": "groovy",
             }
 
             # Build full file tree summary for the aggregation message (no cap).
@@ -2447,8 +2489,7 @@ def run_analyze_repo_step(job_id: str) -> None:
                         current_chars = 0
                     shown = ANALYZE_REPO_BATCH_CHARS
                     truncated = (
-                        text[:shown]
-                        + f"\n# [TRUNCATED: showing {shown} of {total_chars} chars]"
+                        text[:shown] + f"\n# [TRUNCATED: showing {shown} of {total_chars} chars]"
                     )
                     batches.append([(size, path, truncated)])
                 elif current_chars + total_chars > ANALYZE_REPO_BATCH_CHARS:

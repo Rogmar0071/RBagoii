@@ -452,8 +452,10 @@ class TestExtractOptionalHelpers:
 # UI tree analysis pipeline
 # ---------------------------------------------------------------------------
 
+
 def _make_tree(depth: int, branching: int = 2) -> dict:
     """Build a balanced tree with *depth* levels and *branching* children per node."""
+
     def _node(d: int) -> dict:
         if d == 0:
             return {"id": f"leaf_{d}", "children": []}
@@ -473,6 +475,7 @@ class TestPreprocessUITree:
         """Trees deeper than MAX_UI_DEPTH are pruned."""
         tree = _make_tree(depth=MAX_UI_DEPTH + 5, branching=1)
         import warnings
+
         with warnings.catch_warnings(record=True):
             result = preprocess_ui_tree(tree)
         # After pruning the tree should be returned (same object, mutated)
@@ -488,6 +491,7 @@ class TestPreprocessUITree:
             }
         }
         import warnings
+
         with warnings.catch_warnings(record=True):
             result = preprocess_ui_tree(big_tree)
         assert len(result["root"]["children"]) < MAX_UI_NODES + 100
@@ -498,12 +502,14 @@ class TestPruneUITree:
         """Nodes beyond max_depth should have their children cleared."""
         tree = _make_tree(depth=10, branching=2)
         pruned = prune_ui_tree(tree, max_nodes=10000, max_depth=3)
+
         # Walk tree and verify no node past depth 3 has children
         def _check(node: dict, depth: int) -> None:
             if depth > 3:
                 assert node.get("children") == []
             for child in node.get("children") or []:
                 _check(child, depth + 1)
+
         _check(pruned["root"], 1)
 
     def test_node_count_truncation(self) -> None:
@@ -532,6 +538,7 @@ class TestSegmentUITree:
         # Build a chain that just exceeds MAX_UI_DEPTH
         deep_tree = _make_tree(depth=MAX_UI_DEPTH + 2, branching=1)
         import warnings
+
         with warnings.catch_warnings(record=True):
             result = segment_ui_tree(deep_tree)
         # Should return some segments (root-level nodes) without crashing
@@ -545,6 +552,7 @@ class TestSegmentUITree:
         monkeypatch.setattr(ext, "MAX_SEGMENTATION_TIME_MS", -1)
         tree = _make_tree(depth=5, branching=2)
         import warnings
+
         with warnings.catch_warnings(record=True):
             result = segment_ui_tree(tree)
         assert result is None
@@ -601,12 +609,11 @@ class TestAnalyzeClip:
         big_tree: dict = {
             "root": {
                 "id": "root",
-                "children": [
-                    {"id": f"c{i}", "children": []} for i in range(MAX_UI_NODES + 200)
-                ],
+                "children": [{"id": f"c{i}", "children": []} for i in range(MAX_UI_NODES + 200)],
             }
         }
         import warnings
+
         with warnings.catch_warnings(record=True):
             result = analyze_clip(big_tree)
         assert isinstance(result, list)
@@ -628,9 +635,7 @@ class TestExtractVideoTrack:
         src = tmp_path / "src.mp4"
         meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
         frames_np = [
-            numpy.asarray(
-                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
-            )
+            numpy.asarray(_generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640)))
             for i in range(12)
         ]
         with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
@@ -656,9 +661,7 @@ class TestExtractAudioTrack:
         src = tmp_path / "src.mp4"
         meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
         frames_np = [
-            numpy.asarray(
-                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
-            )
+            numpy.asarray(_generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640)))
             for i in range(12)
         ]
         with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
@@ -689,9 +692,7 @@ class TestAnalyzeVideoUI:
         src = tmp_path / "video_only.mp4"
         meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
         frames_np = [
-            numpy.asarray(
-                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
-            )
+            numpy.asarray(_generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640)))
             for i in range(12)
         ]
         with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
@@ -743,9 +744,7 @@ class TestSplitAndAnalyze:
         src = tmp_path / "clip.mp4"
         meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
         frames_np = [
-            numpy.asarray(
-                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
-            )
+            numpy.asarray(_generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640)))
             for i in range(12)
         ]
         with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
@@ -763,11 +762,17 @@ class TestSplitAnalyzeCLI:
     def test_split_analyze_missing_clip(self, tmp_path: Path) -> None:
         result = subprocess.run(
             [
-                sys.executable, "-m", "ui_blueprint",
-                "split-analyze", "/nonexistent/clip.mp4",
-                "--ui-output", str(tmp_path / "ui.json"),
-                "--audio-output", str(tmp_path / "audio.json"),
-                "--combined-output", str(tmp_path / "combined.json"),
+                sys.executable,
+                "-m",
+                "ui_blueprint",
+                "split-analyze",
+                "/nonexistent/clip.mp4",
+                "--ui-output",
+                str(tmp_path / "ui.json"),
+                "--audio-output",
+                str(tmp_path / "audio.json"),
+                "--combined-output",
+                str(tmp_path / "combined.json"),
             ],
             capture_output=True,
             text=True,
@@ -782,9 +787,7 @@ class TestSplitAnalyzeCLI:
         src = tmp_path / "clip.mp4"
         meta = {"width_px": 368, "height_px": 640, "fps": 12.0, "duration_ms": 1000.0}
         frames_np = [
-            numpy.asarray(
-                _generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640))
-            )
+            numpy.asarray(_generate_synthetic_frame(meta, i * (1000.0 / 12.0)).resize((368, 640)))
             for i in range(12)
         ]
         with imageio.get_writer(src, fps=12, format="FFMPEG") as writer:
@@ -797,11 +800,17 @@ class TestSplitAnalyzeCLI:
 
         result = subprocess.run(
             [
-                sys.executable, "-m", "ui_blueprint",
-                "split-analyze", str(src),
-                "--ui-output", str(ui_json),
-                "--audio-output", str(audio_json),
-                "--combined-output", str(combined_json),
+                sys.executable,
+                "-m",
+                "ui_blueprint",
+                "split-analyze",
+                str(src),
+                "--ui-output",
+                str(ui_json),
+                "--audio-output",
+                str(audio_json),
+                "--combined-output",
+                str(combined_json),
             ],
             capture_output=True,
             text=True,

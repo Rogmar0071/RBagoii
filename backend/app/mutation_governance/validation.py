@@ -94,9 +94,7 @@ def stage_1_structural_validation(
         for path in contract.target_files:
             if not (isinstance(path, str) and path.strip()):
                 failed.append("target_files:blank_entry")
-                corrections.append(
-                    "All entries in 'target_files' must be non-empty path strings"
-                )
+                corrections.append("All entries in 'target_files' must be non-empty path strings")
                 break
 
     # operation_type must be one of the declared valid values.
@@ -140,10 +138,7 @@ def stage_2_logical_validation(
 
     # assumptions_explicit — no_undeclared_assumptions constraint.
     if isinstance(contract.assumptions, list) and contract.assumptions:
-        blank = [
-            a for a in contract.assumptions
-            if not (isinstance(a, str) and a.strip())
-        ]
+        blank = [a for a in contract.assumptions if not (isinstance(a, str) and a.strip())]
         if blank:
             failed.append("undeclared_assumptions:blank_entries")
             corrections.append(
@@ -157,10 +152,7 @@ def stage_2_logical_validation(
 
     # alternatives_present — no_single_path_bias constraint.
     if isinstance(contract.alternatives, list) and contract.alternatives:
-        blank_alt = [
-            a for a in contract.alternatives
-            if not (isinstance(a, str) and a.strip())
-        ]
+        blank_alt = [a for a in contract.alternatives if not (isinstance(a, str) and a.strip())]
         if blank_alt:
             failed.append("alternatives_blank_entries")
             corrections.append("All alternative entries must be non-empty strings")
@@ -186,8 +178,7 @@ def stage_2_logical_validation(
     if not is_valid:
         failed.append("invalid_confidence")
         corrections.append(
-            "confidence must be a number between 0 and 1, "
-            "or one of: low / medium / high"
+            "confidence must be a number between 0 and 1, or one of: low / medium / high"
         )
 
     # risks_present.
@@ -260,15 +251,12 @@ def stage_3_scope_validation(
         if _is_restricted(path):
             failed.append(f"restricted_path:{path}")
             blocked.append(path)
-            corrections.append(
-                f"'{path}' is on the restricted list and may not be modified"
-            )
+            corrections.append(f"'{path}' is on the restricted list and may not be modified")
         elif not _is_allowed(path):
             failed.append(f"out_of_scope_path:{path}")
             blocked.append(path)
             corrections.append(
-                f"'{path}' is outside the allowed scope "
-                f"({', '.join(ALLOWED_PATH_PREFIXES)})"
+                f"'{path}' is outside the allowed scope ({', '.join(ALLOWED_PATH_PREFIXES)})"
             )
 
     return MutationValidationResult(
