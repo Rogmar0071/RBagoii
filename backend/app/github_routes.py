@@ -13,6 +13,7 @@ DELETE /api/chat/{conversation_id}/github/repos/{repo_id}  Remove GitHub repo
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import List
 
@@ -66,7 +67,6 @@ def add_github_repo(
     For now, this stores it as a special file entry with category 'github_repo'.
     """
     # Parse owner/repo from URL
-    import re
     match = re.search(r"github\\.com/([^/]+)/([^/]+)", repo.repo_url)
     if not match:
         raise HTTPException(status_code=400, detail="Invalid GitHub URL")
@@ -125,7 +125,6 @@ def list_github_repos(
     result = []
     for repo in repos:
         # Parse repo URL and branch from object_key
-        import re
         match = re.search(r"github:(.+)@(.+)", repo.object_key)
         if match:
             repo_url, branch = match.groups()
