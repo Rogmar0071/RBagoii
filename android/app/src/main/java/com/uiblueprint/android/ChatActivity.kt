@@ -210,6 +210,11 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             binding.drawerLayout.openDrawer(GravityCompat.END)
         }
 
+        // Resource menu button
+        binding.btnResourceMenu.setOnClickListener {
+            ResourceActivity.start(this, conversationId)
+        }
+
         // Close panel button
         btnClosePanel.setOnClickListener {
             binding.drawerLayout.closeDrawer(GravityCompat.END)

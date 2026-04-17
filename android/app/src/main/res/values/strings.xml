@@ -168,4 +168,12 @@
     <string name="error_title_empty">Title cannot be empty.</string>
     <string name="action_browse_all_files">Browse All Files</string>
     <string name="label_from_conversation">From: %1$s</string>
+    <string name="label_resource_menu">Resource Menu</string>
+    <string name="label_github_repos">GitHub Repositories</string>
+    <string name="label_select_repos">Select repositories for AI context</string>
+    <string name="label_select_files">Select files for AI context</string>
+    <string name="btn_load_github_repos">Load Repositories</string>
+    <string name="label_no_repos_loaded">No repositories loaded yet</string>
+    <string name="hint_github_username">GitHub username</string>
+    <string name="error_github_load_failed">Failed to load GitHub repositories</string>
 </resources>

@@ -48,6 +48,11 @@
             android:exported="false" />
 
         <activity
+            android:name=".ResourceActivity"
+            android:exported="false"
+            android:parentActivityName=".ChatActivity" />
+
+        <activity
             android:name=".VideoPlayerActivity"
             android:exported="false"
             android:parentActivityName=".MainActivity" />
