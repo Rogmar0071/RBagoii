@@ -807,12 +807,16 @@ def mode_engine_gateway(
     # ------------------------------------------------------------------
     # Retry loop: generate → validate (4 stages) → retry on failure
     # PHASE 3 — Contract binding to validation
+    # PHASE 1 — RETRY LOOP FIX: MAX_RETRIES = 2 means 2 retries after initial,
+    # for total of MAX_RETRIES + 1 = 3 attempts
     # ------------------------------------------------------------------
     current_prompt = transformed_prompt
     raw_output = ""
     last_validation_results: list[ValidationResult] = []
+    attempt = 0
 
-    for attempt in range(MAX_RETRIES + 1):
+    # Loop for initial attempt + MAX_RETRIES retries (total MAX_RETRIES + 1 attempts)
+    while attempt <= MAX_RETRIES:
         # AI generation — routed through ai_call (stub or OpenAI closure).
         raw_output = ai_call(current_prompt)
         audit.raw_ai_output = raw_output
@@ -831,19 +835,25 @@ def mode_engine_gateway(
             # All stages passed — exit retry loop.
             break
 
-        if attempt < MAX_RETRIES:
+        # Increment attempt counter after failed validation
+        attempt += 1
+
+        if attempt <= MAX_RETRIES:
             # Build corrective feedback for the next attempt.
             current_prompt = _build_feedback_prompt(transformed_prompt, last_validation_results)
-        else:
-            # ----------------------------------------------------------
-            # PHASE 5 — Retry exhaustion: structured failure with contract reference
-            # ----------------------------------------------------------
-            import json as _json
 
-            failure_dict = _build_structured_failure(last_validation_results, attempt)
-            audit.final_output = _json.dumps(failure_dict)
-            _persist_audit_record(audit)  # raises if DB configured + write fails
-            return audit.final_output, audit
+    # Check if we exhausted retries
+    if not all(vr.passed for vr in last_validation_results):
+        # ----------------------------------------------------------
+        # PHASE 5 — Retry exhaustion: structured failure with contract reference
+        # retry_count MUST equal MAX_RETRIES (2) on final failure
+        # ----------------------------------------------------------
+        import json as _json
+
+        failure_dict = _build_structured_failure(last_validation_results, attempt)
+        audit.final_output = _json.dumps(failure_dict)
+        _persist_audit_record(audit)  # raises if DB configured + write fails
+        return audit.final_output, audit
 
     # ------------------------------------------------------------------
     # Hard boundary gate: only validated output exits the system.

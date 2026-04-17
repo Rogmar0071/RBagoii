@@ -147,17 +147,13 @@ def construct_contract(intent: IntentObject) -> ContractObject:
         contract.output_format = "labeled_sections"
 
     else:
-        # Minimal contract for general queries
-        contract.required_sections = [
-            "ASSUMPTIONS",
-            "CONFIDENCE",
-        ]
+        # Minimal contract for general queries in strict mode
+        # Accepts ARTIFACT_ sections or INSUFFICIENT_DATA responses
+        # At least one ARTIFACT section required for valid response
+        contract.required_sections = ["ARTIFACT_"]
         contract.required_elements = []
-        contract.validation_rules = [
-            "assumptions_present",
-            "confidence_present",
-        ]
-        contract.output_format = "labeled_sections"
+        contract.validation_rules = []
+        contract.output_format = "artifact_sections"
 
     return contract
 
