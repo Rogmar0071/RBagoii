@@ -307,7 +307,13 @@ def stage_1_structural_validation(
 
     # Check required sections from contract
     for section in contract.required_sections:
-        if section not in ai_output:
+        # Special case: "<any>" means any non-empty content is acceptable
+        if section == "<any>":
+            if not ai_output.strip():
+                missing.append("non_empty_content")
+                failed.append("strict_mode:empty_output")
+                corrections.append("Provide a non-empty response or state INSUFFICIENT_DATA: <reason>")
+        elif section not in ai_output:
             missing.append(section)
             failed.append(f"missing_required_section:{section}")
             corrections.append(f"Contract requires section '{section}' to be present in response")
@@ -850,7 +856,9 @@ def mode_engine_gateway(
         # ----------------------------------------------------------
         import json as _json
 
-        failure_dict = _build_structured_failure(last_validation_results, attempt)
+        # Ensure audit retry_count is set to MAX_RETRIES on final failure
+        audit.retry_count = MAX_RETRIES
+        failure_dict = _build_structured_failure(last_validation_results, MAX_RETRIES)
         audit.final_output = _json.dumps(failure_dict)
         _persist_audit_record(audit)  # raises if DB configured + write fails
         return audit.final_output, audit

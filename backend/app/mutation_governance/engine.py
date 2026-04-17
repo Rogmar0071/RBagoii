@@ -336,7 +336,8 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # Check if mode_engine returned a validation failure
-    # (including contract boundary failure)
+    # PHASE 3 — FAILURE TAXONOMY STANDARDIZATION
+    # PHASE 5 — GOVERNANCE ALIGNMENT (do not reinterpret)
     # ------------------------------------------------------------------
     import json as _json
 
@@ -346,20 +347,29 @@ def mutation_governance_gateway(
             isinstance(mode_output_parsed, dict)
             and mode_output_parsed.get("error") == "VALIDATION_FAILED"
         ):
-            # Mode engine returned a failure (could be contract boundary failure)
-            # Block this governance request
+            # Mode engine returned a failure
+            # Map to standardized failure taxonomy
             validation_failure = MutationValidationResult(
-                stage=mode_output_parsed.get("stage", "unknown"),
+                stage=mode_output_parsed.get("stage", "validation"),
                 passed=False,
                 failed_rules=mode_output_parsed.get("failed_rules", []),
                 correction_instructions=mode_output_parsed.get("correction_instructions", []),
             )
-            stage = mode_output_parsed.get("stage", "unknown")
+            
+            # Determine standardized failure type
+            stage = mode_output_parsed.get("stage", "")
+            if stage == "contract_boundary":
+                # Contract validation failure at boundary
+                blocked_reason = "contract_validation_failure"
+            else:
+                # General validation failure from mode_engine
+                blocked_reason = "validation_failure"
+            
             return _build_blocked_result(
                 result=result,
                 audit=audit,
                 validation_results=[validation_failure],
-                blocked_reason=f"mode_engine_validation_failure:{stage}",
+                blocked_reason=blocked_reason,
             )
     except (_json.JSONDecodeError, ValueError):
         # Not a JSON failure response, continue normal processing
@@ -367,13 +377,16 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # Step 3: parse AI output as MutationContract JSON
+    # PHASE 2 — PARSE-FIRST ENFORCEMENT (mutation-specific)
+    # Mode engine returns raw AI output, mutation governance parses it
     # ------------------------------------------------------------------
     raw_data = _extract_json(mode_output)
     if raw_data is None:
+        # PHASE 3 — FAILURE TAXONOMY: use "parse_failure" not compound labels
         parse_failure = MutationValidationResult(
-            stage="structural",
+            stage="parse",
             passed=False,
-            failed_rules=["parse_failure:no_section_mutation_contract_label_or_invalid_json"],
+            failed_rules=["parse_failure"],
             correction_instructions=[
                 "Output must contain a SECTION_MUTATION_CONTRACT: label followed by "
                 "a valid, brace-balanced JSON object with all required fields. "
@@ -384,7 +397,7 @@ def mutation_governance_gateway(
             result=result,
             audit=audit,
             validation_results=[parse_failure],
-            blocked_reason="parse_failure:missing_section_mutation_contract_or_malformed_json",
+            blocked_reason="parse_failure",
         )
 
     contract = MutationContract.from_dict(raw_data)
