@@ -1039,111 +1039,104 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         # Read OPENAI_API_KEY at call time -- never returned or logged.
         openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
-        if not openai_api_key:
-            # No OpenAI key — the stub reply still flows through mode_engine_gateway
-            # so that pre-generation constraints, all four validation stages, and
-            # mandatory audit logging run.  The stub path is NOT a bypass.
-            def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
-                return _stub_reply(message)
+        # API_EXCEPTION_BOUNDARY_LOCK_V1: wrap ALL execution in exception boundary
+        # to eliminate 502 errors and ensure structured error responses.
+        try:
+            if not openai_api_key:
+                # No OpenAI key — the stub reply still flows through mode_engine_gateway
+                # so that pre-generation constraints, all four validation stages, and
+                # mandatory audit logging run.  The stub path is NOT a bypass.
+                def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
+                    return _stub_reply(message)
 
-            reply, _audit = mode_engine_gateway(
-                user_intent=message,
-                modes=active_modes,
-                ai_call=_stub_ai_call,
-                base_system_prompt="",
-            )
-        else:
-            # Optionally retrieve web results for recency-sensitive queries.
-            search_results: list[dict[str, Any]] = []
-            if _needs_web_search(message):
-                try:
-                    from backend.app.web_search import TavilyKeyMissing, web_search
-
-                    query = _build_search_query(message)
-                    raw = web_search(query, recency_days=7, max_results=5)
-                    search_results = raw.get("results", [])
-                except TavilyKeyMissing:
-                    logger.info("web_search: TAVILY_API_KEY not set; skipping retrieval.")
-                except Exception:
-                    logger.warning("web_search call failed; continuing without retrieval.")
-
-            # Build base system prompt with ops context + optional retrieval results.
-            if search_results:
-                base_system_prompt = _build_retrieval_system_prompt(db, search_results)
+                reply, _audit = mode_engine_gateway(
+                    user_intent=message,
+                    modes=active_modes,
+                    ai_call=_stub_ai_call,
+                    base_system_prompt="",
+                )
             else:
-                base_system_prompt = _build_chat_system_prompt(db)
+                # Optionally retrieve web results for recency-sensitive queries.
+                search_results: list[dict[str, Any]] = []
+                if _needs_web_search(message):
+                    try:
+                        from backend.app.web_search import TavilyKeyMissing, web_search
 
-            # When agent_mode is enabled, append an instruction to use ARTIFACT format.
-            if agent_mode:
-                base_system_prompt += (
-                    "\n\nRespond using structured ARTIFACT sections. "
-                    "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
-                    "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
-                    "ARTIFACT_SOURCES, etc."
-                )
+                        query = _build_search_query(message)
+                        raw = web_search(query, recency_days=7, max_results=5)
+                        search_results = raw.get("results", [])
+                    except TavilyKeyMissing:
+                        logger.info("web_search: TAVILY_API_KEY not set; skipping retrieval.")
+                    except Exception:
+                        logger.warning("web_search call failed; continuing without retrieval.")
 
-            # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
-            # inject user-provided artifacts (order: after ops/retrieval, before mode injection).
-            # Artifacts are passed verbatim — no preprocessing, no summarization.
-            artifact_block = build_artifact_context_block(resolved_artifacts)
-            if artifact_block:
-                base_system_prompt += "\n\n" + artifact_block
+                # Build base system prompt with ops context + optional retrieval results.
+                if search_results:
+                    base_system_prompt = _build_retrieval_system_prompt(db, search_results)
+                else:
+                    base_system_prompt = _build_chat_system_prompt(db)
 
-            # Build the ai_call closure; mode constraints are injected by the gateway.
-            # This is the ONLY path through which _call_openai_chat is reached for
-            # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
-            def _openai_ai_call(system_prompt: str) -> str:
-                return _call_openai_chat(
-                    message,
-                    openai_api_key,
-                    history[:-1] if history else [],
-                    system_prompt=system_prompt,
-                )
+                # When agent_mode is enabled, append an instruction to use ARTIFACT format.
+                if agent_mode:
+                    base_system_prompt += (
+                        "\n\nRespond using structured ARTIFACT sections. "
+                        "Each section must begin on its own line as: ARTIFACT_<NAME>: <value>. "
+                        "Use concise section names like ARTIFACT_SUMMARY, ARTIFACT_DETAILS, "
+                        "ARTIFACT_SOURCES, etc."
+                    )
 
-            try:
+                # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
+                # inject user-provided artifacts (order: after ops/retrieval, before mode injection).
+                # Artifacts are passed verbatim — no preprocessing, no summarization.
+                artifact_block = build_artifact_context_block(resolved_artifacts)
+                if artifact_block:
+                    base_system_prompt += "\n\n" + artifact_block
+
+                # Build the ai_call closure; mode constraints are injected by the gateway.
+                # This is the ONLY path through which _call_openai_chat is reached for
+                # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
+                def _openai_ai_call(system_prompt: str) -> str:
+                    return _call_openai_chat(
+                        message,
+                        openai_api_key,
+                        history[:-1] if history else [],
+                        system_prompt=system_prompt,
+                    )
+
                 reply, _audit = mode_engine_gateway(
                     user_intent=message,
                     modes=active_modes,
                     ai_call=_openai_ai_call,
                     base_system_prompt=base_system_prompt,
                 )
-            except httpx.TimeoutException:
-                return _error(
-                    502,
-                    "ai_provider_error",
-                    "Chat request timed out.",
-                    {"hint": "timeout"},
-                )
-            except httpx.RequestError:
-                return _error(
-                    502,
-                    "ai_provider_error",
-                    "Network error contacting AI.",
-                    {"hint": "network_error"},
-                )
-            except (httpx.HTTPStatusError, KeyError, IndexError, ValueError):
-                return _error(
-                    502,
-                    "ai_provider_error",
-                    "Invalid response from AI.",
-                    {"hint": "invalid_response"},
-                )
 
-            # Append citations to the reply if retrieval was performed.
-            if search_results:
-                reply += _format_citations(search_results)
+                # Append citations to the reply if retrieval was performed.
+                if search_results:
+                    reply += _format_citations(search_results)
 
-        assistant_message = _persist_message(
-            db, "assistant", reply, context, conversation_id=active_conversation_id
-        )
-        return _json_response(
-            ChatPostResponse(
-                reply=reply,
-                tools_available=_TOOLS_AVAILABLE,
-                user_message=user_message,
-                assistant_message=assistant_message,
+            assistant_message = _persist_message(
+                db, "assistant", reply, context, conversation_id=active_conversation_id
             )
-        )
+            return _json_response(
+                ChatPostResponse(
+                    reply=reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            )
+        except Exception as e:
+            # API_EXCEPTION_BOUNDARY_LOCK_V1: All exceptions caught here.
+            # Return status 200 with structured error to prevent 502 errors.
+            logger.exception("Exception in chat endpoint: %s", e)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "error": "SYSTEM_FAILURE",
+                    "message": str(e),
+                    "type": type(e).__name__,
+                },
+            )
     finally:
         if db is not None:
             db.close()
