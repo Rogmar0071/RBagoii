@@ -14,6 +14,8 @@ Depends on    : MODE_ENGINE_ENFORCEMENT_PATCH_V1
 Strict-mode responses are validated before exit; non-strict responses pass through unchanged.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import re
@@ -50,6 +52,7 @@ STRICT_MODE_ARTIFACT_PREFIX = "ARTIFACT_"
 STRICT_MODE_INSUFFICIENT_DATA_PREFIX = "INSUFFICIENT_DATA:"
 STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE = "INSUFFICIENT GROUNDED KNOWLEDGE"
 STRICT_MODE_MIN_CONFIDENCE = 0.6
+CERTAINTY_LANGUAGE_MIN_CONFIDENCE = 0.95
 
 
 def resolve_modes(requested: list[str]) -> list[str]:
@@ -571,6 +574,7 @@ _GUESSING_INDICATORS = frozenset(
         "i would guess",
     }
 )
+# Tokens used to detect simulated certainty in claim statements.
 _CERTAINTY_TOKENS = frozenset({"definitely", "certainly", "undeniably", "guaranteed", "proven"})
 
 
@@ -650,7 +654,9 @@ def stage_3_compliance_validation(
         statement = str(claim.get("statement", "")).lower()
         conf = claim.get("confidence")
         if any(tok in statement for tok in _CERTAINTY_TOKENS):
-            if not isinstance(conf, (int, float)) or float(conf) < 0.95:
+            if not isinstance(conf, (int, float)) or float(conf) < (
+                CERTAINTY_LANGUAGE_MIN_CONFIDENCE
+            ):
                 failed.append(f"simulated_certainty:{i}")
                 corrections.append(
                     "Do not use certainty language unless confidence is "
@@ -743,7 +749,9 @@ def _check_response_contract(
     source_types: set[str] = set()
     for claim in parsed.get("claims", []):
         if isinstance(claim, dict):
-            source_types.add(str(claim.get("source_type", "")).strip().lower())
+            source_type = str(claim.get("source_type", "")).strip().lower()
+            if source_type:
+                source_types.add(source_type)
 
     if len(source_types) > 1:
         failed.append("mixed_source_types_without_explicit_marking")
@@ -751,16 +759,17 @@ def _check_response_contract(
             "Do not mix retrieval/inference/generation source types in one response."
         )
 
-    if mode_label == "RETRIEVED" and source_types and not all(
-        "retriev" in s or "external" in s for s in source_types
+    allowed_sources_by_mode = {
+        "RETRIEVED": {"retrieved", "external_retrieval", "external"},
+        "INFERRED": {"inferred", "logical_inference"},
+        "GENERATED": {"generated", "creative_generation", "creative"},
+    }
+    allowed_sources = allowed_sources_by_mode.get(str(mode_label), set())
+
+    if mode_label in allowed_sources_by_mode and source_types and not source_types.issubset(
+        allowed_sources
     ):
-        failed.append("mode_label_source_mismatch:retrieved")
-    if mode_label == "INFERRED" and source_types and not all("infer" in s for s in source_types):
-        failed.append("mode_label_source_mismatch:inferred")
-    if mode_label == "GENERATED" and source_types and not all(
-        "generat" in s or "creative" in s for s in source_types
-    ):
-        failed.append("mode_label_source_mismatch:generated")
+        failed.append(f"mode_label_source_mismatch:{str(mode_label).lower()}")
 
     return ValidationResult(
         stage="response_contract",

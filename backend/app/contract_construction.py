@@ -109,6 +109,8 @@ def construct_contract(intent: IntentObject) -> ContractObject:
 
     # Strict-mode containment architecture contract (applies across domains).
     contract.required_sections = ["claims", "uncertainties", "generation_mode", "mode_label"]
+    # `claims[].field` entries are declarative contract surface descriptors.
+    # Runtime validation is implemented explicitly in mode_engine stage validators.
     contract.required_elements = [
         "claims[].statement",
         "claims[].confidence",

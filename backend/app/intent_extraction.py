@@ -137,6 +137,7 @@ def extract_intent(user_message: str) -> IntentObject:
     else:
         intent.domain_risk = "low"
 
+    # Kept as yes/no string to match the contract surface requested by governance.
     intent.verification_required = "yes" if intent.truth_requirement == "strict" else "no"
 
     # output_class intentionally depends on truth_requirement above.
