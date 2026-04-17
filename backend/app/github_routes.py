@@ -67,7 +67,7 @@ def add_github_repo(
     For now, this stores it as a special file entry with category 'github_repo'.
     """
     # Parse owner/repo from URL
-    match = re.search(r"github\\.com/([^/]+)/([^/]+)", repo.repo_url)
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
     if not match:
         raise HTTPException(status_code=400, detail="Invalid GitHub URL")
 
