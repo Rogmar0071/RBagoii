@@ -131,4 +131,29 @@
     <string name="btn_cancel_analysis">Cancel Analysis</string>
     <string name="toast_analysis_cancelled">Analysis job cancelled.</string>
     <string name="toast_analysis_cancel_failed">Failed to cancel analysis job.</string>
+    <!-- Chat file management -->
+    <string name="label_chat_files">Files</string>
+    <string name="btn_upload_file">Upload File</string>
+    <string name="btn_select_github_repos">Select GitHub Repos</string>
+    <string name="label_no_files_uploaded">No files uploaded yet</string>
+    <string name="label_include_in_context">Include in AI context</string>
+    <string name="action_close">Close</string>
+    <string name="action_options">Options</string>
+    <string name="action_rename_file">Rename</string>
+    <string name="action_delete_file">Delete</string>
+    <string name="dialog_rename_file_title_chat">Rename File</string>
+    <string name="dialog_rename_file_hint">File name</string>
+    <string name="dialog_delete_file_title_chat">Delete file?</string>
+    <string name="dialog_delete_file_message_chat">Delete %1$s from this chat?</string>
+    <string name="error_file_upload_failed">File upload failed</string>
+    <string name="status_uploading_file">Uploading file…</string>
+    <string name="status_file_uploaded">File uploaded</string>
+    <string name="label_file_category_document">Document</string>
+    <string name="label_file_category_code">Code</string>
+    <string name="label_file_category_image">Image</string>
+    <string name="label_file_category_video">Video</string>
+    <string name="label_file_category_audio">Audio</string>
+    <string name="label_file_category_data">Data</string>
+    <string name="label_file_category_archive">Archive</string>
+    <string name="label_file_category_other">Other</string>
 </resources>

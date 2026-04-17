@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/black">
+
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="16dp"
+        android:gravity="center_vertical"
+        android:background="@color/surface">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/label_chat_files"
+            android:textColor="@color/text_primary"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnClosePanel"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            app:tint="@color/icon_tint"
+            android:contentDescription="@string/action_close"
+            android:scaleType="center" />
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/divider" />
+
+    <!-- Upload button -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnUploadFile"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_margin="12dp"
+        android:text="@string/btn_upload_file"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp"
+        app:icon="@android:drawable/ic_input_add"
+        app:iconTint="@color/icon_tint" />
+
+    <!-- GitHub repos button -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnGithubRepos"
+        style="@style/Widget.MaterialComponents.Button.TextButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="8dp"
+        android:text="@string/btn_select_github_repos"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        app:icon="@android:drawable/ic_menu_agenda"
+        app:iconTint="@color/text_secondary" />
+
+    <!-- Empty state -->
+    <TextView
+        android:id="@+id/tvEmptyState"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="24dp"
+        android:text="@string/label_no_files_uploaded"
+        android:textColor="@color/text_secondary"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:visibility="gone" />
+
+    <!-- File list -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvFiles"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:padding="8dp" />
+
+</LinearLayout>
