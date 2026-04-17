@@ -556,7 +556,8 @@ class TestMutationGovernanceGateway:
         }
 
     def test_mode_engine_runs_in_strict_mode(self):
-        """In strict mode, mode_engine_gateway runs first and ai_call receives mode-injected prompt."""
+        """In strict mode, mode_engine_gateway runs first and ai_call
+        receives mode-injected prompt."""
         prompts: list[str] = []
 
         def _cap(p: str) -> str:
@@ -576,9 +577,7 @@ class TestMutationGovernanceGateway:
             prompts.append(p)
             return _VALID_OUTPUT
 
-        mutation_governance_gateway(
-            user_intent="x", modes=["strict_mode"], ai_call=_cap
-        )
+        mutation_governance_gateway(user_intent="x", modes=["strict_mode"], ai_call=_cap)
         combined = " ".join(prompts)
         assert "strict_mode" in combined
         assert "prediction_mode" in combined

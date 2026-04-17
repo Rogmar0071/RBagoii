@@ -279,7 +279,7 @@ def mutation_governance_gateway(
     # ------------------------------------------------------------------
     requested_modes: list[str] = list(modes or [])
     resolved_modes = resolve_modes(requested_modes)
-    
+
     # Strict mode detection (STRICT_MODE_PROPAGATION_ENFORCEMENT_V1)
     is_strict = modes is not None and "strict_mode" in modes
 
