@@ -74,8 +74,15 @@ class ResourceActivity : AppCompatActivity() {
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID)
 
+        // Pre-fill GitHub username if saved
+        val savedUsername = prefs.getString("github_username", "")
+        if (!savedUsername.isNullOrEmpty()) {
+            binding.etGithubUsername.setText(savedUsername)
+        }
+
         setupRepoList()
         setupFileList()
+        initializeVisibility()
 
         binding.btnClose.setOnClickListener {
             finish()
@@ -84,6 +91,8 @@ class ResourceActivity : AppCompatActivity() {
         binding.btnLoadRepos.setOnClickListener {
             val username = binding.etGithubUsername.text.toString().trim()
             if (username.isNotEmpty()) {
+                // Save username for future use
+                prefs.edit().putString("github_username", username).apply()
                 loadGithubRepos(username)
             } else {
                 Toast.makeText(this, "Enter a GitHub username", Toast.LENGTH_SHORT).show()
@@ -109,6 +118,14 @@ class ResourceActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         executor.shutdownNow()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Reload files when returning to this activity
+        if (conversationId != null) {
+            loadChatFiles()
+        }
     }
 
     private fun setupRepoList() {
@@ -138,6 +155,25 @@ class ResourceActivity : AppCompatActivity() {
         })
         binding.rvFiles.layoutManager = LinearLayoutManager(this)
         binding.rvFiles.adapter = fileAdapter
+    }
+
+    private fun initializeVisibility() {
+        // Initialize repository section - hide RecyclerView, show prompt text
+        binding.rvGithubRepos.visibility = View.GONE
+        binding.tvNoRepos.visibility = View.VISIBLE
+        binding.tvNoRepos.text = getString(R.string.label_no_repos_loaded)
+        
+        // Initialize files section - if no conversation, show message
+        if (conversationId == null) {
+            binding.rvFiles.visibility = View.GONE
+            binding.tvNoFiles.visibility = View.VISIBLE
+            binding.tvNoFiles.text = "No active conversation"
+            binding.btnUploadFile.isEnabled = false
+        } else {
+            binding.rvFiles.visibility = View.GONE
+            binding.tvNoFiles.visibility = View.VISIBLE
+            binding.tvNoFiles.text = getString(R.string.label_no_files_uploaded)
+        }
     }
 
     private fun loadGithubRepos(username: String) {
