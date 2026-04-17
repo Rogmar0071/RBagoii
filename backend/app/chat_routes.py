@@ -1086,7 +1086,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     )
 
                 # ARTIFACT_INGESTION_PIPELINE_V1 / CONTEXT_ASSEMBLY_ALIGNMENT_V2:
-                # inject user-provided artifacts (order: after ops/retrieval, before mode injection).
+                # inject user-provided artifacts (order: after ops/retrieval,
+                # before mode injection).
                 # Artifacts are passed verbatim — no preprocessing, no summarization.
                 artifact_block = build_artifact_context_block(resolved_artifacts)
                 if artifact_block:
@@ -1125,7 +1126,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     assistant_message=assistant_message,
                 )
             )
-        except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError, httpx.ConnectError):
+        except (
+            httpx.TimeoutException,
+            httpx.RequestError,
+            httpx.HTTPStatusError,
+            httpx.ConnectError,
+        ):
             # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch httpx exceptions to prevent 502 errors.
             # Return status 200 with structured error in reply field (matching mode_engine pattern).
             import json as _json
