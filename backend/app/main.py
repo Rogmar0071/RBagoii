@@ -73,6 +73,7 @@ app = FastAPI(title="UI Blueprint Backend", version="1.0.0")
 from backend.app.analysis_routes import router as _analysis_router  # noqa: E402
 from backend.app.bridge_routes import router as _bridge_router  # noqa: E402
 from backend.app.chat_routes import router as _chat_router  # noqa: E402
+from backend.app.chat_file_routes import router as _chat_file_router  # noqa: E402
 from backend.app.domain_routes import router as _domain_router  # noqa: E402
 from backend.app.folder_routes import router as _folder_router  # noqa: E402
 from backend.app.mutation_routes import router as _mutation_router  # noqa: E402
@@ -82,6 +83,7 @@ from backend.app.tool_routes import router as _tool_router  # noqa: E402
 
 app.include_router(_domain_router)
 app.include_router(_chat_router)
+app.include_router(_chat_file_router)
 app.include_router(_folder_router)
 app.include_router(_ops_router)
 app.include_router(_tool_router)
