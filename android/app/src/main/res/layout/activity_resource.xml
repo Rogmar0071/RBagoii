@@ -141,6 +141,16 @@
                 android:textSize="13sp"
                 android:paddingBottom="12dp" />
 
+            <!-- Upload File Button -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnUploadFile"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_upload_file"
+                android:layout_marginBottom="12dp"
+                app:icon="@android:drawable/ic_input_add"
+                app:iconTint="@color/icon_tint" />
+
             <!-- Files List (Grouped by Category) -->
             <androidx.recyclerview.widget.RecyclerView
                 android:id="@+id/rvFiles"

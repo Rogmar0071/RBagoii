@@ -51,6 +51,9 @@ class GithubRepoAdapter : RecyclerView.Adapter<GithubRepoAdapter.RepoViewHolder>
             binding.tvRepoDescription.text = repo.description.ifEmpty { "No description" }
             binding.tvRepoLanguage.text = repo.language.ifEmpty { "Unknown" }
             binding.tvRepoStars.text = "⭐ ${repo.stars}"
+            
+            // Remove listener before setting checked state to avoid triggering callback
+            binding.cbSelected.setOnCheckedChangeListener(null)
             binding.cbSelected.isChecked = repo.selected
 
             // Handle checkbox clicks
