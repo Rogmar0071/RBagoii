@@ -250,6 +250,10 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     override fun onResume() {
         super.onResume()
         loadMessages()
+        // Reload files to pick up any GitHub repos added in ResourceActivity
+        if (conversationId != null) {
+            loadChatFiles()
+        }
     }
 
     override fun onDestroy() {
