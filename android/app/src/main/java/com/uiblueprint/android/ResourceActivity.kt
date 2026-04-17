@@ -183,7 +183,7 @@ class ResourceActivity : AppCompatActivity() {
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 if (apiKey.isEmpty()) {
                     runOnUiThread {
@@ -271,7 +271,7 @@ class ResourceActivity : AppCompatActivity() {
         executor.execute {
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/$convId/files")
@@ -350,7 +350,7 @@ class ResourceActivity : AppCompatActivity() {
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 // Use the chunked upload helper
                 val success = ChatFileUploadHelper.uploadFile(
@@ -419,7 +419,7 @@ class ResourceActivity : AppCompatActivity() {
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
-                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+                val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
                 var successCount = 0
                 var failureCount = 0
