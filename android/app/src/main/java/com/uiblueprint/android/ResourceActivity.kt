@@ -395,53 +395,95 @@ class ResourceActivity : AppCompatActivity() {
             return
         }
 
+        val selectedRepos = githubRepos.filter { it.selected }
+        val modifiedFiles = chatFiles.filter { file ->
+            // Check if the file's inclusion state has been modified
+            // For now, we'll update all files since we track their state
+            true
+        }
+
         executor.execute {
             try {
+                runOnUiThread {
+                    binding.btnApply.isEnabled = false
+                    Toast.makeText(this, "Applying selections…", Toast.LENGTH_SHORT).show()
+                }
+
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
 
+                var successCount = 0
+                var failureCount = 0
+
                 // Add selected GitHub repos
-                for (repo in githubRepos.filter { it.selected }) {
-                    // Add repo to conversation
-                    val jsonBody = JSONObject().apply {
-                        put("repo_url", repo.htmlUrl)
-                        put("branch", repo.defaultBranch)
-                    }.toString()
+                for (repo in selectedRepos) {
+                    try {
+                        val jsonBody = JSONObject().apply {
+                            put("repo_url", repo.htmlUrl)
+                            put("branch", repo.defaultBranch)
+                        }.toString()
 
-                    val request = Request.Builder()
-                        .url("$baseUrl/api/chat/$convId/github/repos")
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .post(jsonBody.toRequestBody("application/json".toMediaType()))
-                        .build()
+                        val request = Request.Builder()
+                            .url("$baseUrl/api/chat/$convId/github/repos")
+                            .addHeader("Authorization", "Bearer $apiKey")
+                            .addHeader("Content-Type", "application/json")
+                            .post(jsonBody.toRequestBody("application/json".toMediaType()))
+                            .build()
 
-                    BackendClient.executeWithRetry(request)
+                        val response = BackendClient.executeWithRetry(request)
+                        if (response.isSuccessful) {
+                            successCount++
+                        } else {
+                            failureCount++
+                            Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")
+                        }
+                    } catch (e: Exception) {
+                        failureCount++
+                        Log.e("ResourceActivity", "Error adding repo ${repo.fullName}", e)
+                    }
                 }
 
                 // Update file context inclusion
-                for (file in chatFiles) {
-                    val jsonBody = JSONObject().apply {
-                        put("included_in_context", file.includedInContext)
-                    }.toString()
+                for (file in modifiedFiles) {
+                    try {
+                        val jsonBody = JSONObject().apply {
+                            put("included_in_context", file.includedInContext)
+                        }.toString()
 
-                    val request = Request.Builder()
-                        .url("$baseUrl/api/chat/$convId/files/${file.id}")
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("Content-Type", "application/json")
-                        .patch(jsonBody.toRequestBody("application/json".toMediaType()))
-                        .build()
+                        val request = Request.Builder()
+                            .url("$baseUrl/api/chat/$convId/files/${file.id}")
+                            .addHeader("Authorization", "Bearer $apiKey")
+                            .addHeader("Content-Type", "application/json")
+                            .patch(jsonBody.toRequestBody("application/json".toMediaType()))
+                            .build()
 
-                    BackendClient.executeWithRetry(request)
+                        val response = BackendClient.executeWithRetry(request)
+                        if (!response.isSuccessful) {
+                            Log.e("ResourceActivity", "Failed to update file ${file.filename}: ${response.code}")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("ResourceActivity", "Error updating file ${file.filename}", e)
+                    }
                 }
 
                 runOnUiThread {
-                    Toast.makeText(this, "Selections applied", Toast.LENGTH_SHORT).show()
-                    finish()
+                    binding.btnApply.isEnabled = true
+                    if (failureCount == 0) {
+                        Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
+                        finish()
+                    } else {
+                        Toast.makeText(
+                            this, 
+                            "Applied with errors ($successCount succeeded, $failureCount failed)", 
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error applying selections", e)
                 runOnUiThread {
-                    Toast.makeText(this, "Failed to apply selections", Toast.LENGTH_SHORT).show()
+                    binding.btnApply.isEnabled = true
+                    Toast.makeText(this, "Failed to apply selections: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
