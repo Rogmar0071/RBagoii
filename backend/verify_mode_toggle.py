@@ -33,13 +33,13 @@ def mock_get_engine():
     raise RuntimeError("Database not configured")
 
 
-import backend.app.database
+import backend.app.database  # noqa: E402
 
 backend.app.database.get_engine = mock_get_engine
 backend.app.database.reset_engine = lambda *args, **kwargs: None
 backend.app.database.init_db = lambda *args, **kwargs: None
 
-from backend.app.mode_engine import MODE_STRICT, mode_engine_gateway
+from backend.app.mode_engine import MODE_STRICT, mode_engine_gateway  # noqa: E402
 
 
 @dataclass

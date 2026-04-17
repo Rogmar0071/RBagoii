@@ -347,11 +347,12 @@ def mutation_governance_gateway(
                 failed_rules=mode_output_parsed.get("failed_rules", []),
                 correction_instructions=mode_output_parsed.get("correction_instructions", []),
             )
+            stage = mode_output_parsed.get("stage", "unknown")
             return _build_blocked_result(
                 result=result,
                 audit=audit,
                 validation_results=[validation_failure],
-                blocked_reason=f"mode_engine_validation_failure:{mode_output_parsed.get('stage', 'unknown')}",
+                blocked_reason=f"mode_engine_validation_failure:{stage}",
             )
     except (_json.JSONDecodeError, ValueError):
         # Not a JSON failure response, continue normal processing

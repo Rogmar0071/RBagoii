@@ -33,13 +33,17 @@ def mock_get_engine():
     raise RuntimeError("Database not configured")
 
 
-import backend.app.database
+import backend.app.database  # noqa: E402
 
 backend.app.database.get_engine = mock_get_engine
 backend.app.database.reset_engine = lambda *args, **kwargs: None
 backend.app.database.init_db = lambda *args, **kwargs: None
 
-from backend.app.mode_engine import MODE_STRICT, ValidationResult, mode_engine_gateway
+from backend.app.mode_engine import (  # noqa: E402
+    MODE_STRICT,
+    ValidationResult,
+    mode_engine_gateway,
+)
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -257,9 +261,11 @@ def verify_hard_invariants(
             all_passed = all(vr.passed for vr in trace.validation_results)
             if not all_passed and not trace.is_structured_failure:
                 passed = False
-                failures.append(
-                    f"INVARIANT 6 VIOLATED in {scenario.name}: Failed validation without structured failure"
+                msg = (
+                    f"INVARIANT 6 VIOLATED in {scenario.name}: "
+                    f"Failed validation without structured failure"
                 )
+                failures.append(msg)
 
     return passed, failures
 

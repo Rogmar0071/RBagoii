@@ -630,7 +630,7 @@ class TestExecutionPathVerification:
                 continue
 
             # Create a mock that matches the scenario
-            ai_call = MagicMock(return_value=scenario.ai_response)
+            # (ai_call would be used here if we were testing with mocks)
 
             # Run through governance if it's a mutation scenario
             # For now, just verify mode engine behavior
