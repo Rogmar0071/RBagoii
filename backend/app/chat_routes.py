@@ -1125,17 +1125,49 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     assistant_message=assistant_message,
                 )
             )
-        except Exception as e:
-            # API_EXCEPTION_BOUNDARY_LOCK_V1: All exceptions caught here.
-            # Return status 200 with structured error to prevent 502 errors.
-            logger.exception("Exception in chat endpoint: %s", e)
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "error": "SYSTEM_FAILURE",
-                    "message": str(e),
-                    "type": type(e).__name__,
-                },
+        except (httpx.TimeoutException, httpx.RequestError, httpx.HTTPStatusError, httpx.ConnectError):
+            # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch httpx exceptions to prevent 502 errors.
+            # Return status 200 with structured error in reply field (matching mode_engine pattern).
+            import json as _json
+
+            logger.exception("HTTP exception in chat endpoint")
+            error_reply = _json.dumps({
+                "error": "SYSTEM_FAILURE",
+                "message": "AI provider connection failed",
+                "type": "HTTPError",
+            })
+            assistant_message = _persist_message(
+                db, "assistant", error_reply, context, conversation_id=active_conversation_id
+            )
+            return _json_response(
+                ChatPostResponse(
+                    reply=error_reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
+            )
+        except (KeyError, IndexError, ValueError) as e:
+            # API_EXCEPTION_BOUNDARY_LOCK_V1: Catch parsing errors to prevent 502 errors.
+            # Return status 200 with structured error in reply field.
+            import json as _json
+
+            logger.exception("Parsing exception in chat endpoint: %s", e)
+            error_reply = _json.dumps({
+                "error": "SYSTEM_FAILURE",
+                "message": "Invalid AI response format",
+                "type": type(e).__name__,
+            })
+            assistant_message = _persist_message(
+                db, "assistant", error_reply, context, conversation_id=active_conversation_id
+            )
+            return _json_response(
+                ChatPostResponse(
+                    reply=error_reply,
+                    tools_available=_TOOLS_AVAILABLE,
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                )
             )
     finally:
         if db is not None:
