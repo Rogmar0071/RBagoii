@@ -148,13 +148,11 @@ def construct_contract(intent: IntentObject) -> ContractObject:
 
     else:
         # Minimal contract for general queries in strict mode
-        # No specific section requirements - accepts any non-empty output
-        # that follows strict mode rules (no guessing, uses INSUFFICIENT_DATA when needed)
-        # This allows flexibility for different output formats (ARTIFACT_, SECTION_, etc.)
-        contract.required_sections = ["<any>"]  # Special marker meaning "any content"
+        # Requires ARTIFACT_ sections or INSUFFICIENT_DATA
+        contract.required_sections = ["ARTIFACT_"]
         contract.required_elements = []
         contract.validation_rules = []
-        contract.output_format = "text"
+        contract.output_format = "artifact_sections"
 
     return contract
 

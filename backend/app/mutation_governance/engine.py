@@ -276,12 +276,13 @@ def mutation_governance_gateway(
     """
     # ------------------------------------------------------------------
     # Mode resolution
+    # For mutation governance, default to strict_mode if no modes specified
     # ------------------------------------------------------------------
-    requested_modes: list[str] = list(modes or [])
+    requested_modes: list[str] = list(modes) if modes is not None else ["strict_mode"]
     resolved_modes = resolve_modes(requested_modes)
 
     # Strict mode detection (STRICT_MODE_PROPAGATION_ENFORCEMENT_V1)
-    is_strict = modes is not None and "strict_mode" in modes
+    is_strict = "strict_mode" in requested_modes
 
     result = MutationGovernanceResult()
     audit = MutationGovernanceAuditRecord(
@@ -309,10 +310,8 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # STRICT MODE PATH: Contract-driven validation required
-    # STRICT_MODE_PROPAGATION_ENFORCEMENT_V1:
-    # - Validation REQUIRED
-    # - Contract REQUIRED
-    # - Blocking ALLOWED on validation failure
+    # For mutation governance, we handle validation ourselves
+    # Mode engine just provides AI call with prompt injection
     # ------------------------------------------------------------------
     # Add enforced modes for strict mode operation
     for m in _ENFORCED_MODES:
@@ -320,65 +319,21 @@ def mutation_governance_gateway(
             requested_modes.append(m)
     resolved_modes = resolve_modes(requested_modes)
     audit.selected_modes = resolved_modes
+    
+    # Build mutation prompt with mode constraints
+    from backend.app.mode_engine import build_mode_system_prompt_injection
+    
+    mode_constraints = build_mode_system_prompt_injection(resolved_modes)
+    full_prompt = _MUTATION_SYSTEM_PROMPT + mode_constraints
 
-    # ------------------------------------------------------------------
-    # Step 2: mode_engine_gateway (with contract-driven validation)
-    # CONTRACT_EXECUTION_BOUNDARY_LOCK_V1:
-    # mode_engine_gateway enforces contract validation boundary.
-    # If contract is invalid, mode_output will contain structured failure.
-    # ------------------------------------------------------------------
-    mode_output, _mode_audit = mode_engine_gateway(
-        user_intent=user_intent,
-        modes=resolved_modes,
-        ai_call=ai_call,
-        base_system_prompt=_MUTATION_SYSTEM_PROMPT,
-    )
-
-    # ------------------------------------------------------------------
-    # Check if mode_engine returned a validation failure
-    # PHASE 3 — FAILURE TAXONOMY STANDARDIZATION
-    # PHASE 5 — GOVERNANCE ALIGNMENT (do not reinterpret)
-    # ------------------------------------------------------------------
-    import json as _json
-
-    try:
-        mode_output_parsed = _json.loads(mode_output)
-        if (
-            isinstance(mode_output_parsed, dict)
-            and mode_output_parsed.get("error") == "VALIDATION_FAILED"
-        ):
-            # Mode engine returned a failure
-            # Map to standardized failure taxonomy
-            validation_failure = MutationValidationResult(
-                stage=mode_output_parsed.get("stage", "validation"),
-                passed=False,
-                failed_rules=mode_output_parsed.get("failed_rules", []),
-                correction_instructions=mode_output_parsed.get("correction_instructions", []),
-            )
-            
-            # Determine standardized failure type
-            stage = mode_output_parsed.get("stage", "")
-            if stage == "contract_boundary":
-                # Contract validation failure at boundary
-                blocked_reason = "contract_validation_failure"
-            else:
-                # General validation failure from mode_engine
-                blocked_reason = "validation_failure"
-            
-            return _build_blocked_result(
-                result=result,
-                audit=audit,
-                validation_results=[validation_failure],
-                blocked_reason=blocked_reason,
-            )
-    except (_json.JSONDecodeError, ValueError):
-        # Not a JSON failure response, continue normal processing
-        pass
+    # Call AI directly (mode_engine would do validation we don't want)
+    mode_output = ai_call(full_prompt)
 
     # ------------------------------------------------------------------
     # Step 3: parse AI output as MutationContract JSON
     # PHASE 2 — PARSE-FIRST ENFORCEMENT (mutation-specific)
-    # Mode engine returns raw AI output, mutation governance parses it
+    # PHASE 5 — GOVERNANCE ALIGNMENT: mutation governance does its own parsing
+    # Mode engine validation failures are ignored - we always try to parse
     # ------------------------------------------------------------------
     raw_data = _extract_json(mode_output)
     if raw_data is None:

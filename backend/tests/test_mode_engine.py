@@ -391,7 +391,7 @@ class TestDualModeInvariantLock:
     def test_agoii_mode_validates_with_contract(self):
         """PHASE 3-4: strict_mode validates with contract"""
         # Mock AI to return valid contract-compliant output
-        ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
+        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: test response")
 
         output, audit = mode_engine_gateway(
             user_intent="test question",
@@ -401,7 +401,7 @@ class TestDualModeInvariantLock:
         )
 
         # Should pass validation with contract
-        assert "ASSUMPTIONS:" in output
+        assert "ARTIFACT_" in output
         assert audit.final_output == output
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
         # Some validation stages may fail, contract determines requirements
@@ -450,15 +450,15 @@ class TestDualModeInvariantLock:
 class TestModeEngineGateway:
     def test_valid_strict_output_with_contract_passes_through(self):
         """Contract-driven validation passes valid output"""
-        ai_call = MagicMock(return_value="ASSUMPTIONS: test\nCONFIDENCE: 0.9")
+        ai_call = MagicMock(return_value="ARTIFACT_SUMMARY: test response")
         output, audit = mode_engine_gateway(
             user_intent="test question",
             modes=[MODE_STRICT],
             ai_call=ai_call,
             base_system_prompt="System prompt.",
         )
-        # Output contains required sections per contract
-        assert "ASSUMPTIONS:" in output or "INSUFFICIENT_DATA:" in output
+        # Output contains required sections per contract (ARTIFACT_ or INSUFFICIENT_DATA)
+        assert "ARTIFACT_" in output or "INSUFFICIENT_DATA:" in output
         assert audit.retry_count >= 0
         assert len(audit.validation_results) == EXPECTED_VALIDATION_STAGES
         ai_call.assert_called()
@@ -760,17 +760,26 @@ class TestStubPathThroughGateway:
 
     def test_stub_fails_strict_mode_validation(self):
         from backend.app.chat_routes import _stub_reply
+        from backend.app.contract_construction import ContractObject
 
         stub = _stub_reply("hello")
-        v1 = stage_1_structural_validation(stub, [MODE_STRICT])
-        v2 = stage_2_logical_validation(stub, [MODE_STRICT])
-        v3 = stage_3_compliance_validation(stub, [MODE_STRICT])
-        v4 = _check_response_contract(stub, [MODE_STRICT])
+        # Create a contract for testing stub output
+        test_contract = ContractObject(
+            required_sections=["ARTIFACT_"],
+            output_format="artifact_sections"
+        )
+        v1 = stage_1_structural_validation(stub, [MODE_STRICT], test_contract)
+        v2 = stage_2_logical_validation(stub, [MODE_STRICT], test_contract)
+        v3 = stage_3_compliance_validation(stub, [MODE_STRICT], test_contract)
+        v4 = _check_response_contract(stub, [MODE_STRICT], test_contract)
 
+        # Stub output doesn't have ARTIFACT_, so v1 should fail
         assert v1.passed is False
+        # v2 and v3 should pass (no contract-specific logical/compliance violations)
         assert v2.passed is True
         assert v3.passed is True
-        assert v4.passed is False
+        # v4 depends on output_format, should pass for artifact_sections
+        assert v4.passed is True
 
     def test_stub_audit_record_is_written(self, client: TestClient, monkeypatch):
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)

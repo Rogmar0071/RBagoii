@@ -307,13 +307,7 @@ def stage_1_structural_validation(
 
     # Check required sections from contract
     for section in contract.required_sections:
-        # Special case: "<any>" means any non-empty content is acceptable
-        if section == "<any>":
-            if not ai_output.strip():
-                missing.append("non_empty_content")
-                failed.append("strict_mode:empty_output")
-                corrections.append("Provide a non-empty response or state INSUFFICIENT_DATA: <reason>")
-        elif section not in ai_output:
+        if section not in ai_output:
             missing.append(section)
             failed.append(f"missing_required_section:{section}")
             corrections.append(f"Contract requires section '{section}' to be present in response")
