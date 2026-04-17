@@ -217,14 +217,27 @@ async def upload_chat_file(
 @router.get("/{conversation_id}/files", status_code=200, dependencies=[Depends(require_auth)])
 def list_chat_files(
     conversation_id: str,
+    all_conversations: bool = False,
     session: Session = Depends(get_session),
 ) -> List[ChatFileResponse]:
-    """List all files in a conversation, grouped by category."""
-    stmt = (
-        select(ChatFile)
-        .where(ChatFile.conversation_id == conversation_id)
-        .order_by(ChatFile.category, ChatFile.created_at.desc())
-    )
+    """
+    List all files in a conversation, or optionally all files across all conversations.
+    
+    Args:
+        conversation_id: The conversation to list files from (ignored if all_conversations=True)
+        all_conversations: If True, list files from all conversations instead of just one
+    """
+    if all_conversations:
+        # List ALL files across all conversations
+        stmt = select(ChatFile).order_by(ChatFile.created_at.desc())
+    else:
+        # List files only for this conversation
+        stmt = (
+            select(ChatFile)
+            .where(ChatFile.conversation_id == conversation_id)
+            .order_by(ChatFile.category, ChatFile.created_at.desc())
+        )
+    
     files = session.exec(stmt).all()
     
     result = []
@@ -300,25 +313,43 @@ def update_chat_file(
 def delete_chat_file(
     conversation_id: str,
     file_id: str,
+    allow_cross_conversation: bool = False,
     session: Session = Depends(get_session),
 ):
-    """Delete a file from the conversation."""
+    """
+    Delete a file from the conversation.
+    
+    Args:
+        conversation_id: The conversation context
+        file_id: The file to delete
+        allow_cross_conversation: If True, allow deleting files from other conversations
+    """
     try:
         file_uuid = uuid.UUID(file_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid file ID")
     
-    stmt = select(ChatFile).where(
-        ChatFile.id == file_uuid,
-        ChatFile.conversation_id == conversation_id,
-    )
+    if allow_cross_conversation:
+        # Allow deleting files from any conversation
+        stmt = select(ChatFile).where(ChatFile.id == file_uuid)
+    else:
+        # Only delete files from this specific conversation
+        stmt = select(ChatFile).where(
+            ChatFile.id == file_uuid,
+            ChatFile.conversation_id == conversation_id,
+        )
+    
     chat_file = session.exec(stmt).first()
     
     if not chat_file:
         raise HTTPException(status_code=404, detail="File not found")
     
-    # TODO: Delete from object storage as well
-    # delete_object(chat_file.object_key)
+    # Delete from object storage
+    try:
+        from backend.app.storage import delete_object
+        delete_object(chat_file.object_key)
+    except Exception as e:
+        logger.warning(f"Failed to delete file from storage: {chat_file.object_key}, error: {e}")
     
     session.delete(chat_file)
     session.commit()
