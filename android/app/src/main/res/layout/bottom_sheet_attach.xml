@@ -124,7 +124,7 @@
 
     </LinearLayout>
 
-    <!-- Row 2: Video + Repo ZIP (shown only in certain contexts) -->
+    <!-- Row 2: Video + Repo ZIP -->
     <LinearLayout
         android:id="@+id/rowAttach2"
         android:layout_width="match_parent"

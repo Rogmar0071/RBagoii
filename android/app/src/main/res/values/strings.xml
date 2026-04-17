@@ -16,7 +16,6 @@
     <string name="status_upload_succeeded">Upload succeeded.</string>
     <string name="status_upload_failed">Upload failed.</string>
     <string name="status_picking_gallery">Opening gallery…</string>
-    <string name="label_sessions">Folders</string>
     <string name="label_backend_url">Backend: %1$s</string>
     <string name="status_saved_to_gallery">Clip saved to Gallery</string>
     <string name="status_chat_retrying">(Waking backend… retrying %1$d/%2$d)</string>
