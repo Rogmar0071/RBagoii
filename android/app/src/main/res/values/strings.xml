@@ -179,4 +179,8 @@
     <string name="error_github_load_failed">Failed to load GitHub repositories</string>
     <string name="error_backend_connection_failed">Cannot connect to backend. Please ensure the backend server is running.</string>
     <string name="error_backend_timeout">Connection timed out. Please check your backend server and network connection.</string>
+    <string name="error_network_error">Network error: %1$s</string>
+    <string name="error_unknown">Error: %1$s</string>
+    <string name="error_file_upload_network">Network error uploading file: %1$s</string>
+    <string name="error_file_upload_generic">Error uploading file: %1$s</string>
 </resources>

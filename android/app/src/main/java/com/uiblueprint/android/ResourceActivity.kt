@@ -272,7 +272,7 @@ class ResourceActivity : AppCompatActivity() {
             } catch (e: IOException) {
                 Log.e("ResourceActivity", "Network error loading repos", e)
                 runOnUiThread {
-                    val errorMsg = "Network error: ${e.message ?: "Unknown error"}"
+                    val errorMsg = getString(R.string.error_network_error, e.message ?: "Unknown")
                     Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
                     binding.tvNoRepos.visibility = View.VISIBLE
                     binding.tvNoRepos.text = errorMsg
@@ -282,7 +282,7 @@ class ResourceActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error loading repos", e)
                 runOnUiThread {
-                    val errorMsg = "Error: ${e.message ?: "Unknown error"}"
+                    val errorMsg = getString(R.string.error_unknown, e.message ?: "Unknown")
                     Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
                     binding.tvNoRepos.visibility = View.VISIBLE
                     binding.tvNoRepos.text = errorMsg
@@ -365,14 +365,14 @@ class ResourceActivity : AppCompatActivity() {
                 runOnUiThread {
                     binding.rvFiles.visibility = View.GONE
                     binding.tvNoFiles.visibility = View.VISIBLE
-                    binding.tvNoFiles.text = "Network error: ${e.message ?: "Unknown error"}"
+                    binding.tvNoFiles.text = getString(R.string.error_network_error, e.message ?: "Unknown")
                 }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error loading files", e)
                 runOnUiThread {
                     binding.rvFiles.visibility = View.GONE
                     binding.tvNoFiles.visibility = View.VISIBLE
-                    binding.tvNoFiles.text = "Error: ${e.message ?: "Unknown error"}"
+                    binding.tvNoFiles.text = getString(R.string.error_unknown, e.message ?: "Unknown")
                 }
             }
         }
@@ -436,12 +436,12 @@ class ResourceActivity : AppCompatActivity() {
             } catch (e: IOException) {
                 Log.e("ResourceActivity", "Network error uploading file", e)
                 runOnUiThread {
-                    Toast.makeText(this, "Network error uploading file: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.error_file_upload_network, e.message ?: "Unknown"), Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error uploading file", e)
                 runOnUiThread {
-                    Toast.makeText(this, "Error uploading file: ${e.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.error_file_upload_generic, e.message ?: "Unknown"), Toast.LENGTH_LONG).show()
                 }
             }
         }
