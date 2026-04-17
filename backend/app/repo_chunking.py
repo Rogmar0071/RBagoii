@@ -345,11 +345,11 @@ def assemble_chunks(upload_id: str) -> bytes:
             status_code=409,
             detail=f"Missing chunks: {missing}. Only {total_chunks - len(missing)}/{total_chunks} chunks received",
         )
-    
+
     # Assemble chunks
     result = bytearray()
     for index in range(total_chunks):
         chunk_path = chunk_dir / f"chunk_{index:05d}"
         result.extend(chunk_path.read_bytes())
-    
+
     return bytes(result)

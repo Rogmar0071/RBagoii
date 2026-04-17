@@ -11,8 +11,11 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.uiblueprint.android.databinding.ActivityResourceBinding
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -97,13 +100,20 @@ class ResourceActivity : AppCompatActivity() {
 
     private fun setupFileList() {
         fileAdapter = ChatFileAdapter(object : ChatFileAdapter.FileActionListener {
-            override fun onFileClick(file: ChatFile) {
-                // Toggle selection
-                file.includedInContext = !file.includedInContext
-                fileAdapter.notifyDataSetChanged()
+            override fun onToggleIncludeInContext(file: ChatFile, included: Boolean) {
+                // Update the file's context inclusion status
+                file.includedInContext = included
             }
 
-            override fun onFileOptionsClick(file: ChatFile) {
+            override fun onRenameFile(file: ChatFile) {
+                // Not used in resource view
+            }
+
+            override fun onDeleteFile(file: ChatFile) {
+                // Not used in resource view
+            }
+
+            override fun onDownloadFile(file: ChatFile) {
                 // Not used in resource view
             }
         })
@@ -257,10 +267,7 @@ class ResourceActivity : AppCompatActivity() {
                         .url("$baseUrl/api/chat/$convId/github/repos")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .addHeader("Content-Type", "application/json")
-                        .post(okhttp3.RequestBody.Companion.toRequestBody(
-                            jsonBody,
-                            okhttp3.MediaType.Companion.toMediaType("application/json")
-                        ))
+                        .post(jsonBody.toRequestBody("application/json".toMediaType()))
                         .build()
 
                     BackendClient.executeWithRetry(request)
@@ -276,10 +283,7 @@ class ResourceActivity : AppCompatActivity() {
                         .url("$baseUrl/api/chat/$convId/files/${file.id}")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .addHeader("Content-Type", "application/json")
-                        .patch(okhttp3.RequestBody.Companion.toRequestBody(
-                            jsonBody,
-                            okhttp3.MediaType.Companion.toMediaType("application/json")
-                        ))
+                        .patch(jsonBody.toRequestBody("application/json".toMediaType()))
                         .build()
 
                     BackendClient.executeWithRetry(request)
