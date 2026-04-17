@@ -1,12 +1,10 @@
 package com.uiblueprint.android
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
-import android.provider.OpenableColumns
 import android.util.Log
 import android.view.View
 import android.widget.Toast
@@ -20,7 +18,6 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -342,30 +339,25 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
 
-                // Get the actual filename from the URI
-                var filename = "uploaded_file"
-                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (cursor.moveToFirst() && nameIndex != -1) {
-                        filename = cursor.getString(nameIndex)
-                    }
-                }
-
-                // Copy the file to a temporary location
-                val tempFile = File(cacheDir, filename)
-                contentResolver.openInputStream(uri)?.use { input ->
-                    tempFile.outputStream().use { output ->
-                        input.copyTo(output)
-                    }
-                }
-
-                // Upload using ChatFileUploadHelper
+                // Use the chunked upload helper
                 val success = ChatFileUploadHelper.uploadFile(
-                    context = this,
+                    uri = uri,
                     conversationId = convId,
-                    file = tempFile,
                     apiKey = apiKey,
                     baseUrl = baseUrl,
+                    contentResolver = contentResolver,
+                    cacheDir = cacheDir,
+                    onProgress = { current, total ->
+                        runOnUiThread {
+                            if (total > 1) {
+                                Toast.makeText(
+                                    this,
+                                    "Uploading… chunk $current/$total",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
                 )
 
                 runOnUiThread {
@@ -377,9 +369,6 @@ class ResourceActivity : AppCompatActivity() {
                         Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
                     }
                 }
-
-                // Clean up temp file
-                tempFile.delete()
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error uploading file", e)
                 runOnUiThread {
