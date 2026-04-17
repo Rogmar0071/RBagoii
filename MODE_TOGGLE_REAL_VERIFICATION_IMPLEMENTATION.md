@@ -106,7 +106,7 @@ for marker in validation_markers:
 
 ```python
 has_failed_rules = "failed_rules" in output_strict
-has_structure = any(marker in output_strict 
+has_structure = any(marker in output_strict
                     for marker in ["ASSUMPTIONS", "CONFIDENCE", "MISSING_DATA"])
 
 assert has_failed_rules or has_structure
@@ -248,19 +248,19 @@ All verified through REAL API behavior:
 
 1. ✅ **agent_mode is ONLY source of mode control**
    - Tested: Same message, different agent_mode → different output
-   
+
 2. ✅ **NORMAL MODE = ZERO enforcement**
    - Tested: No validation artifacts in normal mode output
-   
+
 3. ✅ **STRICT MODE = FULL enforcement**
    - Tested: Structure OR failure in strict mode output
-   
+
 4. ✅ **SAME INPUT → DIFFERENT OUTPUT (by mode)**
    - Tested: Outputs differ for identical message
-   
+
 5. ✅ **NO validation artifacts in NORMAL mode**
    - Tested: All enforcement markers absent
-   
+
 6. ✅ **STRICT mode MUST visibly enforce structure**
    - Tested: Observable enforcement in output
 
@@ -345,7 +345,7 @@ Message: 'Design pricing strategy'
 
 NORMAL MODE OUTPUT (234 chars):
 ----------------------------------------------------------------------
-Stub reply: You said "Design pricing strategy". 
+Stub reply: You said "Design pricing strategy".
 This is a test response without OpenAI integration.
 ----------------------------------------------------------------------
 

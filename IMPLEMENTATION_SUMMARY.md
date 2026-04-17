@@ -137,7 +137,7 @@ if MODE_STRICT in active_modes:
    ```python
    IF modes == []:
        → APPROVE immediately (no validation, no contract)
-   
+
    IF modes == ["strict_mode"]:
        → Contract-driven validation
        → APPROVE if validation passes
@@ -157,7 +157,7 @@ if MODE_STRICT in active_modes:
 ---
 
 ### ✅ PHASE 7 — Test Realignment
-**Files:** 
+**Files:**
 - `backend/tests/test_mode_engine.py`
 - `backend/tests/test_mutation_governance.py`
 - `backend/tests/test_chat_upgrades.py`
@@ -365,7 +365,7 @@ Files updated and aligned:
 
 ## Conclusion
 
-The DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1 contract has been **fully implemented** and **validated**. 
+The DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1 contract has been **fully implemented** and **validated**.
 
 All 9 phases are complete:
 - Intent extraction ✅

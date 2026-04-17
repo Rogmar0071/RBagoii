@@ -785,8 +785,7 @@ class TestStubPathThroughGateway:
         stub = _stub_reply("hello")
         # Create a contract for testing stub output
         test_contract = ContractObject(
-            required_sections=["ARTIFACT_"],
-            output_format="artifact_sections"
+            required_sections=["ARTIFACT_"], output_format="artifact_sections"
         )
         v1 = stage_1_structural_validation(stub, [MODE_STRICT], test_contract)
         v2 = stage_2_logical_validation(stub, [MODE_STRICT], test_contract)

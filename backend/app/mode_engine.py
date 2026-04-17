@@ -399,8 +399,7 @@ def stage_1_structural_validation(
     elif len(claims) == 0:
         failed.append("claims_empty")
         corrections.append(
-            "claims must contain at least one claim, or return "
-            "INSUFFICIENT GROUNDED KNOWLEDGE"
+            "claims must contain at least one claim, or return INSUFFICIENT GROUNDED KNOWLEDGE"
         )
     else:
         for i, claim in enumerate(claims):
@@ -527,13 +526,13 @@ def stage_2_logical_validation(
                 f"{threshold:.2f}, otherwise use INSUFFICIENT GROUNDED KNOWLEDGE"
             )
 
-        if contract.output_class == "fact" and claim.get(
-            "verifiability"
-        ) != "externally_verifiable":
+        if (
+            contract.output_class == "fact"
+            and claim.get("verifiability") != "externally_verifiable"
+        ):
             failed.append(f"fact_without_verifiability:{i}")
             corrections.append(
-                "Fact-class output requires claim "
-                "verifiability=externally_verifiable"
+                "Fact-class output requires claim verifiability=externally_verifiable"
             )
 
     generation_mode = str(parsed.get("generation_mode", "")).lower()
@@ -766,8 +765,10 @@ def _check_response_contract(
     }
     allowed_sources = allowed_sources_by_mode.get(str(mode_label), set())
 
-    if mode_label in allowed_sources_by_mode and source_types and not source_types.issubset(
-        allowed_sources
+    if (
+        mode_label in allowed_sources_by_mode
+        and source_types
+        and not source_types.issubset(allowed_sources)
     ):
         failed.append(f"mode_label_source_mismatch:{str(mode_label).lower()}")
 
@@ -1147,9 +1148,8 @@ def mode_engine_gateway(
             "status": "blocked",
             "blocked_reason": "validation_failure",
             "failed_rules": all_failed or ["validation_failed"],
-            "correction_instructions": all_corrections or [
-                "Respond with typed JSON object or INSUFFICIENT GROUNDED KNOWLEDGE"
-            ],
+            "correction_instructions": all_corrections
+            or ["Respond with typed JSON object or INSUFFICIENT GROUNDED KNOWLEDGE"],
             "validation_results": audit.validation_results,
             "retry_count": MAX_RETRIES,
             "insufficiency_message": STRICT_MODE_INSUFFICIENT_GROUNDED_KNOWLEDGE,

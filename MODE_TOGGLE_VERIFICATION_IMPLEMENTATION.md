@@ -22,7 +22,7 @@
 
 > Mode toggle MUST produce a COMPLETE behavioral shift across:
 > Intent → Contract → Validation → Governance → Output
-> 
+>
 > NOT partial. NOT silent. NOT inconsistent.
 
 ---
@@ -258,7 +258,7 @@ ai_response = "response"
 
 # Normal (1)
 output_1, _ = mode_engine_gateway(
-    user_intent=message, modes=[], 
+    user_intent=message, modes=[],
     ai_call=MagicMock(return_value=ai_response),
     base_system_prompt=""
 )
@@ -302,7 +302,7 @@ assert output_4.startswith("{") or "VALIDATION_FAILED" in output_4
 ```python
 # modes=[] produces normal mode
 output, audit = mode_engine_gateway(
-    user_intent="test", modes=[], 
+    user_intent="test", modes=[],
     ai_call=MagicMock(return_value="test"),
     base_system_prompt=""
 )

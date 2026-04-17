@@ -939,9 +939,7 @@ def delete_conversation(
             db.delete(msg)
 
         # CASCADE DELETE: Delete all files associated with this conversation
-        files = db.exec(
-            select(ChatFile).where(ChatFile.conversation_id == conversation_id)
-        ).all()
+        files = db.exec(select(ChatFile).where(ChatFile.conversation_id == conversation_id)).all()
         file_count = len(files)
 
         # Delete from object storage first, then from database
@@ -964,8 +962,8 @@ def delete_conversation(
             content={
                 "deleted": message_count,  # Backward compatibility
                 "deleted_messages": message_count,
-                "deleted_files": file_count
-            }
+                "deleted_files": file_count,
+            },
         )
     except Exception as e:
         logger.exception("Error deleting conversation")
@@ -1219,11 +1217,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 import json as _json
 
                 logger.exception("HTTP exception in chat endpoint")
-                error_reply = _json.dumps({
-                    "error": "SYSTEM_FAILURE",
-                    "message": "AI provider connection failed",
-                    "type": "HTTPError",
-                })
+                error_reply = _json.dumps(
+                    {
+                        "error": "SYSTEM_FAILURE",
+                        "message": "AI provider connection failed",
+                        "type": "HTTPError",
+                    }
+                )
                 assistant_message = _persist_message(
                     db, "assistant", error_reply, context, conversation_id=active_conversation_id
                 )
@@ -1241,11 +1241,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 import json as _json
 
                 logger.exception("Parsing exception in chat endpoint: %s", e)
-                error_reply = _json.dumps({
-                    "error": "SYSTEM_FAILURE",
-                    "message": "Invalid AI response format",
-                    "type": type(e).__name__,
-                })
+                error_reply = _json.dumps(
+                    {
+                        "error": "SYSTEM_FAILURE",
+                        "message": "Invalid AI response format",
+                        "type": type(e).__name__,
+                    }
+                )
                 assistant_message = _persist_message(
                     db, "assistant", error_reply, context, conversation_id=active_conversation_id
                 )
@@ -1267,11 +1269,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         import json as _json
 
         logger.exception("Unexpected exception in chat endpoint: %s", e)
-        error_reply = _json.dumps({
-            "error": "SYSTEM_FAILURE",
-            "detail": str(e),
-            "retry_count": 0,
-        })
+        error_reply = _json.dumps(
+            {
+                "error": "SYSTEM_FAILURE",
+                "detail": str(e),
+                "retry_count": 0,
+            }
+        )
         # Try to persist error message if db is available
         try:
             db = _db_session()
@@ -1281,8 +1285,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 db, "assistant", error_reply, context, conversation_id=active_conversation_id
             )
             user_message = _persist_message(
-                db, "user", (body or {}).get("message", ""), context,
-                conversation_id=active_conversation_id
+                db,
+                "user",
+                (body or {}).get("message", ""),
+                context,
+                conversation_id=active_conversation_id,
             )
             if db is not None:
                 db.close()

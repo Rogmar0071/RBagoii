@@ -64,10 +64,41 @@ CATEGORY_MAP = {
 
 # Code file extensions
 CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".cpp", ".c", ".h", ".hpp",
-    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".sh",
-    ".bash", ".sql", ".yaml", ".yml", ".toml", ".ini", ".conf", ".html",
-    ".css", ".scss", ".sass", ".less", ".xml", ".json", ".md", ".txt"
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".java",
+    ".cpp",
+    ".c",
+    ".h",
+    ".hpp",
+    ".cs",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".scala",
+    ".sh",
+    ".bash",
+    ".sql",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".conf",
+    ".html",
+    ".css",
+    ".scss",
+    ".sass",
+    ".less",
+    ".xml",
+    ".json",
+    ".md",
+    ".txt",
 }
 
 
@@ -359,6 +390,7 @@ def delete_chat_file(
     # Delete from object storage
     try:
         from backend.app.storage import delete_object
+
         delete_object(chat_file.object_key)
     except Exception as e:
         logger.warning(f"Failed to delete file from storage: {chat_file.object_key}, error: {e}")

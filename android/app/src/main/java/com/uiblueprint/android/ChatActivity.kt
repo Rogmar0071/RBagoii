@@ -275,7 +275,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
-                
+
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/$convId/files")
                     .addHeader("Authorization", "Bearer $apiKey")
@@ -287,7 +287,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     val body = response.body?.string() ?: "[]"
                     val filesArray = JSONArray(body)
                     val files = mutableListOf<ChatFile>()
-                    
+
                     for (i in 0 until filesArray.length()) {
                         val obj = filesArray.getJSONObject(i)
                         val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
@@ -306,7 +306,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                             )
                         )
                     }
-                    
+
                     runOnUiThread {
                         chatFiles.clear()
                         chatFiles.addAll(files)
@@ -532,7 +532,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     private fun updateFileListUI() {
         val tvEmptyState = binding.filesPanel.tvEmptyState
         val rvFiles = binding.filesPanel.rvFiles
-        
+
         if (chatFiles.isEmpty()) {
             tvEmptyState.visibility = View.VISIBLE
             rvFiles.visibility = View.GONE
@@ -548,7 +548,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             try {
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
-                
+
                 // Use dummy conversation_id since we're fetching all files
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/_all/files?all_conversations=true")
@@ -561,7 +561,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     val body = response.body?.string() ?: "[]"
                     val filesArray = JSONArray(body)
                     val allFiles = mutableListOf<ChatFile>()
-                    
+
                     for (i in 0 until filesArray.length()) {
                         val obj = filesArray.getJSONObject(i)
                         val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
@@ -580,7 +580,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                             )
                         )
                     }
-                    
+
                     runOnUiThread {
                         if (allFiles.isEmpty()) {
                             Toast.makeText(this, "No files found", Toast.LENGTH_SHORT).show()
@@ -605,15 +605,15 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
     private fun showFileSelectionDialog(allFiles: List<ChatFile>) {
         val currentConvId = conversationId
-        
+
         // Group files by conversation
         val filesByConv = allFiles.groupBy { it.conversationId }
-        
+
         // Build dialog with checkboxes
         val dialogView = layoutInflater.inflate(android.R.layout.select_dialog_multichoice, null)
         val items = mutableListOf<String>()
         val fileList = mutableListOf<ChatFile>()
-        
+
         filesByConv.forEach { (convId, files) ->
             val convLabel = if (convId == currentConvId) "This Chat" else "Chat: ${convId.take(8)}"
             files.forEach { file ->
@@ -621,9 +621,9 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 fileList.add(file)
             }
         }
-        
+
         val checkedItems = fileList.map { it.includedInContext }.toBooleanArray()
-        
+
         AlertDialog.Builder(this)
             .setTitle("Select Files to Include")
             .setMultiChoiceItems(items.toTypedArray(), checkedItems) { _, which, isChecked ->
@@ -826,7 +826,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     JSONObject().apply {
                         put("session_id", JSONObject.NULL)
                         put("domain_profile_id", JSONObject.NULL)
-                        
+
                         // Add file context
                         val includedFiles = chatFiles.filter { it.includedInContext }
                         if (includedFiles.isNotEmpty()) {
@@ -985,7 +985,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     superseded = msg.optBoolean("superseded", false),
                 )
             )
-            
+
             // Extract conversation ID from messages for file loading
             if (conversationId == null) {
                 val convId = msg.optString("conversation_id", null)
@@ -999,7 +999,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         list.reverse()
         adapter.submitList(list)
         binding.rvMessages.scrollToPosition(adapter.itemCount - 1)
-        
+
         // Load files for current conversation
         conversationId?.let { loadChatFiles() }
     }

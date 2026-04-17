@@ -9,11 +9,11 @@
         <!-- Include shared preferences -->
         <include domain="sharedpref" path="chat_prefs.xml"/>
         <include domain="sharedpref" path="home_conversations.xml"/>
-        
+
         <!-- Exclude sensitive data -->
         <exclude domain="sharedpref" path="device_prefs.xml"/>
     </cloud-backup>
-    
+
     <device-transfer>
         <!-- Same rules for device transfer -->
         <include domain="sharedpref" path="chat_prefs.xml"/>

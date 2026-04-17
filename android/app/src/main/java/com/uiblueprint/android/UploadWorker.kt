@@ -270,5 +270,3 @@ class UploadWorker(context: Context, params: WorkerParameters) : Worker(context,
         }
     }
 }
-
-

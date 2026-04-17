@@ -418,6 +418,7 @@ class TestChat:
         body = response.json()
         # The reply field contains a JSON-encoded error
         import json
+
         error_data = json.loads(body["reply"])
         assert error_data["error"] == "SYSTEM_FAILURE"
         assert error_data["message"] == "AI provider connection failed"
