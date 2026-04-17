@@ -222,7 +222,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
         // GitHub repos button (placeholder for now)
         btnGithubRepos?.setOnClickListener {
-            Toast.makeText(this, "GitHub integration coming soon", Toast.LENGTH_SHORT).show()
+            showGithubRepoDialog()
         }
 
         // Update empty state visibility
@@ -534,6 +534,79 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         } else {
             tvEmptyState?.visibility = View.GONE
             rvFiles?.visibility = View.VISIBLE
+        }
+    }
+
+    private fun showGithubRepoDialog() {
+        val convId = conversationId ?: run {
+            Toast.makeText(this, "Please start a conversation first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val input = EditText(this).apply {
+            hint = "https://github.com/owner/repo"
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Add GitHub Repository")
+            .setMessage("Enter the GitHub repository URL to include as reference:")
+            .setView(input)
+            .setPositiveButton(getString(R.string.action_ok)) { _, _ ->
+                val repoUrl = input.text.toString().trim()
+                if (repoUrl.isNotEmpty() && repoUrl.contains("github.com")) {
+                    addGithubRepo(repoUrl)
+                } else {
+                    Toast.makeText(this, "Invalid GitHub URL", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton(getString(R.string.action_cancel), null)
+            .show()
+    }
+
+    private fun addGithubRepo(repoUrl: String) {
+        val convId = conversationId ?: return
+
+        executor.execute {
+            try {
+                runOnUiThread {
+                    Toast.makeText(this, "Adding GitHub repo...", Toast.LENGTH_SHORT).show()
+                }
+
+                val apiKey = prefs.getString("api_key", "") ?: ""
+                val baseUrl = prefs.getString("backend_url", "http://10.0.2.2:8000") ?: "http://10.0.2.2:8000"
+
+                val json = JSONObject().apply {
+                    put("repo_url", repoUrl)
+                    put("branch", "main")
+                }
+
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat/$convId/github/repos")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .addHeader("Content-Type", "application/json")
+                    .post(json.toString().toRequestBody("application/json".toMediaType()))
+                    .build()
+
+                val response = BackendClient.client.newCall(request).execute()
+
+                if (response.isSuccessful) {
+                    runOnUiThread {
+                        Toast.makeText(this, "GitHub repo added", Toast.LENGTH_SHORT).show()
+                        loadChatFiles()  // Reload to show the new repo
+                    }
+                } else {
+                    runOnUiThread {
+                        Toast.makeText(this, "Failed to add repo", Toast.LENGTH_SHORT).show()
+                    }
+                    Log.e("ChatActivity", "Add repo failed: ${response.code}")
+                }
+            } catch (e: Exception) {
+                Log.e("ChatActivity", "Error adding GitHub repo", e)
+                runOnUiThread {
+                    Toast.makeText(this, "Error adding repo", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
