@@ -32,6 +32,16 @@
             android:textStyle="bold" />
 
         <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/btnResourceMenu"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_menu_search"
+            android:contentDescription="@string/label_resource_menu"
+            app:tint="@color/icon_tint"
+            android:scaleType="center" />
+
+        <androidx.appcompat.widget.AppCompatImageButton
             android:id="@+id/btnNewChat"
             android:layout_width="40dp"
             android:layout_height="40dp"
