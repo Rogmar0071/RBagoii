@@ -1,0 +1,63 @@
+# Pre-commit hooks to prevent linting failures in CI
+# See https://pre-commit.com for more information
+# Installation: pip install pre-commit && pre-commit install
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version
+    rev: v0.15.11
+    hooks:
+      # Run the linter with auto-fix
+      - id: ruff
+        name: ruff (lint with auto-fix)
+        args: [--fix]
+        types_or: [python, pyi]
+        # Run on both ui_blueprint and backend code
+        files: ^(ui_blueprint|backend|tests)/.*\.pyi?$
+
+      # Run the formatter
+      - id: ruff-format
+        name: ruff (format)
+        types_or: [python, pyi]
+        files: ^(ui_blueprint|backend|tests)/.*\.pyi?$
+
+  # Sync AI_AGENT_CONTEXT.md when README.md changes
+  - repo: local
+    hooks:
+      - id: sync-ai-context
+        name: Sync AI_AGENT_CONTEXT.md from README.md
+        entry: python scripts/sync_ai_context.py
+        language: system
+        files: ^README\.md$
+        pass_filenames: false
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      # Prevent large files from being committed
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+      # Ensure files end with a newline
+      - id: end-of-file-fixer
+        exclude: \.json$
+
+      # Remove trailing whitespace
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+      # Check for files that would conflict in case-insensitive filesystems
+      - id: check-case-conflict
+
+      # Check YAML syntax
+      - id: check-yaml
+        args: ['--unsafe']  # Allow custom tags
+
+      # Check JSON syntax
+      - id: check-json
+
+      # Check for merge conflict markers
+      - id: check-merge-conflict
+
+      # Check for debugging statements
+      - id: debug-statements

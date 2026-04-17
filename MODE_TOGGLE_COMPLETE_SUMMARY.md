@@ -258,7 +258,7 @@ assert not all_passed
 ```python
 response = client.post("/api/chat", json={"agent_mode": True})
 output = response.json()["reply"]
-has_structure = ("failed_rules" in output or 
+has_structure = ("failed_rules" in output or
                  "ASSUMPTIONS" in output)
 assert has_structure  # Enforcement visible
 ```
@@ -398,9 +398,9 @@ assert "failed_rules" in r4.json()["reply"]
 ### Normal Mode Output (agent_mode=false)
 
 ```
-Stub reply: You said "Design pricing strategy". 
+Stub reply: You said "Design pricing strategy".
 This is a test response without OpenAI integration.
-In a production environment, this would be replaced by 
+In a production environment, this would be replaced by
 actual AI-generated content.
 ```
 

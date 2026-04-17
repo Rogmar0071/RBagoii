@@ -236,12 +236,19 @@ def mutation_governance_gateway(
 ) -> MutationGovernanceResult:
     """Single mandatory entry/exit point for the mutation governance pipeline.
 
+    STRICT_MODE_EXECUTION_SPINE_LOCK_V1 — PHASE 9: GOVERNANCE ALIGNMENT LOCK
+    mutation_governance MUST:
+    - TRUST mode_engine result ONLY
+    - NOT re-interpret validation
+    - IF mode_engine.status == "blocked": governance.status = "blocked"
+    - IF mode_engine.status == "approved": governance.status = "approved"
+
     ALIGNED WITH DUAL_MODE_GOVERNANCE_AND_INTENT_BINDING_V1:
 
     Pipeline (MUTATION_GOVERNANCE_EXECUTION_V1):
       1. receive_intent        — validate user_intent is non-empty.
       2. mode_resolution       — determine if strict_mode is active.
-      3. IF modes == []:
+      3. IF modes == [] or modes == None:
            → APPROVE immediately (no validation, no contract)
       4. IF modes == ["strict_mode"]:
            → mode_engine (with contract-driven validation)
@@ -275,7 +282,9 @@ def mutation_governance_gateway(
         (``block_if_log_not_written``).
     """
     # ------------------------------------------------------------------
-    # Mode resolution
+    # PHASE 1 — MODE ISOLATION LOCK
+    # modes is the ONLY source of truth
+    # is_strict = (modes != None AND "strict_mode" IN modes)
     # For mutation governance, default to strict_mode if no modes specified
     # ------------------------------------------------------------------
     requested_modes: list[str] = list(modes) if modes is not None else ["strict_mode"]
@@ -293,8 +302,11 @@ def mutation_governance_gateway(
     )
 
     # ------------------------------------------------------------------
-    # PHASE 6 — NORMAL MODE PATH (modes == [] or modes == None)
+    # PHASE 1 — NORMAL MODE PATH (modes == [] or modes == None)
     # Governance NEVER assumes validation exists
+    # IF is_strict == FALSE:
+    #   - BYPASS all validation
+    #   - RETURN raw AI output (wrapped in governance structure)
     # ------------------------------------------------------------------
     if not is_strict:
         # NORMAL MODE: no validation, no contract, immediate approval
@@ -320,7 +332,8 @@ def mutation_governance_gateway(
     resolved_modes = resolve_modes(requested_modes)
     audit.selected_modes = resolved_modes
 
-    # Build mutation prompt with mode constraints
+    # PHASE 10 — PROMPT INJECTION LOCK
+    # Build mutation prompt with MODE ENGINE EXECUTION V2 CONSTRAINTS
     from backend.app.mode_engine import build_mode_system_prompt_injection
 
     mode_constraints = build_mode_system_prompt_injection(resolved_modes)
@@ -330,14 +343,17 @@ def mutation_governance_gateway(
     mode_output = ai_call(full_prompt)
 
     # ------------------------------------------------------------------
+    # PHASE 4 — PARSE-FIRST ENFORCEMENT (mutation-specific)
     # Step 3: parse AI output as MutationContract JSON
-    # PHASE 2 — PARSE-FIRST ENFORCEMENT (mutation-specific)
-    # PHASE 5 — GOVERNANCE ALIGNMENT: mutation governance does its own parsing
+    # PHASE 9 — GOVERNANCE ALIGNMENT: mutation governance does its own parsing
     # Mode engine validation failures are ignored - we always try to parse
     # ------------------------------------------------------------------
     raw_data = _extract_json(mode_output)
     if raw_data is None:
-        # PHASE 3 — FAILURE TAXONOMY: use "parse_failure" not compound labels
+        # PHASE 6 — FAILURE TAXONOMY LOCK: use "parse_failure" not compound labels
+        # PHASE 7 — RETRY ENGINE LOCK: parse failure returns retry_count = MAX_RETRIES (=2)
+        from backend.app.mode_engine import MAX_RETRIES
+
         parse_failure = MutationValidationResult(
             stage="parse",
             passed=False,
@@ -353,15 +369,18 @@ def mutation_governance_gateway(
             audit=audit,
             validation_results=[parse_failure],
             blocked_reason="parse_failure",
+            retry_count=MAX_RETRIES,
         )
 
     contract = MutationContract.from_dict(raw_data)
 
     # ------------------------------------------------------------------
+    # PHASE 5 — VALIDATION PIPELINE LOCK
     # Step 4: 3-stage validation pipeline (CONTRACT-DRIVEN)
     # STRICT_MODE_PROPAGATION_ENFORCEMENT_V1:
     # Validation ONLY runs in strict_mode WITH contract
     # All three stages MUST execute: structural → logical → scope
+    # EACH stage MUST return: stage, passed, failed_rules, correction_instructions
     # ------------------------------------------------------------------
     v1 = stage_1_structural_validation(contract)
     v2 = stage_2_logical_validation(contract)
@@ -370,23 +389,32 @@ def mutation_governance_gateway(
     result.validation_results = [vr.to_dict() for vr in all_stages]
 
     # ------------------------------------------------------------------
+    # PHASE 9 — GOVERNANCE ALIGNMENT LOCK
     # Step 5: Mutation enforcement gate (depends on contract validation)
     # STRICT_MODE_PROPAGATION_ENFORCEMENT_V1:
     # Blocking occurs if ANY validation stage fails
+    # PHASE 5 — IF ANY stage fails: status = "blocked"
+    # PHASE 5 — IF ALL pass: status = "approved"
     # ------------------------------------------------------------------
     gate = mutation_enforcement_gate(all_stages)
     result.gate_result = gate.to_dict()
 
     if gate.passed:
+        # PHASE 8 — SUCCESS PATH LOCK
+        # IF status == "approved": RETURN CLEAN output (no error wrapper)
         result.status = "approved"
         result.mutation_proposal = contract.to_dict()
     else:
+        # PHASE 6 — FAILURE TAXONOMY: "validation_failure"
         # STRICT MODE FAILURE ENFORCEMENT: block on validation failure
         result.status = "blocked"
-        result.blocked_reason = gate.blocked_reason
+        result.blocked_reason = "validation_failure"
 
     # ------------------------------------------------------------------
     # Step 6: Audit log (mandatory — raises if DB write fails)
+    # PHASE 11 — AUDIT CONSISTENCY LOCK
+    # ALL executions MUST log: selected_modes, status, blocked_reason, retry_count,
+    # validation_results
     # ------------------------------------------------------------------
     audit.mutation_proposal = result.mutation_proposal or {}
     audit.validation_results = result.validation_results
@@ -406,8 +434,12 @@ def _build_blocked_result(
     audit: MutationGovernanceAuditRecord,
     validation_results: list[MutationValidationResult],
     blocked_reason: str,
+    retry_count: int = 0,
 ) -> MutationGovernanceResult:
-    """Populate *result* as a blocked proposal and persist the audit record."""
+    """Populate *result* as a blocked proposal and persist the audit record.
+
+    PHASE 7 — RETRY ENGINE LOCK: retry_count parameter added to support deterministic reporting.
+    """
     result.validation_results = [vr.to_dict() for vr in validation_results]
     gate = GateResult(
         passed=False,

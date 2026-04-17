@@ -97,6 +97,41 @@ python -m ui_blueprint extract --synthetic -o /tmp/test.json
 
 ---
 
+## Development setup
+
+### First-time setup
+
+Run the setup script to configure your local development environment with pre-commit hooks:
+
+```bash
+./setup-dev-env.sh
+```
+
+This installs and configures [pre-commit](https://pre-commit.com) hooks that will:
+- ✅ Auto-fix code formatting issues (ruff)
+- ✅ Check for trailing whitespace
+- ✅ Ensure files end with newlines
+- ✅ Prevent large files from being committed
+- ✅ Validate YAML and JSON syntax
+- ✅ Check for merge conflicts and debug statements
+
+Pre-commit hooks **prevent CI linting failures** by catching issues locally before you commit.
+
+### Manual pre-commit usage
+
+```bash
+# Run on all files
+pre-commit run --all-files
+
+# Run on staged files only (happens automatically on git commit)
+pre-commit run
+
+# Update hook versions
+pre-commit autoupdate
+```
+
+---
+
 ## Running tests
 
 ```bash

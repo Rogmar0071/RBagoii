@@ -98,19 +98,19 @@ class ExecutionScenario:
 def execute_scenario(scenario: ExecutionScenario) -> ExecutionTrace:
     trace = ExecutionTrace(modes=scenario.modes, user_intent=scenario.user_intent)
     ai_call = MagicMock(return_value=scenario.ai_response)
-    
+
     output, audit = mode_engine_gateway(
         user_intent=scenario.user_intent,
         modes=scenario.modes,
         ai_call=ai_call,
         base_system_prompt="",
     )
-    
+
     # Extract trace from audit
     trace.final_output = output
     trace.validation_results = extract_validation_results(audit)
     trace.is_structured_failure = detect_structured_failure(output)
-    
+
     return trace
 ```
 

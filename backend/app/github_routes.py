@@ -72,7 +72,7 @@ def add_github_repo(
         raise HTTPException(status_code=400, detail="Invalid GitHub URL")
 
     owner, repo_name = match.groups()
-    repo_name = repo_name.rstrip('.git')
+    repo_name = repo_name.rstrip(".git")
 
     # Create a "file" entry to represent the GitHub repo
     # We use the ChatFile table but with a special category
@@ -86,8 +86,7 @@ def add_github_repo(
         category="github_repo",
         included_in_context=True,
         extracted_text=(
-            f"GitHub Repository: {owner}/{repo_name} (branch: {repo.branch})\n"
-            f"URL: {repo.repo_url}"
+            f"GitHub Repository: {owner}/{repo_name} (branch: {repo.branch})\nURL: {repo.repo_url}"
         ),
     )
 
