@@ -191,20 +191,19 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         })
 
         // Set drawer width to 40% of screen width
-        val params = binding.filesPanel.layoutParams
+        val params = binding.filesPanel.root.layoutParams
         params.width = (resources.displayMetrics.widthPixels * 0.4).toInt()
-        binding.filesPanel.layoutParams = params
+        binding.filesPanel.root.layoutParams = params
 
-        // Setup RecyclerView (need to get reference from included layout)
-        val rvFiles = binding.filesPanel.findViewById<androidx.recyclerview.widget.RecyclerView>(R.id.rvFiles)
-        val tvEmptyState = binding.filesPanel.findViewById<android.widget.TextView>(R.id.tvEmptyState)
-        val btnUploadFile = binding.filesPanel.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnUploadFile)
-        val btnBrowseAllFiles = binding.filesPanel.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnBrowseAllFiles)
-        val btnGithubRepos = binding.filesPanel.findViewById<com.google.android.material.button.MaterialButton>(R.id.btnGithubRepos)
-        val btnClosePanel = binding.filesPanel.findViewById<androidx.appcompat.widget.AppCompatImageButton>(R.id.btnClosePanel)
+        // Setup RecyclerView
+        val rvFiles = binding.filesPanel.rvFiles
+        val btnUploadFile = binding.filesPanel.btnUploadFile
+        val btnBrowseAllFiles = binding.filesPanel.btnBrowseAllFiles
+        val btnGithubRepos = binding.filesPanel.btnGithubRepos
+        val btnClosePanel = binding.filesPanel.btnClosePanel
 
-        rvFiles?.layoutManager = LinearLayoutManager(this)
-        rvFiles?.adapter = fileAdapter
+        rvFiles.layoutManager = LinearLayoutManager(this)
+        rvFiles.adapter = fileAdapter
 
         // Hamburger menu to open drawer
         binding.btnFilesMenu.setOnClickListener {
@@ -212,22 +211,22 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         }
 
         // Close panel button
-        btnClosePanel?.setOnClickListener {
+        btnClosePanel.setOnClickListener {
             binding.drawerLayout.closeDrawer(GravityCompat.END)
         }
 
         // Upload file button
-        btnUploadFile?.setOnClickListener {
+        btnUploadFile.setOnClickListener {
             filePickerLauncher.launch("*/*")
         }
 
         // Browse all files button
-        btnBrowseAllFiles?.setOnClickListener {
+        btnBrowseAllFiles.setOnClickListener {
             showAllFilesDialog()
         }
 
         // GitHub repos button (placeholder for now)
-        btnGithubRepos?.setOnClickListener {
+        btnGithubRepos.setOnClickListener {
             showGithubRepoDialog()
         }
 
@@ -283,7 +282,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .get()
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 if (response.isSuccessful) {
                     val body = response.body?.string() ?: "[]"
                     val filesArray = JSONArray(body)
@@ -372,7 +371,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .post(requestBody)
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 tempFile.delete()
 
                 if (response.isSuccessful) {
@@ -420,7 +419,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 if (response.isSuccessful) {
                     runOnUiThread {
                         // Update local list
@@ -475,7 +474,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 if (response.isSuccessful) {
                     runOnUiThread {
                         loadChatFiles()
@@ -513,7 +512,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .delete()
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 if (response.isSuccessful) {
                     runOnUiThread {
                         chatFiles.removeIf { it.id == file.id }
@@ -531,15 +530,15 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     }
 
     private fun updateFileListUI() {
-        val tvEmptyState = binding.filesPanel.findViewById<android.widget.TextView>(R.id.tvEmptyState)
-        val rvFiles = binding.filesPanel.findViewById<androidx.recyclerview.widget.RecyclerView>(R.id.rvFiles)
+        val tvEmptyState = binding.filesPanel.tvEmptyState
+        val rvFiles = binding.filesPanel.rvFiles
         
         if (chatFiles.isEmpty()) {
-            tvEmptyState?.visibility = View.VISIBLE
-            rvFiles?.visibility = View.GONE
+            tvEmptyState.visibility = View.VISIBLE
+            rvFiles.visibility = View.GONE
         } else {
-            tvEmptyState?.visibility = View.GONE
-            rvFiles?.visibility = View.VISIBLE
+            tvEmptyState.visibility = View.GONE
+            rvFiles.visibility = View.VISIBLE
         }
     }
 
@@ -557,7 +556,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .get()
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 if (response.isSuccessful) {
                     val body = response.body?.string() ?: "[]"
                     val filesArray = JSONArray(body)
@@ -661,7 +660,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .patch(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
                 if (!response.isSuccessful) {
                     Log.e("ChatActivity", "Failed to update file context: ${response.code}")
                 }
@@ -722,7 +721,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     .post(json.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
-                val response = BackendClient.client.newCall(request).execute()
+                val response = BackendClient.httpClient.newCall(request).execute()
 
                 if (response.isSuccessful) {
                     runOnUiThread {
