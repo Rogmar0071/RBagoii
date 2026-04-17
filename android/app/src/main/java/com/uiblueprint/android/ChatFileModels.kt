@@ -9,15 +9,33 @@ import java.util.Date
 data class ChatFile(
     val id: String,
     val conversationId: String,
-    val filename: String,
+    var filename: String,
     val mimeType: String,
     val sizeBytes: Long,
     val category: String,
-    val includedInContext: Boolean,
+    var includedInContext: Boolean,
     val createdAt: Date,
     val updatedAt: Date,
     val downloadUrl: String?,
-)
+) {
+    fun copy(
+        id: String = this.id,
+        conversationId: String = this.conversationId,
+        filename: String = this.filename,
+        mimeType: String = this.mimeType,
+        sizeBytes: Long = this.sizeBytes,
+        category: String = this.category,
+        includedInContext: Boolean = this.includedInContext,
+        createdAt: Date = this.createdAt,
+        updatedAt: Date = this.updatedAt,
+        downloadUrl: String? = this.downloadUrl
+    ): ChatFile {
+        return ChatFile(
+            id, conversationId, filename, mimeType, sizeBytes,
+            category, includedInContext, createdAt, updatedAt, downloadUrl
+        )
+    }
+}
 
 /**
  * File category enum for grouping files in the UI.

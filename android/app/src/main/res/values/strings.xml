@@ -156,4 +156,7 @@
     <string name="label_file_category_data">Data</string>
     <string name="label_file_category_archive">Archive</string>
     <string name="label_file_category_other">Other</string>
+    <string name="action_view_file">View</string>
+    <string name="action_ok">OK</string>
+    <string name="action_delete">Delete</string>
 </resources>
