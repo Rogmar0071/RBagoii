@@ -473,7 +473,7 @@ class TestMigrations:
     ) -> None:
         """Migration 0003 must add superseded_by_id to global_chat_messages."""
         import sqlalchemy as sa
-        from alembic import command
+        import alembic.command as alembic_command
         from alembic.config import Config
 
         db_path = tmp_path / "migration_test.db"
@@ -506,10 +506,10 @@ class TestMigrations:
         alembic_cfg.set_main_option("sqlalchemy.url", db_url)
 
         # Stamp at 0002: Alembic believes migrations 0001+0002 already ran.
-        command.stamp(alembic_cfg, "0002")
+        alembic_command.stamp(alembic_cfg, "0002")
 
         # Run only migration 0003.
-        command.upgrade(alembic_cfg, "head")
+        alembic_command.upgrade(alembic_cfg, "head")
 
         # Verify the column was added.
         engine = sa.create_engine(db_url, connect_args={"check_same_thread": False})
@@ -527,7 +527,7 @@ class TestMigrations:
     ) -> None:
         """On a greenfield DB (no global_chat_messages), migration 0003 is a no-op."""
         import sqlalchemy as sa
-        from alembic import command
+        import alembic.command as alembic_command
         from alembic.config import Config
 
         db_path = tmp_path / "greenfield_test.db"
@@ -544,8 +544,8 @@ class TestMigrations:
 
         # Stamp at 0002 to simulate greenfield deployment that already ran
         # migrations 0001+0002 but init_db() hasn't run yet.
-        command.stamp(alembic_cfg, "0002")
+        alembic_command.stamp(alembic_cfg, "0002")
 
         # upgrade head should complete without error even though the table
         # is absent (migration 0003 guards with inspector.get_table_names()).
-        command.upgrade(alembic_cfg, "head")
+        alembic_command.upgrade(alembic_cfg, "head")

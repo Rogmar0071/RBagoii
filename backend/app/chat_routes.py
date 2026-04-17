@@ -958,9 +958,14 @@ def delete_conversation(
             db.delete(file)
         
         db.commit()
+        # Return counts - maintain backward compatibility with "deleted" field
         return JSONResponse(
             status_code=200,
-            content={"deleted_messages": message_count, "deleted_files": file_count}
+            content={
+                "deleted": message_count,  # Backward compatibility
+                "deleted_messages": message_count,
+                "deleted_files": file_count
+            }
         )
     except Exception as e:
         logger.exception("Error deleting conversation")
