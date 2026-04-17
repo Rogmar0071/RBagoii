@@ -1095,7 +1095,19 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # so that pre-generation constraints, all four validation stages, and
                     # mandatory audit logging run.  The stub path is NOT a bypass.
                     def _stub_ai_call(system_prompt: str) -> str:  # noqa: ARG001
-                        return _stub_reply(message)
+                        stub_text = _stub_reply(message)
+                        # In strict mode (agent_mode), return JSON-formatted output
+                        # so it can pass through validation pipeline
+                        if MODE_STRICT in active_modes:
+                            import json
+                            return json.dumps({
+                                "reply": stub_text,
+                                "claims": [],
+                                "uncertainties": [],
+                                "generation_mode": "stub",
+                                "mode_label": "STUB_NO_OPENAI_KEY"
+                            })
+                        return stub_text
 
                     reply, _audit = mode_engine_gateway(
                         user_intent=message,
