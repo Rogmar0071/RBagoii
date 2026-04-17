@@ -251,9 +251,9 @@ class ResourceActivity : AppCompatActivity() {
                 runOnUiThread {
                     val errorMsg = when {
                         e.message?.contains("failed to connect") == true -> 
-                            "Cannot connect to backend. Please ensure the backend server is running."
+                            getString(R.string.error_backend_connection_failed)
                         e.message?.contains("timeout") == true -> 
-                            "Connection timed out. Please check your backend server and network connection."
+                            getString(R.string.error_backend_timeout)
                         else -> "Error: ${e.message ?: "Unknown error"}"
                     }
                     Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
@@ -326,9 +326,9 @@ class ResourceActivity : AppCompatActivity() {
                     binding.tvNoFiles.visibility = View.VISIBLE
                     val errorMsg = when {
                         e.message?.contains("failed to connect") == true -> 
-                            "Cannot connect to backend"
+                            getString(R.string.error_backend_connection_failed)
                         e.message?.contains("timeout") == true -> 
-                            "Connection timed out"
+                            getString(R.string.error_backend_timeout)
                         else -> "Error: ${e.message ?: "Unknown error"}"
                     }
                     binding.tvNoFiles.text = errorMsg
@@ -387,9 +387,9 @@ class ResourceActivity : AppCompatActivity() {
                 runOnUiThread {
                     val errorMsg = when {
                         e.message?.contains("failed to connect") == true -> 
-                            "Cannot connect to backend. Please ensure the backend server is running."
+                            getString(R.string.error_backend_connection_failed)
                         e.message?.contains("timeout") == true -> 
-                            "Upload timed out. Please check your backend server and network connection."
+                            getString(R.string.error_backend_timeout)
                         else -> "Error uploading file: ${e.message}"
                     }
                     Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
