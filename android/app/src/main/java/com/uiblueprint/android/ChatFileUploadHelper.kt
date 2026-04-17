@@ -163,37 +163,41 @@ object ChatFileUploadHelper {
 
                     // Upload chunk
                     val chunkFile = File(file.parent, "${file.name}.chunk_$chunkIndex")
-                    chunkFile.writeBytes(chunkData)
+                    try {
+                        chunkFile.writeBytes(chunkData)
 
-                    val requestBody = MultipartBody.Builder()
-                        .setType(MultipartBody.FORM)
-                        .addFormDataPart(
-                            "chunk",
-                            "chunk",
-                            chunkFile.asRequestBody("application/octet-stream".toMediaType())
-                        )
-                        .build()
+                        val requestBody = MultipartBody.Builder()
+                            .setType(MultipartBody.FORM)
+                            .addFormDataPart(
+                                "chunk",
+                                "chunk",
+                                chunkFile.asRequestBody("application/octet-stream".toMediaType())
+                            )
+                            .build()
 
-                    val request = Request.Builder()
-                        .url("$baseUrl/api/chat/$conversationId/files/chunks")
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .addHeader("X-Upload-Id", uploadId)
-                        .addHeader("X-Chunk-Index", chunkIndex.toString())
-                        .addHeader("X-Total-Chunks", totalChunks.toString())
-                        .addHeader("X-Filename", filename)
-                        .post(requestBody)
-                        .build()
+                        val request = Request.Builder()
+                            .url("$baseUrl/api/chat/$conversationId/files/chunks")
+                            .addHeader("Authorization", "Bearer $apiKey")
+                            .addHeader("X-Upload-Id", uploadId)
+                            .addHeader("X-Chunk-Index", chunkIndex.toString())
+                            .addHeader("X-Total-Chunks", totalChunks.toString())
+                            .addHeader("X-Filename", filename)
+                            .post(requestBody)
+                            .build()
 
-                    val response = BackendClient.executeWithRetry(request)
-                    chunkFile.delete()
+                        val response = BackendClient.executeWithRetry(request)
 
-                    if (!response.isSuccessful) {
-                        Log.e("ChatFileUpload", "Chunk $chunkIndex upload failed: ${response.code}")
-                        return false
+                        if (!response.isSuccessful) {
+                            Log.e("ChatFileUpload", "Chunk $chunkIndex upload failed: ${response.code}")
+                            return false
+                        }
+
+                        onProgress?.invoke(chunkIndex + 1, totalChunks)
+                        chunkIndex++
+                    } finally {
+                        // Always clean up temporary chunk file
+                        chunkFile.delete()
                     }
-
-                    onProgress?.invoke(chunkIndex + 1, totalChunks)
-                    chunkIndex++
                 }
             }
 

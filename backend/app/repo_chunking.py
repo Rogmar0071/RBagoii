@@ -236,7 +236,7 @@ def merge_chunks(upload_id: str, max_bytes: int) -> tuple[dict[str, Any], str]:
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Only {total_chunks - len(missing)}/{total_chunks} chunks received",
+            detail=f"Missing chunks: {missing}. Only {total_chunks - len(missing)}/{total_chunks} chunks received",
         )
 
     total_written = 0
@@ -343,7 +343,7 @@ def assemble_chunks(upload_id: str) -> bytes:
     if missing:
         raise HTTPException(
             status_code=409,
-            detail=f"Only {total_chunks - len(missing)}/{total_chunks} chunks received",
+            detail=f"Missing chunks: {missing}. Only {total_chunks - len(missing)}/{total_chunks} chunks received",
         )
     
     # Assemble chunks

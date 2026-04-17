@@ -248,7 +248,11 @@ class ResourceActivity : AppCompatActivity() {
                 // Add selected GitHub repos
                 for (repo in githubRepos.filter { it.selected }) {
                     // Add repo to conversation
-                    val jsonBody = """{"repo_url":"${repo.htmlUrl}","branch":"${repo.defaultBranch}"}"""
+                    val jsonBody = JSONObject().apply {
+                        put("repo_url", repo.htmlUrl)
+                        put("branch", repo.defaultBranch)
+                    }.toString()
+
                     val request = Request.Builder()
                         .url("$baseUrl/api/chat/$convId/github/repos")
                         .addHeader("Authorization", "Bearer $apiKey")
@@ -264,7 +268,10 @@ class ResourceActivity : AppCompatActivity() {
 
                 // Update file context inclusion
                 for (file in chatFiles) {
-                    val jsonBody = """{"included_in_context":${file.includedInContext}}"""
+                    val jsonBody = JSONObject().apply {
+                        put("included_in_context", file.includedInContext)
+                    }.toString()
+
                     val request = Request.Builder()
                         .url("$baseUrl/api/chat/$convId/files/${file.id}")
                         .addHeader("Authorization", "Bearer $apiKey")

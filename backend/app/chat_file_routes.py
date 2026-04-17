@@ -31,6 +31,7 @@ from backend.app.database import get_session
 from backend.app.models import ChatFile
 from backend.app.repo_chunking import (
     assemble_chunks,
+    cleanup,
     default_chunk_size_bytes,
     load_manifest,
     save_chunk,
@@ -290,9 +291,7 @@ async def upload_chat_file_chunk(
     # Read chunk data
     chunk_data = await chunk.read()
 
-    # Save chunk using repo_chunking module
-    from backend.app.repo_chunking import save_chunk
-
+    # Save chunk
     result = save_chunk(
         upload_id=x_upload_id,
         chunk_index=x_chunk_index,
@@ -331,8 +330,6 @@ async def finalize_chat_file_upload(
 
     try:
         # Assemble chunks
-        from backend.app.repo_chunking import assemble_chunks, cleanup
-
         file_content = assemble_chunks(upload_id)
         file_size = len(file_content)
 
@@ -392,7 +389,6 @@ async def finalize_chat_file_upload(
         logger.error(f"Chunked file upload failed: {e}")
         # Try to clean up on error
         try:
-            from backend.app.repo_chunking import cleanup
             cleanup(upload_id)
         except Exception:
             pass
