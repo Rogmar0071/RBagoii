@@ -386,11 +386,14 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error uploading file", e)
                 runOnUiThread {
-                    Toast.makeText(
-                        this,
-                        getString(R.string.error_file_upload_failed),
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    val errorMsg = when {
+                        e.message?.contains("failed to connect") == true -> 
+                            getString(R.string.error_backend_connection_failed)
+                        e.message?.contains("timeout") == true -> 
+                            getString(R.string.error_backend_timeout)
+                        else -> getString(R.string.error_file_upload_failed)
+                    }
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
                 }
             }
         }
