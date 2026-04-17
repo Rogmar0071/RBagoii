@@ -16,15 +16,8 @@
     <string name="status_upload_succeeded">Upload succeeded.</string>
     <string name="status_upload_failed">Upload failed.</string>
     <string name="status_picking_gallery">Opening gallery…</string>
-    <string name="status_gallery_creating_folder">Creating folder…</string>
-    <string name="status_gallery_uploading_clip">Uploading clip…</string>
     <string name="label_sessions">Folders</string>
-    <string name="label_projects">Projects</string>
-    <string name="label_projects_empty">No projects yet.</string>
-    <string name="drawer_open">Open projects drawer</string>
-    <string name="drawer_close">Close projects drawer</string>
     <string name="label_backend_url">Backend: %1$s</string>
-    <string name="btn_new_project">New Project</string>
     <string name="status_saved_to_gallery">Clip saved to Gallery</string>
     <string name="status_chat_retrying">(Waking backend… retrying %1$d/%2$d)</string>
     <string name="label_global_chat">Global Chat</string>
@@ -43,46 +36,6 @@
     <string name="action_unpin_chat">Unpin chat</string>
     <string name="action_delete_chat">Delete chat</string>
     <string name="label_pinned_chat">\uD83D\uDCCC %1$s</string>
-    <string name="status_creating_project">Creating project…</string>
-    <!-- FolderDetailActivity strings -->
-    <string name="btn_analyze_queued">Analyze queued…</string>
-    <string name="btn_analyze_running">Analyzing…</string>
-    <string name="folder_detail_title">Folder</string>
-    <string name="label_folder_status">Status: %1$s</string>
-    <string name="label_folder_id">ID: %1$s</string>
-    <string name="label_jobs">Jobs</string>
-    <string name="label_artifacts">Artifacts</string>
-    <string name="label_chat">Chat</string>
-    <string name="label_upload_details">Resource</string>
-    <string name="folder_loading">Loading…</string>
-    <string name="folder_load_error">Failed to load folder.</string>
-    <string name="folder_no_jobs">No jobs yet.</string>
-    <string name="folder_no_artifacts">No artifacts yet.</string>
-    <string name="label_no_related_files">No produced files yet.</string>
-    <string name="btn_show_details">Details</string>
-    <string name="btn_hide_details">Hide</string>
-    <string name="action_view_file">View</string>
-    <string name="label_project_files">Project files</string>
-    <string name="dialog_rename_file_title">Rename file</string>
-    <string name="folder_chat_retrying">(Retrying %1$d/%2$d…)</string>
-    <!-- Project rename / delete actions -->
-    <string name="action_rename_project">Rename project</string>
-    <string name="action_delete_project">Delete project</string>
-    <string name="folder_row_menu_description">More options</string>
-    <string name="dialog_rename_title">Rename project</string>
-    <string name="dialog_rename_hint">Project name</string>
-    <string name="dialog_delete_title">Delete project?</string>
-    <string name="dialog_delete_message">This cannot be undone.</string>
-    <string name="dialog_delete_message_with_status">This will delete the project even if it is currently %1$s. This cannot be undone.</string>
-    <string name="dialog_btn_rename">Rename</string>
-    <string name="dialog_btn_delete">Delete</string>
-    <string name="dialog_btn_cancel">Cancel</string>
-    <string name="error_title_empty">Name must not be blank.</string>
-    <string name="error_rename_failed">Rename failed.</string>
-    <string name="error_delete_failed">Delete failed.</string>
-    <string name="label_untitled_project">Untitled project</string>
-    <string name="toast_analyze_already_running">Analyze already running</string>
-    <string name="toast_upload_clip_first">Upload a clip first</string>
     <!-- Chat action row -->
     <string name="action_copy">Copy</string>
     <string name="action_share">Share</string>
@@ -108,7 +61,6 @@
     <string name="toast_mic_permission_denied">Microphone permission is required for voice input</string>
     <string name="btn_thumb_up">Helpful</string>
     <string name="btn_thumb_down">Not helpful</string>
-    <string name="hint_reply_folder">Message…</string>
     <string name="hint_reply_main">Message UI Blueprint…</string>
     <string name="btn_search">Search</string>
     <string name="action_maximize_resource">Maximize resource window</string>
@@ -160,7 +112,6 @@
     <!-- Repo ZIP upload -->
     <string name="btn_upload_repo">Upload Repo ZIP</string>
     <string name="attach_repo_zip">Repo ZIP</string>
-    <string name="attach_folder_upload">Folder</string>
     <string name="status_uploading_repo">Uploading repository…</string>
     <string name="status_repo_upload_succeeded">Repository uploaded.</string>
     <string name="status_repo_upload_failed">Repository upload failed.</string>
@@ -171,17 +122,8 @@
     <string name="status_repo_upload_retrying_finalize">Retrying repository finalize (%1$d/%2$d)…</string>
     <string name="status_repo_analysis_queued">Repository analysis queued.</string>
     <string name="label_repo_ready_for_analysis">ready for analysis</string>
-    <string name="status_uploading_folder">Uploading folder…</string>
-    <string name="status_folder_upload_succeeded">Folder uploaded.</string>
-    <string name="status_folder_upload_failed">Folder upload failed.</string>
-    <string name="status_folder_upload_preparing">Preparing folder archive…</string>
-    <string name="status_folder_upload_progress">Uploading folder… %1$d/%2$d chunks (%3$d%%)</string>
-    <string name="status_folder_upload_finalizing">Finalizing folder upload…</string>
-    <string name="status_folder_upload_retrying_chunk">Retrying folder chunk %1$d/%2$d (%3$d/%4$d)…</string>
-    <string name="status_folder_upload_retrying_finalize">Retrying folder finalize (%1$d/%2$d)…</string>
     <string name="toast_repo_analysis_queued">Structural analysis queued.</string>
     <string name="toast_repo_upload_ready">Repository uploaded. Mark it for analysis when ready.</string>
-    <string name="toast_folder_upload_succeeded">Folder uploaded.</string>
     <string name="dialog_delete_file_title">Delete file?</string>
     <string name="dialog_delete_file_message">Delete %1$s and any linked generated files?</string>
     <string name="error_delete_file_failed">Failed to delete file.</string>
