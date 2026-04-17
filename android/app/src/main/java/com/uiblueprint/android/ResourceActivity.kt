@@ -18,6 +18,9 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -246,16 +249,40 @@ class ResourceActivity : AppCompatActivity() {
                     }
                     Log.e("ResourceActivity", "Failed to load repos: ${response.code} - ${response.message}")
                 }
+            } catch (e: SocketTimeoutException) {
+                Log.e("ResourceActivity", "Timeout loading repos", e)
+                runOnUiThread {
+                    val errorMsg = getString(R.string.error_backend_timeout)
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                    binding.tvNoRepos.visibility = View.VISIBLE
+                    binding.tvNoRepos.text = errorMsg
+                    binding.rvGithubRepos.visibility = View.GONE
+                    binding.btnLoadRepos.isEnabled = true
+                }
+            } catch (e: ConnectException) {
+                Log.e("ResourceActivity", "Connection failed loading repos", e)
+                runOnUiThread {
+                    val errorMsg = getString(R.string.error_backend_connection_failed)
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                    binding.tvNoRepos.visibility = View.VISIBLE
+                    binding.tvNoRepos.text = errorMsg
+                    binding.rvGithubRepos.visibility = View.GONE
+                    binding.btnLoadRepos.isEnabled = true
+                }
+            } catch (e: IOException) {
+                Log.e("ResourceActivity", "Network error loading repos", e)
+                runOnUiThread {
+                    val errorMsg = "Network error: ${e.message ?: "Unknown error"}"
+                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                    binding.tvNoRepos.visibility = View.VISIBLE
+                    binding.tvNoRepos.text = errorMsg
+                    binding.rvGithubRepos.visibility = View.GONE
+                    binding.btnLoadRepos.isEnabled = true
+                }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error loading repos", e)
                 runOnUiThread {
-                    val errorMsg = when {
-                        e.message?.contains("failed to connect") == true -> 
-                            getString(R.string.error_backend_connection_failed)
-                        e.message?.contains("timeout") == true -> 
-                            getString(R.string.error_backend_timeout)
-                        else -> "Error: ${e.message ?: "Unknown error"}"
-                    }
+                    val errorMsg = "Error: ${e.message ?: "Unknown error"}"
                     Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
                     binding.tvNoRepos.visibility = View.VISIBLE
                     binding.tvNoRepos.text = errorMsg
@@ -319,19 +346,33 @@ class ResourceActivity : AppCompatActivity() {
                         binding.tvNoFiles.text = "Failed to load files (${response.code})"
                     }
                 }
+            } catch (e: SocketTimeoutException) {
+                Log.e("ResourceActivity", "Timeout loading files", e)
+                runOnUiThread {
+                    binding.rvFiles.visibility = View.GONE
+                    binding.tvNoFiles.visibility = View.VISIBLE
+                    binding.tvNoFiles.text = getString(R.string.error_backend_timeout)
+                }
+            } catch (e: ConnectException) {
+                Log.e("ResourceActivity", "Connection failed loading files", e)
+                runOnUiThread {
+                    binding.rvFiles.visibility = View.GONE
+                    binding.tvNoFiles.visibility = View.VISIBLE
+                    binding.tvNoFiles.text = getString(R.string.error_backend_connection_failed)
+                }
+            } catch (e: IOException) {
+                Log.e("ResourceActivity", "Network error loading files", e)
+                runOnUiThread {
+                    binding.rvFiles.visibility = View.GONE
+                    binding.tvNoFiles.visibility = View.VISIBLE
+                    binding.tvNoFiles.text = "Network error: ${e.message ?: "Unknown error"}"
+                }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error loading files", e)
                 runOnUiThread {
                     binding.rvFiles.visibility = View.GONE
                     binding.tvNoFiles.visibility = View.VISIBLE
-                    val errorMsg = when {
-                        e.message?.contains("failed to connect") == true -> 
-                            getString(R.string.error_backend_connection_failed)
-                        e.message?.contains("timeout") == true -> 
-                            getString(R.string.error_backend_timeout)
-                        else -> "Error: ${e.message ?: "Unknown error"}"
-                    }
-                    binding.tvNoFiles.text = errorMsg
+                    binding.tvNoFiles.text = "Error: ${e.message ?: "Unknown error"}"
                 }
             }
         }
@@ -382,17 +423,25 @@ class ResourceActivity : AppCompatActivity() {
                         Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
                     }
                 }
+            } catch (e: SocketTimeoutException) {
+                Log.e("ResourceActivity", "Timeout uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_backend_timeout), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: ConnectException) {
+                Log.e("ResourceActivity", "Connection failed uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_backend_connection_failed), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: IOException) {
+                Log.e("ResourceActivity", "Network error uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, "Network error uploading file: ${e.message}", Toast.LENGTH_LONG).show()
+                }
             } catch (e: Exception) {
                 Log.e("ResourceActivity", "Error uploading file", e)
                 runOnUiThread {
-                    val errorMsg = when {
-                        e.message?.contains("failed to connect") == true -> 
-                            getString(R.string.error_backend_connection_failed)
-                        e.message?.contains("timeout") == true -> 
-                            getString(R.string.error_backend_timeout)
-                        else -> "Error uploading file: ${e.message}"
-                    }
-                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, "Error uploading file: ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }

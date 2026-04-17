@@ -34,6 +34,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.net.ConnectException
+import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -383,17 +385,25 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         ).show()
                     }
                 }
+            } catch (e: SocketTimeoutException) {
+                Log.e("ChatActivity", "Timeout uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_backend_timeout), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: ConnectException) {
+                Log.e("ChatActivity", "Connection failed uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_backend_connection_failed), Toast.LENGTH_LONG).show()
+                }
+            } catch (e: IOException) {
+                Log.e("ChatActivity", "Network error uploading file", e)
+                runOnUiThread {
+                    Toast.makeText(this, getString(R.string.error_file_upload_failed), Toast.LENGTH_LONG).show()
+                }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error uploading file", e)
                 runOnUiThread {
-                    val errorMsg = when {
-                        e.message?.contains("failed to connect") == true -> 
-                            getString(R.string.error_backend_connection_failed)
-                        e.message?.contains("timeout") == true -> 
-                            getString(R.string.error_backend_timeout)
-                        else -> getString(R.string.error_file_upload_failed)
-                    }
-                    Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, getString(R.string.error_file_upload_failed), Toast.LENGTH_LONG).show()
                 }
             }
         }
