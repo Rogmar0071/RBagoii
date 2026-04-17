@@ -309,6 +309,10 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # STRICT MODE PATH: Contract-driven validation required
+    # STRICT_MODE_PROPAGATION_ENFORCEMENT_V1:
+    # - Validation REQUIRED
+    # - Contract REQUIRED
+    # - Blocking ALLOWED on validation failure
     # ------------------------------------------------------------------
     # Add enforced modes for strict mode operation
     for m in _ENFORCED_MODES:
@@ -387,7 +391,9 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # Step 4: 3-stage validation pipeline (CONTRACT-DRIVEN)
+    # STRICT_MODE_PROPAGATION_ENFORCEMENT_V1:
     # Validation ONLY runs in strict_mode WITH contract
+    # All three stages MUST execute: structural → logical → scope
     # ------------------------------------------------------------------
     v1 = stage_1_structural_validation(contract)
     v2 = stage_2_logical_validation(contract)
@@ -397,6 +403,8 @@ def mutation_governance_gateway(
 
     # ------------------------------------------------------------------
     # Step 5: Mutation enforcement gate (depends on contract validation)
+    # STRICT_MODE_PROPAGATION_ENFORCEMENT_V1:
+    # Blocking occurs if ANY validation stage fails
     # ------------------------------------------------------------------
     gate = mutation_enforcement_gate(all_stages)
     result.gate_result = gate.to_dict()
@@ -405,6 +413,7 @@ def mutation_governance_gateway(
         result.status = "approved"
         result.mutation_proposal = contract.to_dict()
     else:
+        # STRICT MODE FAILURE ENFORCEMENT: block on validation failure
         result.status = "blocked"
         result.blocked_reason = gate.blocked_reason
 
