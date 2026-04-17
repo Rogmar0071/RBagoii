@@ -473,6 +473,7 @@ class TestAuditPersistence:
             with pytest.raises(RuntimeError, match="AUDIT_LOG_FAILURE"):
                 mutation_governance_gateway(
                     user_intent="Add input validation",
+                    modes=[],  # Test audit failure in normal mode
                     ai_call=_make_ai_call(_VALID_OUTPUT),
                 )
 
@@ -750,6 +751,7 @@ class TestMutationProposeEndpoint:
             assert key == key.lower()
 
     def test_blocked_proposal_returns_200_blocked(self, client: TestClient):
+        """In strict mode, restricted paths are blocked."""
         bad = dict(_VALID_CONTRACT_DICT, target_files=["secrets/t.txt"])
         bad_out = (
             "SECTION_INTENT_ANALYSIS:\nASSUMPTIONS: writable\nALTERNATIVES: env\n"
@@ -761,7 +763,9 @@ class TestMutationProposeEndpoint:
             return_value=_make_ai_call(bad_out),
         ):
             resp = client.post(
-                "/api/mutations/propose", json={"intent": "overwrite"}, headers=_auth()
+                "/api/mutations/propose",
+                json={"intent": "overwrite", "modes": ["strict_mode"]},
+                headers=_auth(),
             )
         body = resp.json()
         assert resp.status_code == 200
