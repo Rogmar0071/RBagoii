@@ -791,6 +791,19 @@ def add_repo(
     # Trigger ingestion only for newly created repos (LAW 2).
     if newly_created:
         _enqueue_repo_ingestion(str(repo.id))
+    elif repo.ingestion_status in ("running", "success"):
+        # CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_STATE_TRUTH_V3 §5
+        # Case 2 — return 409 when the repo is already running or successfully
+        # ingested.  The caller must not re-enqueue or treat this as a failure.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"REPO_INGESTION_{repo.ingestion_status.upper()}: "
+                "repository is already processing or has been ingested"
+            ),
+        )
+    # Case 3 — failed: fall through and return 200 with status="failed".
+    # MUST NOT auto-retry.  Recovery requires an explicit call to the retry endpoint.
 
     return RepoAddResponse(
         repo_id=str(repo.id),

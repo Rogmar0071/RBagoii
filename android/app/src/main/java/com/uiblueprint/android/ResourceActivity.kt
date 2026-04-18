@@ -525,6 +525,7 @@ class ResourceActivity : AppCompatActivity() {
                 val baseUrl = baseUrl()
 
                 var successCount = 0
+                var blockedCount = 0
                 var failureCount = 0
 
                 // Add selected GitHub repos via the global upsert endpoint.
@@ -547,11 +548,21 @@ class ResourceActivity : AppCompatActivity() {
                             .build()
 
                         val response = BackendClient.executeWithRetry(request)
-                        if (response.isSuccessful) {
-                            successCount++
-                        } else {
-                            failureCount++
-                            Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")
+                        // CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_STATE_TRUTH_V3 §6
+                        // UI MUST NOT collapse states:
+                        //   HTTP 200 → successCount  (new repo queued OR failed state acknowledged)
+                        //   HTTP 409 → blockedCount  (already running or already ingested)
+                        //   HTTP != 200/409 → failureCount
+                        when (response.code) {
+                            200 -> successCount++
+                            409 -> {
+                                blockedCount++
+                                Log.d("ResourceActivity", "Repo ${repo.fullName} already processing or ingested (409)")
+                            }
+                            else -> {
+                                failureCount++
+                                Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")
+                            }
                         }
                     } catch (e: Exception) {
                         failureCount++
@@ -588,12 +599,20 @@ class ResourceActivity : AppCompatActivity() {
                         // PHASE 1: clear persisted selections — they are now committed to backend
                         prefs.edit().remove(PREF_SELECTED_REPOS).apply()
                         selectionsCommitted = true
-                        Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
+                        if (blockedCount == 0) {
+                            Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(
+                                this,
+                                "Applied: $successCount | Already Processing: $blockedCount | Failed: $failureCount",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                         finish()
                     } else {
                         Toast.makeText(
                             this,
-                            "Applied with errors ($successCount succeeded, $failureCount failed)",
+                            "Applied: $successCount | Already Processing: $blockedCount | Failed: $failureCount",
                             Toast.LENGTH_LONG
                         ).show()
                     }

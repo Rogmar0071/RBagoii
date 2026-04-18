@@ -99,6 +99,102 @@ def _redis_queue(name: str = "default"):
         return None
 
 
+def _assert_importable(fn) -> None:
+    """Raise ValueError if *fn* cannot be safely enqueued by RQ.
+
+    RQ serialises jobs by storing ``fn.__module__`` and ``fn.__qualname__``.
+    This guard enforces four hard invariants:
+
+    1. ``fn.__name__ != "<lambda>"``               — no lambdas
+    2. ``"." not in fn.__qualname__``               — no nested / closure functions
+    3. ``not fn.__name__.startswith("_")``          — public name only
+    4. ``fn.__name__`` is accessible via importlib  — stable import path
+
+    CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §4
+    """
+    import importlib
+
+    qualname = getattr(fn, "__qualname__", "") or ""
+    name = getattr(fn, "__name__", "") or ""
+    module_name = getattr(fn, "__module__", "") or ""
+
+    # 1. No lambdas
+    if name == "<lambda>":
+        raise ValueError(
+            f"RQ import enforcement: lambdas cannot be enqueued. "
+            f"Define a public module-level function instead. Got: {fn!r}"
+        )
+
+    # 2. No nested functions or class methods (dot in qualname signals nesting)
+    if "." in qualname:
+        raise ValueError(
+            f"RQ import enforcement: {fn!r} is not a module-level function "
+            f"(qualname={qualname!r} contains '.'). "
+            "Define a public module-level function instead."
+        )
+
+    # 3. No private (_-prefixed) functions
+    if name.startswith("_"):
+        raise ValueError(
+            f"RQ import enforcement: private function {name!r} cannot be enqueued. "
+            "All enqueued functions must have a public (no underscore) name."
+        )
+
+    # 4. Module must be importable and function accessible at top level
+    if not module_name:
+        raise ValueError(
+            f"RQ import enforcement: function {fn!r} has no __module__ attribute."
+        )
+    try:
+        mod = importlib.import_module(module_name)
+        if not hasattr(mod, name):
+            raise ValueError(
+                f"RQ import enforcement: {name!r} is not a top-level attribute "
+                f"of module {module_name!r}. Ensure it is defined at module scope."
+            )
+    except ImportError as exc:
+        raise ValueError(
+            f"RQ import enforcement: module {module_name!r} is not importable: {exc}"
+        ) from exc
+
+
+def flush_queue(queue_names: list[str] | None = None) -> None:
+    """Empty the named RQ queues to remove stale or invalid serialised jobs.
+
+    This is a ONE-TIME MANUAL utility. It MUST NOT be called automatically
+    on startup, deploy, or inside any application lifecycle hook.
+    Execute it manually (e.g. via ``redis-cli FLUSHALL`` or the provider
+    dashboard) to purge jobs created against a previous code version that
+    used lambdas or closures.
+
+    CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_QUEUE_SANITIZATION_V2 §5
+    """
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if not redis_url:
+        return
+
+    if queue_names is None:
+        queue_names = ["default"]
+
+    try:
+        from redis import Redis
+        from redis.exceptions import RedisError
+        from rq import Queue
+
+        conn = Redis.from_url(redis_url)
+        for name in queue_names:
+            q = Queue(name, connection=conn)
+            deleted = q.empty()
+            logger.info(
+                "RQ queue reset: emptied queue %r (%s jobs removed).",
+                name,
+                deleted,
+            )
+    except (ImportError, RedisError) as exc:  # pragma: no cover
+        # Connection errors are handled gracefully -- non-fatal
+        logger.warning("RQ queue flush failed (non-fatal): %s", exc)
+
+
 def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
     """
     Enqueue *job_type* for *job_id*.
@@ -112,7 +208,15 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
     RQ job timeouts are configurable via env vars:
     - RQ_JOB_TIMEOUT_S: hard job timeout in seconds (default 1800)
     - RQ_RESULT_TTL_S: how long to retain job result metadata (default 86400)
+
+    CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §3
+    The queue ALWAYS stores the string path "backend.app.job_runner.execute_job"
+    rather than a pickled function object.  This prevents DeserializationError
+    when functions are renamed or moved across deployments.
     """
+    # Lazy import avoids circular-import issues at module load time.
+    from backend.app.job_registry import JOB_REGISTRY
+
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
         return None
@@ -120,21 +224,27 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
     job_timeout = int(os.environ.get("RQ_JOB_TIMEOUT_S", 1800))
     result_ttl = int(os.environ.get("RQ_RESULT_TTL_S", 86400))
 
+    fn = JOB_REGISTRY.get(job_type)
+    if fn is None:
+        raise ValueError(f"Unknown job type: {job_type!r}")
+
     q = _redis_queue()
     if q is not None:
-        fn = _JOB_FUNCTIONS.get(job_type)
-        if fn is None:
-            raise ValueError(f"Unknown job type: {job_type!r}")
-        rq_job = q.enqueue(fn, job_id, job_timeout=job_timeout, result_ttl=result_ttl)
+        # Enqueue by stable STRING PATH — never by function object.
+        # The worker resolves the function at execution time via execute_job.
+        rq_job = q.enqueue(
+            "backend.app.job_runner.execute_job",
+            job_type,
+            job_id,
+            job_timeout=job_timeout,
+            result_ttl=result_ttl,
+        )
         return rq_job.id
 
-    # No Redis – run synchronously in a thread pool (same behaviour as the
+    # No Redis -- run synchronously in a thread pool (same behaviour as the
     # legacy sessions implementation).
     from concurrent.futures import ThreadPoolExecutor
 
-    fn = _JOB_FUNCTIONS.get(job_type)
-    if fn is None:
-        raise ValueError(f"Unknown job type: {job_type!r}")
     executor = ThreadPoolExecutor(max_workers=1)
     executor.submit(fn, job_id)
     executor.shutdown(wait=False)
@@ -2793,11 +2903,6 @@ def run_repo_ingestion(repo_id: str) -> None:
 # ---------------------------------------------------------------------------
 # Job-function registry
 # ---------------------------------------------------------------------------
-
-_JOB_FUNCTIONS = {
-    "analyze": run_analyze_step,
-    "analyze_optional": run_analyze_optional_step,
-    "blueprint": run_blueprint,
-    "analyze_repo": run_analyze_repo_step,
-    "repo_ingestion": run_repo_ingestion,
-}
+# _JOB_FUNCTIONS has been removed.
+# All job resolution goes through backend.app.job_registry.JOB_REGISTRY.
+# CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §2
