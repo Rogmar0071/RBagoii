@@ -11,6 +11,7 @@ import android.content.res.ColorStateList
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import android.view.View
 import android.widget.EditText
 import android.widget.PopupMenu
@@ -107,9 +108,7 @@ class MainActivity : AppCompatActivity(),
 
         setupChatList()
 
-        binding.btnResourceMenu.setOnClickListener {
-            ResourceActivity.start(this, activeConversationId)
-        }
+        binding.btnResourceMenu.setOnClickListener { openResourceMenu() }
         binding.btnNewChat.setOnClickListener { createHomeConversation() }
         binding.btnSend.setOnClickListener { onChatSendClicked() }
         binding.btnAttach.setOnClickListener { showAttachBottomSheet() }
@@ -185,7 +184,8 @@ class MainActivity : AppCompatActivity(),
                         }
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "loadGlobalChat failed: ${e.message}")
                 // Best-effort: keep whatever is currently shown.
             }
         }
@@ -222,32 +222,25 @@ class MainActivity : AppCompatActivity(),
 
         val agentMode = binding.switchAgentMode.isChecked
 
-        val bodyJson = JSONObject().apply {
-            put("message", message)
-            put("conversation_id", conversationId)
-            put("agent_mode", agentMode)
-            put(
-                "context",
-                JSONObject().apply {
-                    put("session_id", JSONObject.NULL)
-                    put("domain_profile_id", JSONObject.NULL)
-                },
-            )
-        }.toString()
-
         val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
         val apiKey = BuildConfig.BACKEND_API_KEY
 
-        val request = Request.Builder()
-            .url("$baseUrl/api/chat")
-            .post(bodyJson.toRequestBody("application/json".toMediaType()))
-            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
-            // Send X-Agent-Mode header alongside body param for full compatibility.
-            .addHeader("X-Agent-Mode", if (agentMode) "1" else "0")
-            .build()
-
         chatExecutor.execute {
             try {
+                val bodyJson = SharedChatPayloadBuilder.build(
+                    message = message,
+                    conversationId = conversationId,
+                    agentMode = agentMode,
+                    baseUrl = baseUrl,
+                    apiKey = apiKey,
+                )
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat")
+                    .post(bodyJson.toRequestBody("application/json".toMediaType()))
+                    .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+                    // Send X-Agent-Mode header alongside body param for full compatibility.
+                    .addHeader("X-Agent-Mode", if (agentMode) "1" else "0")
+                    .build()
                 val response = BackendClient.executeWithRetry(request) { attempt, total ->
                     runOnUiThread {
                         Toast.makeText(
@@ -279,6 +272,84 @@ class MainActivity : AppCompatActivity(),
                 runOnUiThread {
                     Toast.makeText(this, "Error: ${e.message ?: "Network error"}", Toast.LENGTH_SHORT).show()
                     binding.btnSend.isEnabled = true
+                }
+            }
+        }
+    }
+
+    private fun openResourceMenu() {
+        val conversationId = activeConversationId
+        if (!conversationId.isNullOrBlank()) {
+            ResourceActivity.start(this, conversationId)
+            return
+        }
+        if (isCreatingConversation) {
+            Toast.makeText(this, getString(R.string.status_creating_chat), Toast.LENGTH_SHORT).show()
+            return
+        }
+        createHomeConversationForResourceMenu()
+    }
+
+    private fun createHomeConversationForResourceMenu() {
+        if (isCreatingConversation) return
+        isCreatingConversation = true
+        binding.btnNewChat.isEnabled = false
+        binding.tvStatus.text = getString(R.string.status_creating_chat)
+
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        val request = Request.Builder()
+            .url("$baseUrl/api/chat/conversation/new")
+            .post("{}".toRequestBody("application/json".toMediaType()))
+            .apply { if (apiKey.isNotEmpty()) addHeader("Authorization", "Bearer $apiKey") }
+            .build()
+
+        chatExecutor.execute {
+            try {
+                BackendClient.executeWithRetry(request).use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    runOnUiThread {
+                        isCreatingConversation = false
+                        binding.btnNewChat.isEnabled = true
+                        binding.tvStatus.text = getString(R.string.status_idle)
+                        if (!resp.isSuccessful) {
+                            Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+                        val conversationId = JSONObject(body).optString("conversation_id")
+                        if (conversationId.isBlank()) {
+                            Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
+                            return@runOnUiThread
+                        }
+
+                        val nextChatNumber = prefs.getInt(
+                            PREF_NEXT_HOME_CHAT_NUMBER,
+                            DEFAULT_NEXT_HOME_CHAT_NUMBER,
+                        )
+                        val conversation = HomeConversation(
+                            id = conversationId,
+                            label = getString(R.string.label_chat_number, nextChatNumber),
+                            pinned = false,
+                            isAutoLabel = true,
+                            order = nextChatNumber,
+                        )
+                        homeConversations.add(conversation)
+                        activeConversationId = conversationId
+                        prefs.edit().putInt(PREF_NEXT_HOME_CHAT_NUMBER, nextChatNumber + 1).apply()
+                        sortHomeConversations()
+                        persistHomeConversations()
+                        renderHomeConversationChips()
+                        renderChatMessages(null)
+                        ResourceActivity.start(this, conversationId)
+                    }
+                }
+            } catch (e: IOException) {
+                Log.w("MainActivity", "createHomeConversationForResourceMenu failed: ${e.message}")
+                runOnUiThread {
+                    isCreatingConversation = false
+                    binding.btnNewChat.isEnabled = true
+                    binding.tvStatus.text = getString(R.string.status_idle)
+                    Toast.makeText(this, getString(R.string.error_create_chat_failed), Toast.LENGTH_SHORT).show()
                 }
             }
         }
@@ -529,7 +600,8 @@ class MainActivity : AppCompatActivity(),
                         }
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "createHomeConversation failed: ${e.message}")
                 runOnUiThread {
                     isCreatingConversation = false
                     binding.btnNewChat.isEnabled = true
@@ -591,7 +663,8 @@ class MainActivity : AppCompatActivity(),
                         }
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "deleteHomeConversation failed: ${e.message}")
                 runOnUiThread {
                     Toast.makeText(this, getString(R.string.error_delete_chat_failed), Toast.LENGTH_SHORT).show()
                 }

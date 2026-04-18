@@ -9,11 +9,12 @@ Phases covered:
 - Phase 5: Enhanced scoring (filename match, recency weight)
 - Phase 6: REPO STATUS block injected into AI prompt
 - Phase 8: Retry endpoint POST /api/repos/{id}/retry
-- Phase 9: context.repos drives retrieval; context.files compat path still works
+- Phase 9: context.repos is the authoritative repo retrieval path
 """
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from unittest.mock import AsyncMock, patch
@@ -147,7 +148,8 @@ class TestAsyncIngestionEndpoint:
         assert resp.status_code == 202
         body = resp.json()
         assert "id" in body
-        assert body["ingestion_status"] in ("pending", "running", "success", "failed")
+        assert body["repo_id"] == body["id"]
+        assert body["status"] in ("pending", "running", "success", "failed")
 
     def test_post_repos_creates_repo_row(self, client: TestClient):
         """POST /api/chat/{cid}/repos creates a Repo row in the DB."""
@@ -198,11 +200,12 @@ class TestAsyncIngestionEndpoint:
         repos = list_resp.json()
         assert len(repos) == 1
         r = repos[0]
+        assert r["repo_id"] == r["id"]
         assert r["owner"] == "owner"
         assert r["name"] == "testrepo"
-        assert "ingestion_status" in r
+        assert "status" in r
         assert "total_files" in r
-        assert "total_chunks" in r
+        assert "chunk_count" in r
 
     def test_ingestion_worker_creates_repo_chunks(self, client: TestClient):
         """run_repo_ingestion creates RepoChunk rows linked via repo_id."""
@@ -419,14 +422,16 @@ class TestEnhancedScoring:
 
 
 class TestRepoStatusBlock:
-    def test_repo_status_injected_into_prompt(self, client: TestClient, monkeypatch):
+    def test_repo_status_injected_into_prompt(
+        self, client: TestClient, monkeypatch, capsys
+    ):
         """REPO STATUS block appears in AI system prompt when context.repos is sent."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
 
         import backend.app.database as db_module
-        from backend.app.models import Repo
+        from backend.app.models import Repo, RepoChunk
 
         cid = str(uuid.uuid4())
         repo_id = uuid.uuid4()
@@ -444,6 +449,15 @@ class TestRepoStatusBlock:
                 total_chunks=20,
             )
             session.add(repo)
+            session.add(
+                RepoChunk(
+                    repo_id=repo_id,
+                    file_path="app.py",
+                    content="def status_repo():\n    return True",
+                    chunk_index=0,
+                    token_estimate=8,
+                )
+            )
             session.commit()
 
         import backend.app.chat_routes as cr
@@ -476,9 +490,15 @@ class TestRepoStatusBlock:
         assert "REPO STATUS" in prompt
         assert "status-repo" in prompt
         assert "success" in prompt
+        stdout = capsys.readouterr().out
+        assert "CTX_REPOS:" in stdout
+        assert "CTX_FILES:" in stdout
+        assert "REPO_CHUNKS:" in stdout
 
-    def test_failed_repo_injects_empty_marker(self, client: TestClient, monkeypatch):
-        """A failed Repo injects REPO_PRESENT_BUT_EMPTY and status block."""
+    def test_failed_repo_without_chunks_returns_runtime_failure(
+        self, client: TestClient, monkeypatch
+    ):
+        """A failed Repo with no chunks fails fast instead of silently continuing."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -506,13 +526,7 @@ class TestRepoStatusBlock:
 
         import backend.app.chat_routes as cr
 
-        captured: list[str] = []
-
-        def _fake_openai(msg, key, history=None, system_prompt=None):
-            captured.append(system_prompt or "")
-            return "ok"
-
-        with patch.object(cr, "_call_openai_chat", side_effect=_fake_openai):
+        with patch.object(cr, "_call_openai_chat", return_value="ok") as fake_openai:
             resp = client.post(
                 "/api/chat",
                 json={
@@ -529,9 +543,63 @@ class TestRepoStatusBlock:
             )
 
         assert resp.status_code == 200
-        prompt = captured[0]
-        assert "[REPO_PRESENT_BUT_EMPTY]" in prompt
-        assert "failed" in prompt
+        error_data = json.loads(resp.json()["reply"])
+        assert error_data["error"] == "SYSTEM_FAILURE"
+        assert "REPO_CONTEXT_EMPTY" in error_data["detail"]
+        assert fake_openai.call_count == 0
+
+    def test_processing_repo_without_chunks_returns_runtime_failure(
+        self, client: TestClient, monkeypatch
+    ):
+        """A pending/running Repo with no chunks fails fast instead of silently continuing."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+        repo_id = uuid.uuid4()
+
+        with Session(db_module.get_engine()) as session:
+            repo = Repo(
+                id=repo_id,
+                conversation_id=cid,
+                repo_url="https://github.com/test/running-repo",
+                owner="test",
+                name="running-repo",
+                branch="main",
+                ingestion_status="running",
+                total_files=0,
+                total_chunks=0,
+            )
+            session.add(repo)
+            session.commit()
+
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value="ok") as fake_openai:
+            resp = client.post(
+                "/api/chat",
+                json={
+                    "message": "show repo status",
+                    "conversation_id": cid,
+                    "agent_mode": False,
+                    "context": {
+                        "session_id": None,
+                        "domain_profile_id": None,
+                        "repos": [str(repo_id)],
+                    },
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        error_data = json.loads(resp.json()["reply"])
+        assert error_data["error"] == "SYSTEM_FAILURE"
+        assert "REPO_CONTEXT_EMPTY" in error_data["detail"]
+        assert fake_openai.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -689,8 +757,10 @@ class TestContextReposDrivesRetrieval:
         # Repo context or status must appear
         assert "REPO" in prompt or "app.py" in prompt or "greet" in prompt
 
-    def test_context_files_compat_path_still_works(self, client: TestClient, monkeypatch):
-        """The legacy context.files path (V1) still works alongside context.repos."""
+    def test_context_files_github_repo_path_no_longer_drives_repo_prompt(
+        self, client: TestClient, monkeypatch
+    ):
+        """github_repo file refs no longer inject repo chunks into the prompt."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         cid = str(uuid.uuid4())
@@ -742,5 +812,4 @@ class TestContextReposDrivesRetrieval:
 
         assert chat_resp.status_code == 200
         prompt = captured[0]
-        # Should still have some repo-related content
-        assert "legacy-repo" in prompt or "REPO" in prompt
+        assert "REPO CONTEXT" not in prompt

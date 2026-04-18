@@ -4,7 +4,7 @@ Tests for REPO_CONTEXT_FLOW_RECOVERY_V1:
 - Phase 4: POST /api/chat/{id}/github/repos returns 422 when no files retrieved
 - Phase 5: ingestion_status field set to "success" / "failed"
 - Phase 8: context fallback — backend loads repos when context.files absent
-- Phase 9: [REPO_PRESENT_BUT_EMPTY] injected when repo has no chunks
+- Phase 9: github_repo chat-file refs do not inject repo chunks into prompt
 """
 
 from __future__ import annotations
@@ -118,6 +118,7 @@ class TestIngestionTruthLock:
 
         assert resp.status_code == 201
         body = resp.json()
+        assert body["repo_id"] == body["id"]
         assert body["ingestion_status"] == "success"
 
 
@@ -147,6 +148,7 @@ class TestIngestionStatusField:
         assert list_resp.status_code == 200
         repos = list_resp.json()
         assert len(repos) == 1
+        assert repos[0]["repo_id"] == repos[0]["id"]
         assert repos[0]["ingestion_status"] == "success"
 
 
@@ -157,7 +159,7 @@ class TestIngestionStatusField:
 
 class TestContextFallback:
     def test_fallback_loads_repo_when_context_files_absent(self, client: TestClient, monkeypatch):
-        """Backend injects REPO CONTEXT even when context.files is not in the request."""
+        """Backend does not auto-inject legacy github_repo context when omitted."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         cid = str(uuid.uuid4())
@@ -198,8 +200,8 @@ class TestContextFallback:
 
         assert chat_resp.status_code == 200
         assert len(captured_prompt) == 1
-        # Backend fallback must have injected repo context or file reference
-        assert "fallback-repo" in captured_prompt[0] or "REPO CONTEXT" in captured_prompt[0]
+        assert "fallback-repo" not in captured_prompt[0]
+        assert "REPO CONTEXT" not in captured_prompt[0]
 
     def test_no_fallback_when_no_repos_in_conversation(self, client: TestClient, monkeypatch):
         """Backend does not inject repo block when conversation has no repos."""
@@ -235,13 +237,13 @@ class TestContextFallback:
 
 
 # ---------------------------------------------------------------------------
-# Phase 9 — REPO_PRESENT_BUT_EMPTY marker
+# Phase 9 — github_repo file refs are not part of the repo prompt path
 # ---------------------------------------------------------------------------
 
 
 class TestRepoPresentButEmpty:
     def test_marker_injected_when_repo_has_no_chunks(self, client: TestClient, monkeypatch):
-        """[REPO_PRESENT_BUT_EMPTY] appears in prompt when ingestion_status is None/failed."""
+        """github_repo file refs do not inject repo prompt content."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -303,4 +305,4 @@ class TestRepoPresentButEmpty:
         assert chat_resp.status_code == 200
         assert len(captured_prompt) == 1
         prompt = captured_prompt[0]
-        assert "[REPO_PRESENT_BUT_EMPTY]" in prompt or "[NO_REPO_CONTENT_AVAILABLE]" in prompt
+        assert "REPO CONTEXT" not in prompt

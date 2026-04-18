@@ -34,9 +34,9 @@ data class RepoStatus(
     val owner: String,
     val name: String,
     val branch: String,
-    val ingestionStatus: String,  // pending / running / success / failed
+    val status: String,  // pending / running / success / failed
     val totalFiles: Int,
-    val totalChunks: Int,
+    val chunkCount: Int,
 )
 
 class GithubRepoAdapter(
@@ -93,9 +93,10 @@ class GithubRepoAdapter(
                     "pending" -> "${statusEmoji} Pending ingestion"
                     else      -> "${statusEmoji} ${repo.ingestionStatus}"
                 }
+                val runtimeLabel = repo.backendId?.let { " | repo_id=$it" }.orEmpty()
                 // Reuse tvRepoLanguage-adjacent space if available; fallback to description
                 binding.tvRepoDescription.text =
-                    "${binding.tvRepoDescription.text}  |  $statusLabel"
+                    "${binding.tvRepoDescription.text}  |  $statusLabel$runtimeLabel"
             }
 
             // Remove listener before setting checked state to avoid triggering callback

@@ -76,6 +76,11 @@ class ResourceActivity : AppCompatActivity() {
 
         prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         conversationId = intent.getStringExtra(EXTRA_CONVERSATION_ID)
+        if (conversationId.isNullOrBlank()) {
+            Toast.makeText(this, "No active conversation", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
 
         // Pre-fill GitHub username if saved
         val savedUsername = prefs.getString("github_username", "")
@@ -87,9 +92,7 @@ class ResourceActivity : AppCompatActivity() {
         setupFileList()
         initializeVisibility()
 
-        binding.btnClose.setOnClickListener {
-            finish()
-        }
+        binding.btnClose.setOnClickListener { applySelections() }
 
         binding.btnLoadRepos.setOnClickListener {
             val username = binding.etGithubUsername.text.toString().trim()
@@ -138,13 +141,7 @@ class ResourceActivity : AppCompatActivity() {
     // auto-commit them so they are never silently discarded.
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        val hasUncommittedSelections = githubRepos.any { it.selected } && !selectionsCommitted
-        if (hasUncommittedSelections && conversationId != null) {
-            applySelections()
-        } else {
-            @Suppress("DEPRECATION")
-            super.onBackPressed()
-        }
+        applySelections()
     }
 
     // PHASE 1 — PERSISTENT SELECTION STORE:
@@ -551,21 +548,6 @@ class ResourceActivity : AppCompatActivity() {
                         val response = BackendClient.executeWithRetry(request)
                         if (response.isSuccessful) {
                             successCount++
-                        } else if (response.code == 404) {
-                            // New endpoint not yet deployed — fall back to legacy endpoint
-                            val legacyRequest = Request.Builder()
-                                .url("$baseUrl/api/chat/$convId/github/repos")
-                                .addHeader("Authorization", "Bearer $apiKey")
-                                .addHeader("Content-Type", "application/json")
-                                .post(jsonBody.toRequestBody("application/json".toMediaType()))
-                                .build()
-                            val legacyResp = BackendClient.executeWithRetry(legacyRequest)
-                            if (legacyResp.isSuccessful) {
-                                successCount++
-                            } else {
-                                failureCount++
-                                Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${legacyResp.code}")
-                            }
                         } else {
                             failureCount++
                             Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")
@@ -649,15 +631,15 @@ class ResourceActivity : AppCompatActivity() {
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
                     val rs = RepoStatus(
-                        id = obj.getString("id"),
+                        id = obj.optString("repo_id").ifBlank { obj.getString("id") },
                         conversationId = obj.getString("conversation_id"),
                         repoUrl = obj.getString("repo_url"),
                         owner = obj.getString("owner"),
                         name = obj.getString("name"),
                         branch = obj.getString("branch"),
-                        ingestionStatus = obj.getString("ingestion_status"),
+                        status = obj.getString("status"),
                         totalFiles = obj.getInt("total_files"),
-                        totalChunks = obj.getInt("total_chunks"),
+                        chunkCount = obj.getInt("chunk_count"),
                     )
                     statusMap[rs.repoUrl] = rs
                 }
@@ -668,9 +650,9 @@ class ResourceActivity : AppCompatActivity() {
                             val rs = statusMap[repo.htmlUrl]
                             if (rs != null) {
                                 repo.copy(
-                                    ingestionStatus = rs.ingestionStatus,
+                                    ingestionStatus = rs.status,
                                     totalFiles = rs.totalFiles,
-                                    totalChunks = rs.totalChunks,
+                                    totalChunks = rs.chunkCount,
                                     backendId = rs.id,
                                 )
                             } else repo
