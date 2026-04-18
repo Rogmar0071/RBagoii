@@ -177,7 +177,7 @@ def _apply_diversity(
                 candidate = selected[i]
                 if per_file_count.get(candidate.file_path, 0) > 1:
                     # Replace with first chunk from a new file
-                    new_score, new_chunk = remaining[0]  # noqa: F841
+                    _, new_chunk = remaining[0]
                     selected[i] = new_chunk
                     break
 
