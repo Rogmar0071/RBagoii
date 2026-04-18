@@ -798,7 +798,7 @@ def add_repo(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"REPO_INGESTION_{repo.ingestion_status.upper()}: {repo.id} — "
+                f"REPO_INGESTION_{repo.ingestion_status.upper()}: "
                 "repository is already processing or has been ingested"
             ),
         )

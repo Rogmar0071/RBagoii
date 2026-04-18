@@ -137,11 +137,13 @@ def _assert_importable(fn) -> None:
 def flush_queue(queue_names: list[str] | None = None) -> None:
     """Empty the named RQ queues to remove stale or invalid serialised jobs.
 
-    This MUST be called on application startup to purge any jobs whose
-    function references can no longer be deserialised (e.g. jobs created
-    against a previous code version that used lambdas or closures).
+    This is a ONE-TIME MANUAL utility. It MUST NOT be called automatically
+    on startup, deploy, or inside any application lifecycle hook.
+    Execute it manually (e.g. via ``redis-cli FLUSHALL`` or the provider
+    dashboard) to purge jobs created against a previous code version that
+    used lambdas or closures.
 
-    CONTRACT: MQP-CONTRACT:RQ_QUEUE_RESET_AND_IMPORT_ENFORCEMENT_V1
+    CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_QUEUE_SANITIZATION_V2 §5
     """
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if not redis_url:
