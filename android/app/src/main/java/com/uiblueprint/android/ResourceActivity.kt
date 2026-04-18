@@ -92,7 +92,8 @@ class ResourceActivity : AppCompatActivity() {
         setupFileList()
         initializeVisibility()
 
-        binding.btnClose.setOnClickListener { applySelections() }
+        // LAW 4 — EXIT ≠ APPLY: close is navigation — it must never trigger ingestion.
+        binding.btnClose.setOnClickListener { finish() }
 
         binding.btnLoadRepos.setOnClickListener {
             val username = binding.etGithubUsername.text.toString().trim()
@@ -136,12 +137,11 @@ class ResourceActivity : AppCompatActivity() {
         }
     }
 
-    // PHASE 2 — NAVIGATION COMMIT LOCK: intercept back press.
-    // If there are un-committed selections and a conversation is active,
-    // auto-commit them so they are never silently discarded.
+    // LAW 4 — EXIT ≠ APPLY: back navigation must never trigger ingestion.
+    // Selections are only applied when the user explicitly presses the Apply button.
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        applySelections()
+        finish()
     }
 
     // PHASE 1 — PERSISTENT SELECTION STORE:
@@ -527,19 +527,20 @@ class ResourceActivity : AppCompatActivity() {
                 var successCount = 0
                 var failureCount = 0
 
-                // Add selected GitHub repos via the first-class Repo endpoint.
-                // Falls back to the legacy /github/repos path if the new endpoint fails.
+                // Add selected GitHub repos via the global upsert endpoint.
                 for (repo in selectedRepos) {
                     try {
+                        // GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3 — use POST /api/repos/add
+                        // (idempotent global upsert + conversation binding).
+                        // The deprecated POST /api/chat/{cid}/repos returns 410.
                         val jsonBody = JSONObject().apply {
+                            put("conversation_id", convId)
                             put("repo_url", repo.htmlUrl)
                             put("branch", repo.defaultBranch)
                         }.toString()
 
-                        // REPO_CONTEXT_FINALIZATION_V1 — Phase 2:
-                        // Use new first-class endpoint POST /api/chat/{cid}/repos (202)
                         val request = Request.Builder()
-                            .url("$baseUrl/api/chat/$convId/repos")
+                            .url("$baseUrl/api/repos/add")
                             .addHeader("Authorization", "Bearer $apiKey")
                             .addHeader("Content-Type", "application/json")
                             .post(jsonBody.toRequestBody("application/json".toMediaType()))
