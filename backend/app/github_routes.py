@@ -22,6 +22,7 @@ from typing import List, Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
@@ -646,6 +647,18 @@ def retry_repo_ingestion(
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
+    # LAW 6 — HARD FAIL: reject retry while ingestion is already in progress.
+    # Interrupting a running job would delete its in-progress chunks and leave
+    # the system in an inconsistent state.
+    if repo.ingestion_status == "running":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"REPO_INGESTION_RUNNING: {repo.id} — "
+                "cannot retry while ingestion is in progress"
+            ),
+        )
+
     # Delete stale chunks from previous attempt
     chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
     for chunk in session.exec(chunk_stmt).all():
@@ -713,30 +726,48 @@ def add_repo(
 
     # ------------------------------------------------------------------
     # Step 1: global upsert on (repo_url, branch)
+    # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
     # ------------------------------------------------------------------
-    repo = session.exec(
-        select(Repo).where(
-            Repo.repo_url == req.repo_url,
-            Repo.branch == req.branch,
-        )
-    ).first()
+    def _find_repo() -> Repo | None:
+        return session.exec(
+            select(Repo).where(
+                Repo.repo_url == req.repo_url,
+                Repo.branch == req.branch,
+            )
+        ).first()
+
+    repo = _find_repo()
 
     newly_created = False
     if repo is None:
-        repo = Repo(
-            id=uuid.uuid4(),
-            repo_url=req.repo_url,
-            owner=owner,
-            name=repo_name,
-            branch=req.branch,
-            ingestion_status="pending",
-            total_files=0,
-            total_chunks=0,
-        )
-        session.add(repo)
-        session.commit()
-        session.refresh(repo)
-        newly_created = True
+        try:
+            repo = Repo(
+                id=uuid.uuid4(),
+                repo_url=req.repo_url,
+                owner=owner,
+                name=repo_name,
+                branch=req.branch,
+                ingestion_status="pending",
+                total_files=0,
+                total_chunks=0,
+            )
+            session.add(repo)
+            session.commit()
+            session.refresh(repo)
+            newly_created = True
+        except IntegrityError:
+            # A concurrent request already created the row — roll back and
+            # fall through to the existing-repo path without triggering ingestion.
+            session.rollback()
+            repo = _find_repo()
+            if repo is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        f"Failed to create or find repository: "
+                        f"url={req.repo_url!r} branch={req.branch!r}"
+                    ),
+                )
 
     # ------------------------------------------------------------------
     # Step 2: bind to conversation (idempotent)

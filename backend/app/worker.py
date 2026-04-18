@@ -2689,12 +2689,22 @@ def run_repo_ingestion(repo_id: str) -> None:
 
     # -----------------------------------------------------------------------
     # Step 1: load repo and mark as running
+    # LAW 2 — SINGLE INGESTION: skip if already running or successfully
+    # ingested.  Re-ingestion is only allowed via the explicit retry endpoint.
     # -----------------------------------------------------------------------
     with Session(get_engine()) as session:
         repo = session.get(Repo, uuid.UUID(repo_id))
         if repo is None:
             logger.error("run_repo_ingestion: Repo %s not found in DB — aborting", repo_id)
             print("INGEST FAILED:", repo_id, "Repo not found in DB")
+            return
+        if repo.ingestion_status in ("running", "success"):
+            logger.warning(
+                "run_repo_ingestion: Repo %s already in status %r — skipping (LAW 2)",
+                repo_id,
+                repo.ingestion_status,
+            )
+            print("INGEST SKIP:", repo_id, repo.ingestion_status)
             return
         owner = repo.owner
         name = repo.name
