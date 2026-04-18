@@ -386,6 +386,8 @@ class RepoChunk(SQLModel, table=True):
     file_path: str = Field(sa_column=Column(sa.Text))
     # Chunk text content (max ~1500 chars)
     content: str = Field(sa_column=Column(sa.Text))
+    # Zero-based ordinal of this chunk within its source file (lower = earlier)
+    chunk_index: int = Field(default=0)
     # Approximate token count (characters / 4)
     token_estimate: int = Field(default=0)
     created_at: Optional[datetime] = Field(

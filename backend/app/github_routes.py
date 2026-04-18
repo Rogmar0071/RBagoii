@@ -340,11 +340,12 @@ async def add_github_repo(
 
     # Store file content as RepoChunk rows for selective retrieval
     for file_path, content in file_list:
-        for chunk_text in _split_into_chunks(content):
+        for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             chunk = RepoChunk(
                 chat_file_id=github_file.id,
                 file_path=file_path,
                 content=chunk_text,
+                chunk_index=chunk_index,
                 token_estimate=max(1, len(chunk_text) // 4),
             )
             session.add(chunk)

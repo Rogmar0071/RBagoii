@@ -1162,7 +1162,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
                     if context.files:
                         file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
-                        repo_file_ids: list[str] = []
+                        repo_chat_file_ids: list[uuid.UUID] = []
 
                         for file_ref in context.files:
                             file_id_str = file_ref.get("id", "")
@@ -1171,8 +1171,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             file_block += f"\n- {filename} (Category: {category})"
 
                             if category == "github_repo":
-                                # Selective retrieval — handled below via RepoChunk
-                                repo_file_ids.append(file_id_str)
+                                # Phase 5: collect explicit file IDs for isolated retrieval
+                                try:
+                                    repo_chat_file_ids.append(uuid.UUID(file_id_str))
+                                except ValueError:
+                                    pass
                                 continue
 
                             # Fetch file content from database if text was extracted
@@ -1189,20 +1192,20 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             except (ValueError, AttributeError):
                                 pass  # Invalid UUID or missing data, skip content
 
-                        # REPO_CONTEXT_SELECTIVE_RETRIEVAL_LAYER_V1 — Phase 4:
-                        # Replace full extracted_text dump for github_repo files with
-                        # deterministic keyword-based chunk retrieval.
-                        if repo_file_ids and active_conversation_id:
+                        # REPO_CONTEXT_INTELLIGENCE_LAYER_V2 — Phase 5 + 6:
+                        # Retrieve chunks scoped to the explicit context.files IDs only.
+                        # Inject with standardised REPO CONTEXT block format.
+                        if repo_chat_file_ids:
                             relevant_chunks = retrieve_relevant_chunks(
-                                conversation_id=active_conversation_id,
                                 user_query=message,
                                 db=db,
+                                chat_file_ids=repo_chat_file_ids,
                             )
                             if relevant_chunks:
                                 file_block += "\n\n---\nREPO CONTEXT:\n"
                                 for chunk in relevant_chunks:
                                     file_block += (
-                                        f"\nFILE: {chunk.file_path}\n"
+                                        f"\nFILE: {chunk.file_path}\n\n"
                                         f"{chunk.content}\n"
                                     )
                                 file_block += "---\n"
