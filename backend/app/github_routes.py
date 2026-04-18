@@ -522,19 +522,29 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
 
     redis_url = _os.environ.get("REDIS_URL", "").strip()
     if redis_url:
+        print("ENQUEUE: start", repo_id)
+
         from redis import Redis
+
+        print("ENQUEUE: redis import OK")
+
         from rq import Queue as RQueue
 
-        print("ENQUEUE: start")
+        print("ENQUEUE: rq import OK")
+
         conn = Redis.from_url(redis_url)
+        print("ENQUEUE: redis connected")
+
         q = RQueue("default", connection=conn)
+        print("ENQUEUE: queue ready")
+
         q.enqueue(
             "backend.app.job_runner.execute_job",
             "run_repo_ingestion",
             repo_id,
             job_timeout=1800,
         )
-        print("ENQUEUE: submitted")
+        print("ENQUEUE: submitted", repo_id)
         return
 
     # No Redis and jobs enabled — run in a background thread (non-blocking).
@@ -696,9 +706,13 @@ def retry_repo_ingestion(
     session.refresh(repo)
 
     # Re-trigger ingestion
-    print("STEP 1: before enqueue")
-    _enqueue_repo_ingestion(str(repo.id))
-    print("STEP 2: after enqueue")
+    print("STEP 1: before enqueue", repo.id)
+    try:
+        _enqueue_repo_ingestion(str(repo.id))
+        print("STEP 2: enqueue success", repo.id)
+    except Exception as e:
+        print("ENQUEUE ERROR:", repr(e))
+        raise
 
     return RepoStatusResponse(
         id=str(repo.id),
@@ -816,9 +830,13 @@ def add_repo(
 
     # Trigger ingestion only for newly created repos (LAW 2).
     if newly_created:
-        print("STEP 1: before enqueue")
-        _enqueue_repo_ingestion(str(repo.id))
-        print("STEP 2: after enqueue")
+        print("STEP 1: before enqueue", repo.id)
+        try:
+            _enqueue_repo_ingestion(str(repo.id))
+            print("STEP 2: enqueue success", repo.id)
+        except Exception as e:
+            print("ENQUEUE ERROR:", repr(e))
+            raise
     elif repo.ingestion_status in ("running", "success"):
         # CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_STATE_TRUTH_V3 §5
         # Case 2 — return 409 when the repo is already running or successfully
