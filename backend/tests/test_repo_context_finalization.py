@@ -15,7 +15,6 @@ Phases covered:
 
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -697,8 +696,6 @@ class TestTimeoutSafety:
         """A repo stuck in 'running' beyond threshold is auto-failed at chat time (V3 §8)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
-        from datetime import timedelta
-
         from sqlmodel import Session
 
         import backend.app.database as db_module
@@ -1059,7 +1056,7 @@ class TestGlobalRepoAddEndpoint:
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
-        from backend.app.models import ConversationRepo, Repo
+        from backend.app.models import ConversationRepo
 
         cid = str(uuid.uuid4())
 
@@ -1091,7 +1088,8 @@ class TestGlobalRepoAddEndpoint:
             assert binding is not None
 
     def test_add_repo_binding_is_idempotent(self, client: TestClient):
-        """Calling /api/repos/add twice for the same (conversation, repo) does not create duplicate bindings."""
+        """Calling /api/repos/add twice for the same (conversation, repo)
+        does not create duplicate bindings."""
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
