@@ -34,9 +34,9 @@ data class RepoStatus(
     val owner: String,
     val name: String,
     val branch: String,
-    val ingestionStatus: String,  // pending / running / success / failed
+    val status: String,  // pending / running / success / failed
     val totalFiles: Int,
-    val totalChunks: Int,
+    val chunkCount: Int,
 )
 
 class GithubRepoAdapter(

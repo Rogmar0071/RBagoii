@@ -72,9 +72,9 @@ class RepoStatusResponse(BaseModel):
     owner: str
     name: str
     branch: str
-    ingestion_status: str  # pending / running / success / failed
+    status: str  # pending / running / success / failed
     total_files: int
-    total_chunks: int
+    chunk_count: int
     created_at: str
     updated_at: str
 
@@ -554,9 +554,9 @@ def create_repo_ingestion_job(
         owner=new_repo.owner,
         name=new_repo.name,
         branch=new_repo.branch,
-        ingestion_status=new_repo.ingestion_status,
+        status=new_repo.ingestion_status,
         total_files=new_repo.total_files,
-        total_chunks=new_repo.total_chunks,
+        chunk_count=new_repo.total_chunks,
         created_at=new_repo.created_at.isoformat(),
         updated_at=new_repo.updated_at.isoformat(),
     )
@@ -587,9 +587,9 @@ def list_repos(
             owner=r.owner,
             name=r.name,
             branch=r.branch,
-            ingestion_status=r.ingestion_status,
+            status=r.ingestion_status,
             total_files=r.total_files,
-            total_chunks=r.total_chunks,
+            chunk_count=r.total_chunks,
             created_at=r.created_at.isoformat(),
             updated_at=r.updated_at.isoformat(),
         )
@@ -680,9 +680,9 @@ def retry_repo_ingestion(
         owner=repo.owner,
         name=repo.name,
         branch=repo.branch,
-        ingestion_status=repo.ingestion_status,
+        status=repo.ingestion_status,
         total_files=repo.total_files,
-        total_chunks=repo.total_chunks,
+        chunk_count=repo.total_chunks,
         created_at=repo.created_at.isoformat(),
         updated_at=repo.updated_at.isoformat(),
     )

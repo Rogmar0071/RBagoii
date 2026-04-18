@@ -9,7 +9,7 @@ Phases covered:
 - Phase 5: Enhanced scoring (filename match, recency weight)
 - Phase 6: REPO STATUS block injected into AI prompt
 - Phase 8: Retry endpoint POST /api/repos/{id}/retry
-- Phase 9: context.repos drives retrieval; context.files compat path still works
+- Phase 9: context.repos is the authoritative repo retrieval path
 """
 
 from __future__ import annotations
@@ -147,7 +147,7 @@ class TestAsyncIngestionEndpoint:
         assert resp.status_code == 202
         body = resp.json()
         assert "id" in body
-        assert body["ingestion_status"] in ("pending", "running", "success", "failed")
+        assert body["status"] in ("pending", "running", "success", "failed")
 
     def test_post_repos_creates_repo_row(self, client: TestClient):
         """POST /api/chat/{cid}/repos creates a Repo row in the DB."""
@@ -200,9 +200,9 @@ class TestAsyncIngestionEndpoint:
         r = repos[0]
         assert r["owner"] == "owner"
         assert r["name"] == "testrepo"
-        assert "ingestion_status" in r
+        assert "status" in r
         assert "total_files" in r
-        assert "total_chunks" in r
+        assert "chunk_count" in r
 
     def test_ingestion_worker_creates_repo_chunks(self, client: TestClient):
         """run_repo_ingestion creates RepoChunk rows linked via repo_id."""
@@ -478,7 +478,7 @@ class TestRepoStatusBlock:
         assert "success" in prompt
 
     def test_failed_repo_injects_empty_marker(self, client: TestClient, monkeypatch):
-        """A failed Repo injects REPO_PRESENT_BUT_EMPTY and status block."""
+        """A failed Repo injects REPO_FAILED and status block."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -530,8 +530,64 @@ class TestRepoStatusBlock:
 
         assert resp.status_code == 200
         prompt = captured[0]
-        assert "[REPO_PRESENT_BUT_EMPTY]" in prompt
+        assert "[REPO_FAILED:" in prompt
         assert "failed" in prompt
+
+    def test_processing_repo_injects_processing_marker(self, client: TestClient, monkeypatch):
+        """A pending/running Repo injects REPO_PROCESSING and status block."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+        repo_id = uuid.uuid4()
+
+        with Session(db_module.get_engine()) as session:
+            repo = Repo(
+                id=repo_id,
+                conversation_id=cid,
+                repo_url="https://github.com/test/running-repo",
+                owner="test",
+                name="running-repo",
+                branch="main",
+                ingestion_status="running",
+                total_files=0,
+                total_chunks=0,
+            )
+            session.add(repo)
+            session.commit()
+
+        import backend.app.chat_routes as cr
+
+        captured: list[str] = []
+
+        def _fake_openai(msg, key, history=None, system_prompt=None):
+            captured.append(system_prompt or "")
+            return "ok"
+
+        with patch.object(cr, "_call_openai_chat", side_effect=_fake_openai):
+            resp = client.post(
+                "/api/chat",
+                json={
+                    "message": "show repo status",
+                    "conversation_id": cid,
+                    "agent_mode": False,
+                    "context": {
+                        "session_id": None,
+                        "domain_profile_id": None,
+                        "repos": [str(repo_id)],
+                    },
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        prompt = captured[0]
+        assert "[REPO_PROCESSING:" in prompt
+        assert "running" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -689,8 +745,10 @@ class TestContextReposDrivesRetrieval:
         # Repo context or status must appear
         assert "REPO" in prompt or "app.py" in prompt or "greet" in prompt
 
-    def test_context_files_compat_path_still_works(self, client: TestClient, monkeypatch):
-        """The legacy context.files path (V1) still works alongside context.repos."""
+    def test_context_files_github_repo_path_no_longer_drives_repo_prompt(
+        self, client: TestClient, monkeypatch
+    ):
+        """github_repo file refs no longer inject repo chunks into the prompt."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         cid = str(uuid.uuid4())
@@ -742,5 +800,4 @@ class TestContextReposDrivesRetrieval:
 
         assert chat_resp.status_code == 200
         prompt = captured[0]
-        # Should still have some repo-related content
-        assert "legacy-repo" in prompt or "REPO" in prompt
+        assert "REPO CONTEXT" not in prompt
