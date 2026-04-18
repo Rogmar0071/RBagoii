@@ -979,13 +979,12 @@ class TestGlobalRepoAddEndpoint:
             new_callable=AsyncMock,
             return_value=[("README.md", "hello")],
         ):
-            client.post("/api/repos/add", json=payload, headers=AUTH)
+            resp1 = client.post("/api/repos/add", json=payload, headers=AUTH)
             client.post("/api/repos/add", json=payload, headers=AUTH)
 
+        repo_id = uuid.UUID(resp1.json()["repo_id"])
+
         with Session(db_module.get_engine()) as session:
-            repo_id = uuid.UUID(
-                client.post("/api/repos/add", json=payload, headers=AUTH).json()["repo_id"]
-            )
             bindings = session.exec(
                 select(ConversationRepo).where(
                     ConversationRepo.conversation_id == cid,

@@ -559,6 +559,12 @@ def create_repo_ingestion_job(
         )
     ).first()
     if existing is not None:
+        # Return the request's conversation_id (path param) rather than
+        # existing.conversation_id: the Repo is now a global asset whose
+        # stored conversation_id may be NULL (created via /api/repos/add) or
+        # belong to a different conversation.  The calling context already
+        # knows its own conversation_id; echoing it back keeps the response
+        # contract consistent for this legacy endpoint.
         return RepoStatusResponse(
             id=str(existing.id),
             repo_id=str(existing.id),
