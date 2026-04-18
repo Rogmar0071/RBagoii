@@ -631,7 +631,7 @@ class ResourceActivity : AppCompatActivity() {
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
                     val rs = RepoStatus(
-                        id = obj.getString("id"),
+                        id = obj.optString("repo_id").ifBlank { obj.getString("id") },
                         conversationId = obj.getString("conversation_id"),
                         repoUrl = obj.getString("repo_url"),
                         owner = obj.getString("owner"),

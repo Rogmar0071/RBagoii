@@ -91,7 +91,12 @@ object SharedChatPayloadBuilder {
             val repos = JSONArray(response.body?.string() ?: "[]")
             return buildList {
                 for (index in 0 until repos.length()) {
-                    add(SharedRepoContext(id = repos.getJSONObject(index).getString("id")))
+                    val repo = repos.getJSONObject(index)
+                    add(
+                        SharedRepoContext(
+                            id = repo.optString("repo_id").ifBlank { repo.getString("id") },
+                        ),
+                    )
                 }
             }
         }
