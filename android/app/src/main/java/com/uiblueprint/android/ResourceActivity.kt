@@ -604,7 +604,7 @@ class ResourceActivity : AppCompatActivity() {
                         } else {
                             Toast.makeText(
                                 this,
-                                "Applied: $successCount | Already Processing: $blockedCount | Failed: 0",
+                                "Applied: $successCount | Already Processing: $blockedCount | Failed: $failureCount",
                                 Toast.LENGTH_LONG
                             ).show()
                         }
