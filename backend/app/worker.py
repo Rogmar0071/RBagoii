@@ -2654,19 +2654,6 @@ def run_analyze_repo_step(job_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Job-function registry
-# ---------------------------------------------------------------------------
-
-_JOB_FUNCTIONS = {
-    "analyze": run_analyze_step,
-    "analyze_optional": run_analyze_optional_step,
-    "blueprint": run_blueprint,
-    "analyze_repo": run_analyze_repo_step,
-    "repo_ingestion": lambda repo_id: run_repo_ingestion(repo_id),
-}
-
-
-# ---------------------------------------------------------------------------
 # REPO_CONTEXT_FINALIZATION_V1 — Phase 2
 # Async repo ingestion worker
 # ---------------------------------------------------------------------------
@@ -2789,3 +2776,16 @@ def run_repo_ingestion(repo_id: str) -> None:
         chunk_count,
         "success" if chunk_count > 0 else "failed",
     )
+
+
+# ---------------------------------------------------------------------------
+# Job-function registry
+# ---------------------------------------------------------------------------
+
+_JOB_FUNCTIONS = {
+    "analyze": run_analyze_step,
+    "analyze_optional": run_analyze_optional_step,
+    "blueprint": run_blueprint,
+    "analyze_repo": run_analyze_repo_step,
+    "repo_ingestion": run_repo_ingestion,
+}
