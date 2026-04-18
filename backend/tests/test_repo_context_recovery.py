@@ -157,7 +157,7 @@ class TestIngestionStatusField:
 
 class TestContextFallback:
     def test_fallback_loads_repo_when_context_files_absent(self, client: TestClient, monkeypatch):
-        """Backend injects REPO CONTEXT even when context.files is not in the request."""
+        """Backend does not auto-inject legacy github_repo context when omitted."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         cid = str(uuid.uuid4())
@@ -198,8 +198,8 @@ class TestContextFallback:
 
         assert chat_resp.status_code == 200
         assert len(captured_prompt) == 1
-        # Backend fallback must have injected repo context or file reference
-        assert "fallback-repo" in captured_prompt[0] or "REPO CONTEXT" in captured_prompt[0]
+        assert "fallback-repo" not in captured_prompt[0]
+        assert "REPO CONTEXT" not in captured_prompt[0]
 
     def test_no_fallback_when_no_repos_in_conversation(self, client: TestClient, monkeypatch):
         """Backend does not inject repo block when conversation has no repos."""

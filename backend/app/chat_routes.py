@@ -1205,7 +1205,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     r.id for r in loaded_repos if r.ingestion_status == "success"
                                 ]
                                 processing_repos = [
-                                    r for r in loaded_repos if r.ingestion_status in ("pending", "running")
+                                    r
+                                    for r in loaded_repos
+                                    if r.ingestion_status in ("pending", "running")
                                 ]
                                 failed_repos = [
                                     r for r in loaded_repos if r.ingestion_status == "failed"
