@@ -547,8 +547,17 @@ class ResourceActivity : AppCompatActivity() {
                             .build()
 
                         val response = BackendClient.executeWithRetry(request)
-                        if (response.isSuccessful) {
+                        // CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_QUEUE_SANITIZATION_V2
+                        // Section 6 — UI must strictly map API responses:
+                        //   HTTP 200 → success (ingestion queued)
+                        //   HTTP 409 → processing / blocked (already running or done)
+                        //   HTTP != 200 and != 409 → failure
+                        if (response.code == 200) {
                             successCount++
+                        } else if (response.code == 409) {
+                            // Already running or already ingested — not a failure.
+                            successCount++
+                            Log.d("ResourceActivity", "Repo ${repo.fullName} already processing or ingested (409)")
                         } else {
                             failureCount++
                             Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")

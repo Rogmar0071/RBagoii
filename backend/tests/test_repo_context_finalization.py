@@ -298,7 +298,8 @@ class TestDeprecatedIngestionEndpoint:
         assert "chunk_count" in r
 
     def test_duplicate_add_returns_same_repo(self, client: TestClient):
-        """POST /api/repos/add is idempotent: a second identical POST returns the same repo_id."""
+        """POST /api/repos/add: first call succeeds (200), second returns 409 when
+        the repo is already running or ingested (CONTRACT V2 Section 7)."""
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
@@ -320,8 +321,8 @@ class TestDeprecatedIngestionEndpoint:
             resp2 = client.post("/api/repos/add", json=payload, headers=AUTH)
 
         assert resp1.status_code == 200
-        assert resp2.status_code == 200
-        assert resp1.json()["repo_id"] == resp2.json()["repo_id"]
+        # Second call: repo already running or ingested — must return 409.
+        assert resp2.status_code == 409
 
         # Only one Repo row must exist in the DB.
         with Session(db_module.get_engine()) as session:
@@ -1010,7 +1011,9 @@ class TestGlobalRepoAddEndpoint:
         assert body["status"] in ("pending", "running", "success", "failed")
 
     def test_add_repo_is_globally_idempotent(self, client: TestClient):
-        """Two different conversations adding the same URL share ONE Repo row."""
+        """Two different conversations adding the same URL share ONE Repo row.
+        First call returns 200; second returns 409 because the repo is already
+        running or ingested (CONTRACT V2 Section 7)."""
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
@@ -1037,9 +1040,8 @@ class TestGlobalRepoAddEndpoint:
             )
 
         assert resp_a.status_code == 200
-        assert resp_b.status_code == 200
-        # Both must reference the same underlying Repo row.
-        assert resp_a.json()["repo_id"] == resp_b.json()["repo_id"]
+        # Second call: repo already running or ingested — must return 409.
+        assert resp_b.status_code == 409
 
         # Only ONE Repo row must exist for this (repo_url, branch).
         with Session(db_module.get_engine()) as session:
