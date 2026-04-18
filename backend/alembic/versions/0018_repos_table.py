@@ -57,14 +57,24 @@ def upgrade() -> None:
         return
 
     existing_columns = {col["name"] for col in inspector.get_columns("repo_chunks")}
+    chat_files_exists = "chat_files" in existing_tables
 
-    with op.batch_alter_table("repo_chunks", recreate="always") as batch_op:
-        # a) Add repo_id if not present
+    if chat_files_exists:
+        # Full recreate — reflection of the FK to chat_files is safe
+        with op.batch_alter_table("repo_chunks", recreate="always") as batch_op:
+            # a) Add repo_id if not present
+            if "repo_id" not in existing_columns:
+                batch_op.add_column(sa.Column("repo_id", sa.Uuid(), nullable=True))
+            # b) Make chat_file_id nullable
+            if "chat_file_id" in existing_columns:
+                batch_op.alter_column("chat_file_id", nullable=True)
+    else:
+        # chat_files absent — skip reflection-based recreate (it would fail trying
+        # to resolve the FK); only add repo_id via direct op.add_column which
+        # requires no reflection.  chat_file_id nullability is moot here since
+        # the referenced table doesn't exist (greenfield / test scenario).
         if "repo_id" not in existing_columns:
-            batch_op.add_column(sa.Column("repo_id", sa.Uuid(), nullable=True))
-        # b) Make chat_file_id nullable
-        if "chat_file_id" in existing_columns:
-            batch_op.alter_column("chat_file_id", nullable=True)
+            op.add_column("repo_chunks", sa.Column("repo_id", sa.Uuid(), nullable=True))
 
     # Re-create index on repo_id after batch operation
     existing_indexes = {idx["name"] for idx in inspector.get_indexes("repo_chunks")}
