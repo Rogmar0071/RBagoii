@@ -1191,9 +1191,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 if repo_obj:
                                     # Timeout safety: stuck "running" → "failed"
                                     if repo_obj.ingestion_status == "running":
-                                        age = datetime.now(timezone.utc) - repo_obj.updated_at.replace(
-                                            tzinfo=timezone.utc
-                                        )
+                                        # updated_at may be stored as a naive datetime in SQLite;
+                                        # coerce to UTC-aware for safe arithmetic.
+                                        updated = repo_obj.updated_at
+                                        if updated.tzinfo is None:
+                                            updated = updated.replace(tzinfo=timezone.utc)
+                                        age = datetime.now(timezone.utc) - updated
                                         if age > _RUNNING_TIMEOUT:
                                             repo_obj.ingestion_status = "failed"
                                             repo_obj.updated_at = datetime.now(timezone.utc)

@@ -2721,7 +2721,7 @@ def run_repo_ingestion(repo_id: str) -> None:
             asyncio.set_event_loop(None)
 
         if not file_list:
-            raise ValueError("EMPTY_REPO")
+            raise ValueError("Repository contains no files")
 
         chunk_count = 0
         with Session(get_engine()) as session:
@@ -2742,7 +2742,7 @@ def run_repo_ingestion(repo_id: str) -> None:
                     chunk_count += 1
 
             if chunk_count == 0:
-                raise ValueError("NO_CHUNKS")
+                raise ValueError("Repository ingestion produced no text chunks")
 
             r.ingestion_status = "success"
             r.total_files = len(file_list)

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -706,7 +707,7 @@ class TestTimeoutSafety:
         cid = str(uuid.uuid4())
         repo_id = uuid.uuid4()
 
-        old_ts = __import__("datetime").datetime(2020, 1, 1, tzinfo=__import__("datetime").timezone.utc)
+        old_ts = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
         with Session(db_module.get_engine()) as session:
             repo = Repo(
