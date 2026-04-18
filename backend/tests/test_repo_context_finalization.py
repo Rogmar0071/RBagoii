@@ -422,14 +422,16 @@ class TestEnhancedScoring:
 
 
 class TestRepoStatusBlock:
-    def test_repo_status_injected_into_prompt(self, client: TestClient, monkeypatch, capsys):
+    def test_repo_status_injected_into_prompt(
+        self, client: TestClient, monkeypatch, capsys
+    ):
         """REPO STATUS block appears in AI system prompt when context.repos is sent."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
 
         import backend.app.database as db_module
-        from backend.app.models import Repo
+        from backend.app.models import Repo, RepoChunk
 
         cid = str(uuid.uuid4())
         repo_id = uuid.uuid4()
@@ -447,6 +449,15 @@ class TestRepoStatusBlock:
                 total_chunks=20,
             )
             session.add(repo)
+            session.add(
+                RepoChunk(
+                    repo_id=repo_id,
+                    file_path="app.py",
+                    content="def status_repo():\n    return True",
+                    chunk_index=0,
+                    token_estimate=8,
+                )
+            )
             session.commit()
 
         import backend.app.chat_routes as cr
@@ -484,7 +495,9 @@ class TestRepoStatusBlock:
         assert "CTX_FILES:" in stdout
         assert "REPO_CHUNKS:" in stdout
 
-    def test_failed_repo_without_chunks_returns_runtime_failure(self, client: TestClient, monkeypatch):
+    def test_failed_repo_without_chunks_returns_runtime_failure(
+        self, client: TestClient, monkeypatch
+    ):
         """A failed Repo with no chunks fails fast instead of silently continuing."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
