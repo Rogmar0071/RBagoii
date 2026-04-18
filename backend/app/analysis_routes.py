@@ -84,7 +84,14 @@ def _enqueue_analysis_job(job_id: str, file_path: str) -> None:
             _assert_importable(process_analysis_job)
             conn = Redis.from_url(redis_url)
             q = RQueue("default", connection=conn)
-            q.enqueue(process_analysis_job, job_id, job_timeout=1800)
+            # CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §3
+            # Queue stores stable string path, never a function object.
+            q.enqueue(
+                "backend.app.job_runner.execute_job",
+                "process_analysis_job",
+                job_id,
+                job_timeout=1800,
+            )
             return
         except Exception as exc:
             logger.warning("RQ unavailable (%s); running analysis job in thread.", exc)
