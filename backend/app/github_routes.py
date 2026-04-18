@@ -52,6 +52,7 @@ class GithubRepoResponse(BaseModel):
     repo_url: str
     branch: str
     created_at: str
+    ingestion_status: Optional[str] = None
 
 
 class GithubRepoListItem(BaseModel):
@@ -311,7 +312,24 @@ async def add_github_repo(
         file_list = await _fetch_repo_file_list(owner, repo_name, repo.branch, headers)
     except Exception as exc:
         logger.error("GitHub repo fetch failed for %s/%s: %s", owner, repo_name, exc)
-        file_list = []
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "failed",
+                "reason": "repo_ingestion_failed",
+                "detail": f"No files retrieved from repository: {exc}",
+            },
+        )
+
+    if not file_list:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "failed",
+                "reason": "repo_ingestion_failed",
+                "detail": "No files retrieved from repository",
+            },
+        )
 
     # Build compact summary for extracted_text (not full content)
     file_paths = [path for path, _ in file_list]
@@ -339,6 +357,7 @@ async def add_github_repo(
     session.flush()  # Assign github_file.id before creating chunks
 
     # Store file content as RepoChunk rows for selective retrieval
+    chunk_count = 0
     for file_path, content in file_list:
         for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             chunk = RepoChunk(
@@ -349,6 +368,10 @@ async def add_github_repo(
                 token_estimate=max(1, len(chunk_text) // 4),
             )
             session.add(chunk)
+            chunk_count += 1
+
+    # Set ingestion status based on whether chunks were created
+    github_file.ingestion_status = "success" if chunk_count > 0 else "failed"
 
     session.commit()
     session.refresh(github_file)
@@ -359,6 +382,7 @@ async def add_github_repo(
         repo_url=repo.repo_url,
         branch=repo.branch,
         created_at=github_file.created_at.isoformat(),
+        ingestion_status=github_file.ingestion_status,
     )
 
 
@@ -393,6 +417,7 @@ def list_github_repos(
                     repo_url=repo_url,
                     branch=branch,
                     created_at=repo.created_at.isoformat(),
+                    ingestion_status=repo.ingestion_status,
                 )
             )
 

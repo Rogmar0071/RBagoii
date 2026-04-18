@@ -350,6 +350,8 @@ class ChatFile(SQLModel, table=True):
     included_in_context: bool = Field(default=True)
     # AI-friendly extracted text content (for searchable files)
     extracted_text: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    # Ingestion status for github_repo files: "success" | "failed" | "partial"
+    ingestion_status: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),

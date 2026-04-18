@@ -219,8 +219,32 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         }
 
         // Resource menu button
+        // PHASE 3 — CONVERSATION ID GUARANTEE: ensure a conversation exists before
+        // opening ResourceActivity, so ingestion is never aborted on null id.
         binding.btnResourceMenu.setOnClickListener {
-            ResourceActivity.start(this, conversationId)
+            if (conversationId != null) {
+                ResourceActivity.start(this, conversationId)
+            } else {
+                binding.btnResourceMenu.isEnabled = false
+                executor.execute {
+                    val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+                    val apiKey = BuildConfig.BACKEND_API_KEY
+                    val cid = fetchNewConversationId(baseUrl, apiKey)
+                    runOnUiThread {
+                        binding.btnResourceMenu.isEnabled = true
+                        if (cid != null) {
+                            conversationId = cid
+                            ResourceActivity.start(this, cid)
+                        } else {
+                            Toast.makeText(
+                                this,
+                                "Could not create conversation. Check connection.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            }
         }
 
         // Close panel button
@@ -828,6 +852,14 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 return@execute
             }
 
+            // PHASE 6 — CHAT PAYLOAD READINESS LOCK: force-sync latest file list from
+            // backend so context.files always reflects current backend state before send.
+            val freshFiles = fetchChatFilesSync(cid, baseUrl, apiKey)
+            if (freshFiles != null) {
+                chatFiles.clear()
+                chatFiles.addAll(freshFiles)
+            }
+
             val bodyJson = JSONObject().apply {
                 put("message", message)
                 put("conversation_id", cid)
@@ -888,6 +920,55 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     binding.btnSend.isEnabled = true
                 }
             }
+        }
+    }
+
+    // PHASE 6 — CHAT PAYLOAD READINESS LOCK: synchronous file-list fetch used inside
+    // the send executor to ensure context.files reflects the current backend state.
+    // Returns null on any network error (caller falls back to cached chatFiles).
+    private fun fetchChatFilesSync(
+        conversationId: String,
+        baseUrl: String,
+        apiKey: String,
+    ): List<ChatFile>? {
+        return try {
+            val request = Request.Builder()
+                .url("$baseUrl/api/chat/$conversationId/files")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .get()
+                .build()
+            BackendClient.executeWithRetry(request).use { response ->
+                if (!response.isSuccessful) return null
+                val body = response.body?.string() ?: "[]"
+                val filesArray = JSONArray(body)
+                val files = mutableListOf<ChatFile>()
+                val dateFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+                for (i in 0 until filesArray.length()) {
+                    val obj = filesArray.getJSONObject(i)
+                    files.add(
+                        ChatFile(
+                            id = obj.getString("id"),
+                            conversationId = obj.getString("conversation_id"),
+                            filename = obj.getString("filename"),
+                            mimeType = obj.getString("mime_type"),
+                            sizeBytes = obj.getLong("size_bytes"),
+                            category = obj.getString("category"),
+                            includedInContext = obj.getBoolean("included_in_context"),
+                            createdAt = dateFormat.parse(
+                                obj.getString("created_at").split(".")[0]
+                            ) ?: Date(),
+                            updatedAt = dateFormat.parse(
+                                obj.getString("updated_at").split(".")[0]
+                            ) ?: Date(),
+                            downloadUrl = obj.optString("download_url", null),
+                        )
+                    )
+                }
+                files
+            }
+        } catch (e: Exception) {
+            Log.w("ChatActivity", "fetchChatFilesSync failed: ${e.message}")
+            null
         }
     }
 

@@ -17,7 +17,9 @@ data class GithubRepo(
     var selected: Boolean = false
 )
 
-class GithubRepoAdapter : RecyclerView.Adapter<GithubRepoAdapter.RepoViewHolder>() {
+class GithubRepoAdapter(
+    private val onSelectionChanged: ((GithubRepo) -> Unit)? = null,
+) : RecyclerView.Adapter<GithubRepoAdapter.RepoViewHolder>() {
 
     private val repos = mutableListOf<GithubRepo>()
 
@@ -59,6 +61,7 @@ class GithubRepoAdapter : RecyclerView.Adapter<GithubRepoAdapter.RepoViewHolder>
             // Handle checkbox clicks
             binding.cbSelected.setOnCheckedChangeListener { _, isChecked ->
                 repo.selected = isChecked
+                onSelectionChanged?.invoke(repo)
             }
 
             // Handle item clicks (toggle checkbox)

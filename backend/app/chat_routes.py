@@ -1159,12 +1159,37 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     if artifact_block:
                         base_system_prompt += "\n\n" + artifact_block
 
-                    # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
+                    # FILE_CONTEXT_INJECTION_V1: inject uploaded file references.
+                    # PHASE 8 — CONTEXT_FALLBACK: when frontend omits context.files,
+                    # auto-load all included github_repo files for the conversation.
+                    effective_file_refs: list[dict] = []
                     if context.files:
+                        for file_ref in context.files:
+                            effective_file_refs.append(file_ref)
+                    elif db is not None:
+                        # Backend fallback: query DB for included repo files
+                        stmt = (
+                            select(ChatFile)
+                            .where(ChatFile.conversation_id == active_conversation_id)
+                            .where(ChatFile.category == "github_repo")
+                            .where(ChatFile.included_in_context.is_(True))  # type: ignore[attr-defined]
+                        )
+                        fallback_files = db.exec(stmt).all()
+                        for fb in fallback_files:
+                            effective_file_refs.append(
+                                {
+                                    "id": str(fb.id),
+                                    "filename": fb.filename,
+                                    "category": fb.category,
+                                    "mime_type": fb.mime_type,
+                                }
+                            )
+
+                    if effective_file_refs:
                         file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
                         repo_chat_file_ids: list[uuid.UUID] = []
 
-                        for file_ref in context.files:
+                        for file_ref in effective_file_refs:
                             file_id_str = file_ref.get("id", "")
                             filename = file_ref.get("filename", "unnamed")
                             category = file_ref.get("category", "other")
@@ -1195,7 +1220,22 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         # REPO_CONTEXT_INTELLIGENCE_LAYER_V2 — Phase 5 + 6:
                         # Retrieve chunks scoped to the explicit context.files IDs only.
                         # Inject with standardised REPO CONTEXT block format.
+                        # PHASE 9 + 10: surface failure marker when ids present but no chunks.
                         if repo_chat_file_ids:
+                            # PHASE 9: check for repos with failed/empty ingestion status
+                            failed_repo_names: list[str] = []
+                            if db is not None:
+                                for rid in repo_chat_file_ids:
+                                    stmt = select(ChatFile).where(ChatFile.id == rid)
+                                    repo_file = db.exec(stmt).first()
+                                    if repo_file:
+                                        has_bad_status = repo_file.ingestion_status in (
+                                            "failed",
+                                            None,
+                                        )
+                                        if has_bad_status:
+                                            failed_repo_names.append(repo_file.filename)
+
                             relevant_chunks = retrieve_relevant_chunks(
                                 user_query=message,
                                 db=db,
@@ -1209,6 +1249,22 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         f"{chunk.content}\n"
                                     )
                                 file_block += "---\n"
+                            else:
+                                # PHASE 10: ids present but no chunks → explicit marker
+                                file_block += (
+                                    "\n\n[NO_REPO_CONTENT_AVAILABLE]: "
+                                    "Repository files were referenced but no content "
+                                    "could be retrieved from storage.\n"
+                                )
+
+                            # PHASE 9: inject per-repo failure markers
+                            if failed_repo_names:
+                                for name in failed_repo_names:
+                                    file_block += (
+                                        f"\n[REPO_PRESENT_BUT_EMPTY]: "
+                                        f"Repository '{name}' was added but ingestion "
+                                        f"produced no usable content.\n"
+                                    )
 
                         file_block += "\n--- End of Uploaded Files ---\n"
                         base_system_prompt += file_block
