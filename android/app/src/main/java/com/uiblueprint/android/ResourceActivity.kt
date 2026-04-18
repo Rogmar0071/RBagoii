@@ -46,6 +46,8 @@ class ResourceActivity : AppCompatActivity() {
 
     private val githubRepos = mutableListOf<GithubRepo>()
     private val chatFiles = mutableListOf<ChatFile>()
+    // Track whether selections have been committed to the backend in this session.
+    private var selectionsCommitted = false
 
     private var conversationId: String? = null
 
@@ -57,6 +59,7 @@ class ResourceActivity : AppCompatActivity() {
 
     companion object {
         private const val PREFS_NAME = "chat_prefs"
+        private const val PREF_SELECTED_REPOS = "selected_repos"
         const val EXTRA_CONVERSATION_ID = "conversation_id"
 
         fun start(context: Context, conversationId: String?) {
@@ -125,11 +128,71 @@ class ResourceActivity : AppCompatActivity() {
         // Reload files when returning to this activity
         if (conversationId != null) {
             loadChatFiles()
+            // REPO_CONTEXT_FINALIZATION_V1: also refresh backend repo status
+            loadActiveRepos()
         }
     }
 
+    // PHASE 2 — NAVIGATION COMMIT LOCK: intercept back press.
+    // If there are un-committed selections and a conversation is active,
+    // auto-commit them so they are never silently discarded.
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        val hasUncommittedSelections = githubRepos.any { it.selected } && !selectionsCommitted
+        if (hasUncommittedSelections && conversationId != null) {
+            applySelections()
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
+    }
+
+    // PHASE 1 — PERSISTENT SELECTION STORE:
+    // Persist the current selection state to SharedPreferences so it survives
+    // back navigation, activity destruction, and process death.
+    private fun persistSelections() {
+        val array = JSONArray()
+        for (repo in githubRepos.filter { it.selected }) {
+            val obj = JSONObject().apply {
+                put("repo_url", repo.htmlUrl)
+                put("branch", repo.defaultBranch)
+                put("full_name", repo.fullName)
+            }
+            array.put(obj)
+        }
+        prefs.edit().putString(PREF_SELECTED_REPOS, array.toString()).apply()
+    }
+
+    // Restore saved selections onto the freshly loaded repo list.
+    private fun restoreSelections() {
+        val raw = prefs.getString(PREF_SELECTED_REPOS, "[]") ?: "[]"
+        val savedUrls = try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { arr.getJSONObject(it).getString("repo_url") }.toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+        if (savedUrls.isEmpty()) return
+        for (repo in githubRepos) {
+            if (repo.htmlUrl in savedUrls) {
+                repo.selected = true
+            }
+        }
+    }
+
+    // PHASE 7 — AUTH CONSISTENCY: read API key from SharedPreferences so both
+    // ResourceActivity and ChatActivity use the same credential source.
+    // Falls back to BuildConfig if the prefs key is absent or empty.
+    private fun apiKey(): String =
+        prefs.getString("api_key", "").takeIf { !it.isNullOrEmpty() }
+            ?: BuildConfig.BACKEND_API_KEY
+
+    private fun baseUrl(): String =
+        (prefs.getString("backend_url", "").takeIf { !it.isNullOrEmpty() }
+            ?: BuildConfig.BACKEND_BASE_URL).trimEnd('/')
+
     private fun setupRepoList() {
-        repoAdapter = GithubRepoAdapter()
+        repoAdapter = GithubRepoAdapter(onSelectionChanged = { persistSelections() })
         binding.rvGithubRepos.layoutManager = LinearLayoutManager(this)
         binding.rvGithubRepos.adapter = repoAdapter
     }
@@ -185,8 +248,8 @@ class ResourceActivity : AppCompatActivity() {
                     Toast.makeText(this, "Loading repositories…", Toast.LENGTH_SHORT).show()
                 }
 
-                val apiKey = BuildConfig.BACKEND_API_KEY
-                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+                val apiKey = apiKey()
+                val baseUrl = baseUrl()
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/github/user/$username/repos?per_page=30")
@@ -220,6 +283,8 @@ class ResourceActivity : AppCompatActivity() {
                     runOnUiThread {
                         githubRepos.clear()
                         githubRepos.addAll(repos)
+                        // PHASE 1: restore persisted selections onto the newly loaded list
+                        restoreSelections()
                         repoAdapter.submitList(githubRepos)
                         binding.rvGithubRepos.visibility = if (repos.isEmpty()) View.GONE else View.VISIBLE
                         binding.tvNoRepos.visibility = if (repos.isEmpty()) View.VISIBLE else View.GONE
@@ -289,8 +354,8 @@ class ResourceActivity : AppCompatActivity() {
         val convId = conversationId ?: return
         executor.execute {
             try {
-                val apiKey = BuildConfig.BACKEND_API_KEY
-                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+                val apiKey = apiKey()
+                val baseUrl = baseUrl()
 
                 val request = Request.Builder()
                     .url("$baseUrl/api/chat/$convId/files")
@@ -382,8 +447,8 @@ class ResourceActivity : AppCompatActivity() {
                     Toast.makeText(this, getString(R.string.status_uploading_file), Toast.LENGTH_SHORT).show()
                 }
 
-                val apiKey = BuildConfig.BACKEND_API_KEY
-                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+                val apiKey = apiKey()
+                val baseUrl = baseUrl()
 
                 // Use the chunked upload helper
                 val success = ChatFileUploadHelper.uploadFile(
@@ -459,13 +524,14 @@ class ResourceActivity : AppCompatActivity() {
                     Toast.makeText(this, "Applying selections…", Toast.LENGTH_SHORT).show()
                 }
 
-                val apiKey = BuildConfig.BACKEND_API_KEY
-                val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+                val apiKey = apiKey()
+                val baseUrl = baseUrl()
 
                 var successCount = 0
                 var failureCount = 0
 
-                // Add selected GitHub repos
+                // Add selected GitHub repos via the first-class Repo endpoint.
+                // Falls back to the legacy /github/repos path if the new endpoint fails.
                 for (repo in selectedRepos) {
                     try {
                         val jsonBody = JSONObject().apply {
@@ -473,8 +539,10 @@ class ResourceActivity : AppCompatActivity() {
                             put("branch", repo.defaultBranch)
                         }.toString()
 
+                        // REPO_CONTEXT_FINALIZATION_V1 — Phase 2:
+                        // Use new first-class endpoint POST /api/chat/{cid}/repos (202)
                         val request = Request.Builder()
-                            .url("$baseUrl/api/chat/$convId/github/repos")
+                            .url("$baseUrl/api/chat/$convId/repos")
                             .addHeader("Authorization", "Bearer $apiKey")
                             .addHeader("Content-Type", "application/json")
                             .post(jsonBody.toRequestBody("application/json".toMediaType()))
@@ -483,6 +551,21 @@ class ResourceActivity : AppCompatActivity() {
                         val response = BackendClient.executeWithRetry(request)
                         if (response.isSuccessful) {
                             successCount++
+                        } else if (response.code == 404) {
+                            // New endpoint not yet deployed — fall back to legacy endpoint
+                            val legacyRequest = Request.Builder()
+                                .url("$baseUrl/api/chat/$convId/github/repos")
+                                .addHeader("Authorization", "Bearer $apiKey")
+                                .addHeader("Content-Type", "application/json")
+                                .post(jsonBody.toRequestBody("application/json".toMediaType()))
+                                .build()
+                            val legacyResp = BackendClient.executeWithRetry(legacyRequest)
+                            if (legacyResp.isSuccessful) {
+                                successCount++
+                            } else {
+                                failureCount++
+                                Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${legacyResp.code}")
+                            }
                         } else {
                             failureCount++
                             Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")
@@ -519,12 +602,15 @@ class ResourceActivity : AppCompatActivity() {
                 runOnUiThread {
                     binding.btnApply.isEnabled = true
                     if (failureCount == 0) {
+                        // PHASE 1: clear persisted selections — they are now committed to backend
+                        prefs.edit().remove(PREF_SELECTED_REPOS).apply()
+                        selectionsCommitted = true
                         Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
                         finish()
                     } else {
                         Toast.makeText(
-                            this, 
-                            "Applied with errors ($successCount succeeded, $failureCount failed)", 
+                            this,
+                            "Applied with errors ($successCount succeeded, $failureCount failed)",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -535,6 +621,67 @@ class ResourceActivity : AppCompatActivity() {
                     binding.btnApply.isEnabled = true
                     Toast.makeText(this, "Failed to apply selections: ${e.message}", Toast.LENGTH_LONG).show()
                 }
+            }
+        }
+    }
+
+    /**
+     * REPO_CONTEXT_FINALIZATION_V1 — Phase 7.
+     * Load committed repos from the backend and overlay their ingestion status
+     * onto the displayed repo list.  Called after applySelections or on resume.
+     */
+    private fun loadActiveRepos() {
+        val convId = conversationId ?: return
+        executor.execute {
+            try {
+                val apiKey = apiKey()
+                val baseUrl = baseUrl()
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat/$convId/repos")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .get()
+                    .build()
+                val response = BackendClient.executeWithRetry(request)
+                if (!response.isSuccessful) return@execute
+                val body = response.body?.string() ?: "[]"
+                val arr = JSONArray(body)
+                val statusMap = mutableMapOf<String, RepoStatus>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val rs = RepoStatus(
+                        id = obj.getString("id"),
+                        conversationId = obj.getString("conversation_id"),
+                        repoUrl = obj.getString("repo_url"),
+                        owner = obj.getString("owner"),
+                        name = obj.getString("name"),
+                        branch = obj.getString("branch"),
+                        ingestionStatus = obj.getString("ingestion_status"),
+                        totalFiles = obj.getInt("total_files"),
+                        totalChunks = obj.getInt("total_chunks"),
+                    )
+                    statusMap[rs.repoUrl] = rs
+                }
+                // Overlay status onto displayed repos
+                if (statusMap.isNotEmpty()) {
+                    runOnUiThread {
+                        val updated = githubRepos.map { repo ->
+                            val rs = statusMap[repo.htmlUrl]
+                            if (rs != null) {
+                                repo.copy(
+                                    ingestionStatus = rs.ingestionStatus,
+                                    totalFiles = rs.totalFiles,
+                                    totalChunks = rs.totalChunks,
+                                    backendId = rs.id,
+                                )
+                            } else repo
+                        }
+                        githubRepos.clear()
+                        githubRepos.addAll(updated)
+                        repoAdapter.submitList(githubRepos)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("ResourceActivity", "loadActiveRepos failed: ${e.message}")
             }
         }
     }

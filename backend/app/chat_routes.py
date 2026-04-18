@@ -45,7 +45,7 @@ from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
-from backend.app.models import ChatFile  # Import ChatFile model
+from backend.app.models import ChatFile, Repo  # Import ChatFile and Repo models
 from backend.app.repo_retrieval import retrieve_relevant_chunks
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
@@ -214,6 +214,10 @@ class ChatContext(BaseModel):
     session_id: str | None = None
     domain_profile_id: str | None = None
     files: list[dict[str, Any]] | None = None  # File references for AI context
+    # REPO_CONTEXT_FINALIZATION_V1 — Phase 9:
+    # First-class Repo IDs.  When present, context is built from Repo entities
+    # rather than from the context.files list (which is the V1 compat path).
+    repos: list[str] | None = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -1101,13 +1105,16 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         # so it can pass through validation pipeline
                         if MODE_STRICT in active_modes:
                             import json
-                            return json.dumps({
-                                "reply": stub_text,
-                                "claims": [],
-                                "uncertainties": [],
-                                "generation_mode": "stub",
-                                "mode_label": "STUB_NO_OPENAI_KEY"
-                            })
+
+                            return json.dumps(
+                                {
+                                    "reply": stub_text,
+                                    "claims": [],
+                                    "uncertainties": [],
+                                    "generation_mode": "stub",
+                                    "mode_label": "STUB_NO_OPENAI_KEY",
+                                }
+                            )
                         return stub_text
 
                     reply, _audit = mode_engine_gateway(
@@ -1159,12 +1166,114 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     if artifact_block:
                         base_system_prompt += "\n\n" + artifact_block
 
-                    # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
+                    # -------------------------------------------------------
+                    # REPO_CONTEXT_FINALIZATION_V1 — Phase 9:
+                    # When context.repos (first-class Repo IDs) are present,
+                    # build the repo context block from Repo entities directly.
+                    # Phase 6: always inject REPO STATUS for AI awareness.
+                    # -------------------------------------------------------
+                    if context.repos and db is not None:
+                        active_repo_ids: list[uuid.UUID] = []
+                        for rid_str in context.repos:
+                            try:
+                                active_repo_ids.append(uuid.UUID(rid_str))
+                            except ValueError:
+                                pass
+
+                        if active_repo_ids:
+                            loaded_repos: list[Repo] = []
+                            for rid in active_repo_ids:
+                                repo_obj = db.get(Repo, rid)
+                                if repo_obj:
+                                    loaded_repos.append(repo_obj)
+
+                            if loaded_repos:
+                                # Phase 6 — REPO STATUS block
+                                status_block = "\n\nREPO STATUS:\n"
+                                for r in loaded_repos:
+                                    status_block += (
+                                        f"- repo: {r.owner}/{r.name}"
+                                        f" (branch: {r.branch})"
+                                        f" | status: {r.ingestion_status}"
+                                        f" | files: {r.total_files}"
+                                        f" | chunks: {r.total_chunks}\n"
+                                    )
+                                base_system_prompt += status_block
+
+                                # Retrieve chunks scoped to these repo IDs
+                                success_repo_ids = [
+                                    r.id for r in loaded_repos if r.ingestion_status == "success"
+                                ]
+                                failed_repos = [
+                                    r
+                                    for r in loaded_repos
+                                    if r.ingestion_status in ("failed", "pending", "running")
+                                ]
+
+                                if success_repo_ids:
+                                    relevant_chunks = retrieve_relevant_chunks(
+                                        user_query=message,
+                                        db=db,
+                                        repo_ids=success_repo_ids,
+                                    )
+                                    if relevant_chunks:
+                                        repo_block = "\n\n---\nREPO CONTEXT:\n"
+                                        for chunk in relevant_chunks:
+                                            repo_block += (
+                                                f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                            )
+                                        repo_block += "---\n"
+                                        base_system_prompt += repo_block
+                                    else:
+                                        base_system_prompt += (
+                                            "\n\n[NO_REPO_CONTENT_AVAILABLE]: "
+                                            "Repository files were referenced but no content "
+                                            "could be retrieved from storage.\n"
+                                        )
+
+                                for r in failed_repos:
+                                    base_system_prompt += (
+                                        f"\n[REPO_PRESENT_BUT_EMPTY]: "
+                                        f"Repository '{r.owner}/{r.name}' was added but "
+                                        f"ingestion status is '{r.ingestion_status}' — "
+                                        f"no usable content available. "
+                                        f"Respond: 'Repository ingestion incomplete'.\n"
+                                    )
+
+                    # -------------------------------------------------------
+                    # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
+                    # inject uploaded file references.
+                    # PHASE 8 — CONTEXT_FALLBACK: when frontend omits context.files,
+                    # auto-load all included github_repo files for the conversation.
+                    # -------------------------------------------------------
+                    effective_file_refs: list[dict] = []
                     if context.files:
+                        for file_ref in context.files:
+                            effective_file_refs.append(file_ref)
+                    elif not context.repos and db is not None:
+                        # Backend fallback (V1 path): query DB for included repo files
+                        stmt = (
+                            select(ChatFile)
+                            .where(ChatFile.conversation_id == active_conversation_id)
+                            .where(ChatFile.category == "github_repo")
+                            .where(ChatFile.included_in_context.is_(True))  # type: ignore[attr-defined]
+                        )
+                        fallback_files = db.exec(stmt).all()
+                        for fb in fallback_files:
+                            effective_file_refs.append(
+                                {
+                                    "id": str(fb.id),
+                                    "filename": fb.filename,
+                                    "category": fb.category,
+                                    "mime_type": fb.mime_type,
+                                }
+                            )
+
+                    if effective_file_refs:
                         file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
                         repo_chat_file_ids: list[uuid.UUID] = []
 
-                        for file_ref in context.files:
+                        for file_ref in effective_file_refs:
                             file_id_str = file_ref.get("id", "")
                             filename = file_ref.get("filename", "unnamed")
                             category = file_ref.get("category", "other")
@@ -1195,7 +1304,22 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         # REPO_CONTEXT_INTELLIGENCE_LAYER_V2 — Phase 5 + 6:
                         # Retrieve chunks scoped to the explicit context.files IDs only.
                         # Inject with standardised REPO CONTEXT block format.
+                        # PHASE 9 + 10: surface failure marker when ids present but no chunks.
                         if repo_chat_file_ids:
+                            # PHASE 9: check for repos with failed/empty ingestion status
+                            failed_repo_names: list[str] = []
+                            if db is not None:
+                                for rid in repo_chat_file_ids:
+                                    stmt = select(ChatFile).where(ChatFile.id == rid)
+                                    repo_file = db.exec(stmt).first()
+                                    if repo_file:
+                                        has_bad_status = repo_file.ingestion_status in (
+                                            "failed",
+                                            None,
+                                        )
+                                        if has_bad_status:
+                                            failed_repo_names.append(repo_file.filename)
+
                             relevant_chunks = retrieve_relevant_chunks(
                                 user_query=message,
                                 db=db,
@@ -1204,11 +1328,25 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             if relevant_chunks:
                                 file_block += "\n\n---\nREPO CONTEXT:\n"
                                 for chunk in relevant_chunks:
-                                    file_block += (
-                                        f"\nFILE: {chunk.file_path}\n\n"
-                                        f"{chunk.content}\n"
-                                    )
+                                    file_block += f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
                                 file_block += "---\n"
+                            elif failed_repo_names:
+                                # PHASE 9: per-repo failure markers explain the empty result;
+                                # skip the generic NO_REPO_CONTENT_AVAILABLE to avoid duplication.
+                                for name in failed_repo_names:
+                                    file_block += (
+                                        f"\n[REPO_PRESENT_BUT_EMPTY]: "
+                                        f"Repository '{name}' was added but ingestion "
+                                        f"produced no usable content.\n"
+                                    )
+                            else:
+                                # PHASE 10: ids present, no known failure, but no chunks —
+                                # emit the generic retrieval-failure marker.
+                                file_block += (
+                                    "\n\n[NO_REPO_CONTENT_AVAILABLE]: "
+                                    "Repository files were referenced but no content "
+                                    "could be retrieved from storage.\n"
+                                )
 
                         file_block += "\n--- End of Uploaded Files ---\n"
                         base_system_prompt += file_block

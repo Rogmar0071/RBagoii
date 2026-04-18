@@ -26,7 +26,7 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile, RepoChunk
+from backend.app.models import ChatFile, Repo, RepoChunk
 from backend.app.repo_retrieval import _split_into_chunks
 
 router = APIRouter()
@@ -52,10 +52,36 @@ class GithubRepoResponse(BaseModel):
     repo_url: str
     branch: str
     created_at: str
+    ingestion_status: Optional[str] = None
+
+
+# REPO_CONTEXT_FINALIZATION_V1 — Phase 1+2
+class RepoCreateRequest(BaseModel):
+    """Request body for the first-class Repo ingestion endpoint."""
+
+    repo_url: str  # Full GitHub URL, e.g., https://github.com/owner/repo
+    branch: str = "main"
+
+
+class RepoStatusResponse(BaseModel):
+    """Response from the first-class Repo API."""
+
+    id: str
+    conversation_id: str
+    repo_url: str
+    owner: str
+    name: str
+    branch: str
+    ingestion_status: str  # pending / running / success / failed
+    total_files: int
+    total_chunks: int
+    created_at: str
+    updated_at: str
 
 
 class GithubRepoListItem(BaseModel):
     """Repository information from GitHub API."""
+
     name: str
     full_name: str
     description: Optional[str]
@@ -85,7 +111,7 @@ async def get_authenticated_user():
     if not GITHUB_TOKEN:
         raise HTTPException(
             status_code=503,
-            detail="GitHub token not configured. Set GITHUB_TOKEN environment variable."
+            detail="GitHub token not configured. Set GITHUB_TOKEN environment variable.",
         )
 
     headers = {
@@ -96,16 +122,13 @@ async def get_authenticated_user():
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                "https://api.github.com/user",
-                headers=headers,
-                timeout=10.0
+                "https://api.github.com/user", headers=headers, timeout=10.0
             )
 
             if response.status_code != 200:
                 logger.error(f"GitHub API error: {response.status_code} - {response.text}")
                 raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"GitHub API error: {response.text}"
+                    status_code=response.status_code, detail=f"GitHub API error: {response.text}"
                 )
 
             user_data = response.json()
@@ -155,8 +178,7 @@ async def list_user_repos(
             elif response.status_code != 200:
                 logger.error(f"GitHub API error: {response.status_code} - {response.text}")
                 raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"GitHub API error: {response.text}"
+                    status_code=response.status_code, detail=f"GitHub API error: {response.text}"
                 )
 
             repos_data = response.json()
@@ -209,9 +231,7 @@ async def _fetch_repo_file_list(
 
         base = f"https://api.github.com/repos/{owner}/{repo_name}/contents"
         url = f"{base}/{path}" if path else base
-        response = await client.get(
-            url, headers=headers, params={"ref": branch}, timeout=15.0
-        )
+        response = await client.get(url, headers=headers, params={"ref": branch}, timeout=15.0)
         if response.status_code != 200:
             raise RuntimeError(
                 f"GitHub API returned {response.status_code} for {url}: {response.text[:200]}"
@@ -311,17 +331,30 @@ async def add_github_repo(
         file_list = await _fetch_repo_file_list(owner, repo_name, repo.branch, headers)
     except Exception as exc:
         logger.error("GitHub repo fetch failed for %s/%s: %s", owner, repo_name, exc)
-        file_list = []
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "failed",
+                "reason": "repo_ingestion_failed",
+                "detail": f"No files retrieved from repository: {exc}",
+            },
+        )
+
+    if not file_list:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "status": "failed",
+                "reason": "repo_ingestion_failed",
+                "detail": "No files retrieved from repository",
+            },
+        )
 
     # Build compact summary for extracted_text (not full content)
     file_paths = [path for path, _ in file_list]
     top_paths = file_paths[:10]
     top_files_lines = "\n".join(f"- {p}" for p in top_paths)
-    summary = (
-        f"Repo: {owner}/{repo_name}\n"
-        f"Files: {len(file_paths)}\n"
-        f"Top Files:\n{top_files_lines}"
-    )
+    summary = f"Repo: {owner}/{repo_name}\nFiles: {len(file_paths)}\nTop Files:\n{top_files_lines}"
 
     github_file = ChatFile(
         id=uuid.uuid4(),
@@ -339,6 +372,7 @@ async def add_github_repo(
     session.flush()  # Assign github_file.id before creating chunks
 
     # Store file content as RepoChunk rows for selective retrieval
+    chunk_count = 0
     for file_path, content in file_list:
         for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             chunk = RepoChunk(
@@ -349,6 +383,10 @@ async def add_github_repo(
                 token_estimate=max(1, len(chunk_text) // 4),
             )
             session.add(chunk)
+            chunk_count += 1
+
+    # Set ingestion status based on whether chunks were created
+    github_file.ingestion_status = "success" if chunk_count > 0 else "failed"
 
     session.commit()
     session.refresh(github_file)
@@ -359,6 +397,7 @@ async def add_github_repo(
         repo_url=repo.repo_url,
         branch=repo.branch,
         created_at=github_file.created_at.isoformat(),
+        ingestion_status=github_file.ingestion_status,
     )
 
 
@@ -393,6 +432,7 @@ def list_github_repos(
                     repo_url=repo_url,
                     branch=branch,
                     created_at=repo.created_at.isoformat(),
+                    ingestion_status=repo.ingestion_status,
                 )
             )
 
@@ -429,3 +469,220 @@ def remove_github_repo(
     session.commit()
 
     return None
+
+
+# ===========================================================================
+# REPO_CONTEXT_FINALIZATION_V1 — Phase 1+2+8
+# First-class Repo endpoints (async ingestion pipeline)
+# ===========================================================================
+
+
+def _enqueue_repo_ingestion(repo_id: str) -> None:
+    """
+    Enqueue or synchronously run repo ingestion.
+
+    Uses the existing worker.enqueue_job infrastructure so it works with
+    both Redis (async) and BACKEND_DISABLE_JOBS=0/1 modes.
+    """
+    import os as _os
+
+    from backend.app.worker import enqueue_job
+
+    disable = _os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
+    if disable:
+        # In test/DISABLE_JOBS mode: run inline in a background thread so the
+        # API returns immediately but the DB gets populated before test assertions.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        from backend.app.worker import run_repo_ingestion
+
+        e = _TPE(max_workers=1)
+        e.submit(run_repo_ingestion, repo_id)
+        e.shutdown(wait=True)  # tests need it to complete synchronously
+    else:
+        enqueue_job(repo_id, "repo_ingestion")
+
+
+@router.post(
+    "/api/chat/{conversation_id}/repos",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+def create_repo_ingestion_job(
+    conversation_id: str,
+    repo: RepoCreateRequest,
+    session: Session = Depends(get_session),
+) -> RepoStatusResponse:
+    """
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 2.
+
+    Create a first-class Repo entity (status="pending") and immediately
+    return the repo_id.  Ingestion is processed asynchronously by the
+    worker (run_repo_ingestion).
+
+    Invariant: API NEVER blocks on GitHub fetch.
+    """
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+
+    owner, repo_name = match.groups()
+    repo_name = repo_name.rstrip(".git")
+
+    new_repo = Repo(
+        id=uuid.uuid4(),
+        conversation_id=conversation_id,
+        repo_url=repo.repo_url,
+        owner=owner,
+        name=repo_name,
+        branch=repo.branch,
+        ingestion_status="pending",
+        total_files=0,
+        total_chunks=0,
+    )
+    session.add(new_repo)
+    session.commit()
+    session.refresh(new_repo)
+
+    # Trigger ingestion asynchronously
+    _enqueue_repo_ingestion(str(new_repo.id))
+
+    return RepoStatusResponse(
+        id=str(new_repo.id),
+        conversation_id=new_repo.conversation_id,
+        repo_url=new_repo.repo_url,
+        owner=new_repo.owner,
+        name=new_repo.name,
+        branch=new_repo.branch,
+        ingestion_status=new_repo.ingestion_status,
+        total_files=new_repo.total_files,
+        total_chunks=new_repo.total_chunks,
+        created_at=new_repo.created_at.isoformat(),
+        updated_at=new_repo.updated_at.isoformat(),
+    )
+
+
+@router.get(
+    "/api/chat/{conversation_id}/repos",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def list_repos(
+    conversation_id: str,
+    session: Session = Depends(get_session),
+) -> List[RepoStatusResponse]:
+    """
+    REPO_CONTEXT_FINALIZATION_V1.
+    List all first-class Repo entities linked to the conversation.
+    """
+    stmt = (
+        select(Repo).where(Repo.conversation_id == conversation_id).order_by(Repo.created_at.desc())
+    )
+    repos = session.exec(stmt).all()
+    return [
+        RepoStatusResponse(
+            id=str(r.id),
+            conversation_id=r.conversation_id,
+            repo_url=r.repo_url,
+            owner=r.owner,
+            name=r.name,
+            branch=r.branch,
+            ingestion_status=r.ingestion_status,
+            total_files=r.total_files,
+            total_chunks=r.total_chunks,
+            created_at=r.created_at.isoformat(),
+            updated_at=r.updated_at.isoformat(),
+        )
+        for r in repos
+    ]
+
+
+@router.delete(
+    "/api/chat/{conversation_id}/repos/{repo_id}",
+    status_code=204,
+    dependencies=[Depends(require_auth)],
+)
+def remove_repo(
+    conversation_id: str,
+    repo_id: str,
+    session: Session = Depends(get_session),
+):
+    """
+    REPO_CONTEXT_FINALIZATION_V1.
+    Remove a first-class Repo and all its RepoChunk rows.
+    """
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    stmt = select(Repo).where(
+        Repo.id == repo_uuid,
+        Repo.conversation_id == conversation_id,
+    )
+    repo = session.exec(stmt).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Delete associated chunks first
+    chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
+    for chunk in session.exec(chunk_stmt).all():
+        session.delete(chunk)
+
+    session.delete(repo)
+    session.commit()
+    return None
+
+
+@router.post(
+    "/api/repos/{repo_id}/retry",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+def retry_repo_ingestion(
+    repo_id: str,
+    session: Session = Depends(get_session),
+) -> RepoStatusResponse:
+    """
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 8.
+
+    Retry ingestion for a failed (or stuck) Repo.
+    Resets status to "pending" and re-enqueues the ingestion worker.
+    """
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    repo = session.get(Repo, repo_uuid)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Delete stale chunks from previous attempt
+    chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
+    for chunk in session.exec(chunk_stmt).all():
+        session.delete(chunk)
+
+    repo.ingestion_status = "pending"
+    repo.total_files = 0
+    repo.total_chunks = 0
+    session.add(repo)
+    session.commit()
+    session.refresh(repo)
+
+    # Re-trigger ingestion
+    _enqueue_repo_ingestion(str(repo.id))
+
+    return RepoStatusResponse(
+        id=str(repo.id),
+        conversation_id=repo.conversation_id,
+        repo_url=repo.repo_url,
+        owner=repo.owner,
+        name=repo.name,
+        branch=repo.branch,
+        ingestion_status=repo.ingestion_status,
+        total_files=repo.total_files,
+        total_chunks=repo.total_chunks,
+        created_at=repo.created_at.isoformat(),
+        updated_at=repo.updated_at.isoformat(),
+    )
