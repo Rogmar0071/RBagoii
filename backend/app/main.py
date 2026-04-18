@@ -25,6 +25,7 @@ SLACK_WEBHOOK_URL    (Optional) Slack incoming-webhook URL for critical-failure 
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -46,7 +47,9 @@ from fastapi import (
     Header,
     HTTPException,
     Request,
+    Response,
     UploadFile,
+    status,
 )
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -68,6 +71,29 @@ _UPLOADS_DIR = Path("/tmp/uploads")
 logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="UI Blueprint Backend", version="1.0.0")
+
+# Readiness flag — set to True only after all startup checks pass.
+app.state.ready = False
+
+
+# ---------------------------------------------------------------------------
+# Readiness gate middleware — blocks business endpoints until system is ready
+# ---------------------------------------------------------------------------
+
+_HEALTH_PATHS = frozenset({"/", "/health", "/ready"})
+
+
+@app.middleware("http")
+async def readiness_gate(request: Request, call_next: Any) -> Response:
+    if request.url.path in _HEALTH_PATHS:
+        return await call_next(request)
+    if not app.state.ready:
+        return Response(
+            content='{"error":"service_not_ready"}',
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            media_type="application/json",
+        )
+    return await call_next(request)
 
 # Domain Profile + Blueprint Compiler routes (no auth required — public API).
 from backend.app.analysis_routes import router as _analysis_router  # noqa: E402
@@ -164,12 +190,22 @@ def _startup_init_db() -> None:
     db_url = os.environ.get("DATABASE_URL", "").strip()
     if db_url:
         try:
-            from backend.app.database import init_db
+            from backend.app.database import init_db, get_engine
+            from sqlalchemy import text
 
             init_db()
             logger.info("Database tables initialised.")
+
+            # Connectivity probe — fail fast if DB is not reachable.
+            with get_engine().connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info("Database connectivity probe passed.")
         except Exception as exc:
-            logger.warning("DB init failed (non-fatal): %s", exc)
+            logger.error("DB startup check failed (service not ready): %s", exc)
+            raise
+
+    app.state.ready = True
+    logger.info("Service is ready.")
 
     # Start the background cleanup daemon thread (non-blocking).
     _cleanup_thread = threading.Thread(
@@ -193,6 +229,28 @@ async def root() -> dict:
 async def health() -> dict:
     """Dedicated liveness endpoint for Render health checks."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def readiness() -> Response:
+    """Readiness endpoint — returns 200 when the service is fully initialised."""
+    if app.state.ready:
+        return JSONResponse(content={"status": "ready"})
+    return Response(
+        content='{"status":"not_ready"}',
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        media_type="application/json",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Timeout helper for external calls
+# ---------------------------------------------------------------------------
+
+
+async def with_timeout(coro: Any, timeout: float = 5.0) -> Any:
+    """Wrap a coroutine with a hard timeout to prevent hanging workers."""
+    return await asyncio.wait_for(coro, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
