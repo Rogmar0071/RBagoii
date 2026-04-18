@@ -738,7 +738,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         executor.execute {
             try {
                 runOnUiThread {
-                    Toast.makeText(this, "Adding GitHub repo...", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Adding repository...", Toast.LENGTH_SHORT).show()
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
@@ -760,18 +760,18 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
                 if (response.isSuccessful) {
                     runOnUiThread {
-                        Toast.makeText(this, "GitHub repo queued", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Repository queued", Toast.LENGTH_SHORT).show()
                     }
                 } else {
                     runOnUiThread {
-                        Toast.makeText(this, "Failed to add repo", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Failed to add repository", Toast.LENGTH_SHORT).show()
                     }
                     Log.e("ChatActivity", "Add repo failed: ${response.code}")
                 }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error adding GitHub repo", e)
                 runOnUiThread {
-                    Toast.makeText(this, "Error adding repo", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Error adding repository", Toast.LENGTH_SHORT).show()
                 }
             }
         }

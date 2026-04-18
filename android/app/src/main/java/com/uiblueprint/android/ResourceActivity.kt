@@ -141,12 +141,7 @@ class ResourceActivity : AppCompatActivity() {
     // auto-commit them so they are never silently discarded.
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (conversationId != null) {
-            applySelections()
-        } else {
-            @Suppress("DEPRECATION")
-            super.onBackPressed()
-        }
+        applySelections()
     }
 
     // PHASE 1 — PERSISTENT SELECTION STORE:
