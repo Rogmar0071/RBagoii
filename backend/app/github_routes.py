@@ -757,6 +757,7 @@ def add_repo(
     - Ingestion is only triggered for newly created Repos.
     - The binding is idempotent (UNIQUE constraint on conversation_repos).
     """
+    raise RuntimeError("TRACE_HIT_V1")
     try:
         print("TRACE 1: start")
 
