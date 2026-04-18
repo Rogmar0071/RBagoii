@@ -196,7 +196,8 @@ async def _fetch_repo_file_list(
 
     Returns a list of ``(file_path, content)`` tuples, one per fetched file.
     Depth is limited to _MAX_DEPTH levels and at most _MAX_FILES files are
-    collected.  Raises ``RuntimeError`` on GitHub API errors.
+    collected.  Exceptions (including ``RuntimeError`` on GitHub API errors)
+    are propagated to the caller.
     """
     files: list[tuple[str, str]] = []
     file_count = 0
