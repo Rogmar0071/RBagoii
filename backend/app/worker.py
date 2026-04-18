@@ -134,7 +134,7 @@ def _assert_importable(fn) -> None:
         )
 
 
-def flush_queue(queue_names: list = None) -> None:
+def flush_queue(queue_names: list[str] | None = None) -> None:
     """Empty the named RQ queues to remove stale or invalid serialised jobs.
 
     This MUST be called on application startup to purge any jobs whose
@@ -152,6 +152,7 @@ def flush_queue(queue_names: list = None) -> None:
 
     try:
         from redis import Redis
+        from redis.exceptions import RedisError
         from rq import Queue
 
         conn = Redis.from_url(redis_url)
@@ -163,7 +164,7 @@ def flush_queue(queue_names: list = None) -> None:
                 name,
                 deleted,
             )
-    except Exception as exc:  # pragma: no cover – connection errors handled gracefully
+    except (ImportError, RedisError) as exc:  # pragma: no cover – connection errors handled gracefully
         logger.warning("RQ queue flush failed (non-fatal): %s", exc)
 
 
