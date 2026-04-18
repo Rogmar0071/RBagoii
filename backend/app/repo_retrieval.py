@@ -112,8 +112,9 @@ def _score_chunk(
         return 0
 
     # +2 boost: filename contains a query keyword (filename match)
-    filename_stem = lower_path.split("/")[-1].split(".")[0]
-    if keywords and any(kw in filename_stem for kw in keywords):
+    filename_part = lower_path.split("/")[-1]
+    filename_stem = filename_part.split(".")[0] if filename_part else ""
+    if filename_stem and keywords and any(kw in filename_stem for kw in keywords):
         score += 2
 
     # +3 boost: high-signal file names (path relevance)
