@@ -17,4 +17,4 @@ echo "  cmd: python -m alembic -c ${ALEMBIC_INI} upgrade head"
 python -m alembic -c "${ALEMBIC_INI}" upgrade head
 
 echo "Starting API server..."
-exec uvicorn backend.app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+exec uvicorn backend.app.main:app --host 0.0.0.0 --port "${PORT:-10000}"

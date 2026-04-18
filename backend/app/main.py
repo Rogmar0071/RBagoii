@@ -183,10 +183,16 @@ def _startup_init_db() -> None:
 # ---------------------------------------------------------------------------
 
 
-@app.get("/")
-def root() -> dict:
-    """Service health check — no auth required (used by Render and load-balancers)."""
-    return {"ok": True, "service": "ui-blueprint-backend", "version": "1.0.0"}
+@app.api_route("/", methods=["GET", "HEAD"])
+async def root() -> dict:
+    """Service liveness — no auth required (used by Render and load-balancers)."""
+    return {"status": "ok", "ok": True, "service": "ui-blueprint-backend", "version": "1.0.0"}
+
+
+@app.get("/health")
+async def health() -> dict:
+    """Dedicated liveness endpoint for Render health checks."""
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------

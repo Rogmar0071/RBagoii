@@ -24,6 +24,7 @@ services:
     plan: starter
     dockerfilePath: backend/Dockerfile
     startCommand: bash backend/entrypoint.sh
+    healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         sync: false
