@@ -11,6 +11,7 @@ import android.content.res.ColorStateList
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
 import android.view.View
 import android.widget.EditText
 import android.widget.PopupMenu
@@ -183,7 +184,8 @@ class MainActivity : AppCompatActivity(),
                         }
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "loadGlobalChat failed: ${e.message}")
                 // Best-effort: keep whatever is currently shown.
             }
         }
@@ -341,7 +343,8 @@ class MainActivity : AppCompatActivity(),
                         ResourceActivity.start(this, conversationId)
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "createHomeConversationForResourceMenu failed: ${e.message}")
                 runOnUiThread {
                     isCreatingConversation = false
                     binding.btnNewChat.isEnabled = true
@@ -597,7 +600,8 @@ class MainActivity : AppCompatActivity(),
                         }
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "createHomeConversation failed: ${e.message}")
                 runOnUiThread {
                     isCreatingConversation = false
                     binding.btnNewChat.isEnabled = true
@@ -659,7 +663,8 @@ class MainActivity : AppCompatActivity(),
                         }
                     }
                 }
-            } catch (_: IOException) {
+            } catch (e: IOException) {
+                Log.w("MainActivity", "deleteHomeConversation failed: ${e.message}")
                 runOnUiThread {
                     Toast.makeText(this, getString(R.string.error_delete_chat_failed), Toast.LENGTH_SHORT).show()
                 }
