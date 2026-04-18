@@ -190,7 +190,8 @@ def flush_queue(queue_names: list[str] | None = None) -> None:
                 name,
                 deleted,
             )
-    except (ImportError, RedisError) as exc:  # pragma: no cover -- connection errors handled gracefully
+    except (ImportError, RedisError) as exc:  # pragma: no cover
+        # Connection errors are handled gracefully -- non-fatal
         logger.warning("RQ queue flush failed (non-fatal): %s", exc)
 
 

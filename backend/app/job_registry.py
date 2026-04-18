@@ -15,20 +15,20 @@ CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §2
 
 from __future__ import annotations
 
-# Worker pipeline jobs (defined in backend.app.worker)
-from backend.app.worker import (
-    run_analyze_repo_step,
-    run_analyze_step,
-    run_analyze_optional_step,
-    run_blueprint,
-    run_repo_ingestion,
-)
+# Analysis job (defined in backend.app.analysis_job_processor)
+from backend.app.analysis_job_processor import process_analysis_job
 
 # Session extraction job (defined in backend.app.jobs)
 from backend.app.jobs import run_extraction_job
 
-# Analysis job (defined in backend.app.analysis_job_processor)
-from backend.app.analysis_job_processor import process_analysis_job
+# Worker pipeline jobs (defined in backend.app.worker)
+from backend.app.worker import (
+    run_analyze_optional_step,
+    run_analyze_repo_step,
+    run_analyze_step,
+    run_blueprint,
+    run_repo_ingestion,
+)
 
 # ---------------------------------------------------------------------------
 # Canonical job registry
