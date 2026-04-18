@@ -2653,7 +2653,6 @@ def run_analyze_repo_step(job_id: str) -> None:
         )
 
 
-
 # ---------------------------------------------------------------------------
 # Job-function registry
 # ---------------------------------------------------------------------------
@@ -2725,9 +2724,7 @@ def run_repo_ingestion(repo_id: str) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            file_list = loop.run_until_complete(
-                _fetch_repo_file_list(owner, name, branch, headers)
-            )
+            file_list = loop.run_until_complete(_fetch_repo_file_list(owner, name, branch, headers))
         finally:
             loop.close()
             asyncio.set_event_loop(None)
@@ -2754,9 +2751,7 @@ def run_repo_ingestion(repo_id: str) -> None:
     with Session(get_engine()) as session:
         r = session.get(Repo, uuid.UUID(repo_id))
         if r is None:
-            logger.error(
-                "run_repo_ingestion: Repo %s disappeared during ingestion", repo_id
-            )
+            logger.error("run_repo_ingestion: Repo %s disappeared during ingestion", repo_id)
             return
 
         if not file_list:
@@ -2794,4 +2789,3 @@ def run_repo_ingestion(repo_id: str) -> None:
         chunk_count,
         "success" if chunk_count > 0 else "failed",
     )
-

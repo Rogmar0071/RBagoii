@@ -1105,13 +1105,16 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         # so it can pass through validation pipeline
                         if MODE_STRICT in active_modes:
                             import json
-                            return json.dumps({
-                                "reply": stub_text,
-                                "claims": [],
-                                "uncertainties": [],
-                                "generation_mode": "stub",
-                                "mode_label": "STUB_NO_OPENAI_KEY"
-                            })
+
+                            return json.dumps(
+                                {
+                                    "reply": stub_text,
+                                    "claims": [],
+                                    "uncertainties": [],
+                                    "generation_mode": "stub",
+                                    "mode_label": "STUB_NO_OPENAI_KEY",
+                                }
+                            )
                         return stub_text
 
                     reply, _audit = mode_engine_gateway(
@@ -1199,11 +1202,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
                                 # Retrieve chunks scoped to these repo IDs
                                 success_repo_ids = [
-                                    r.id for r in loaded_repos
-                                    if r.ingestion_status == "success"
+                                    r.id for r in loaded_repos if r.ingestion_status == "success"
                                 ]
                                 failed_repos = [
-                                    r for r in loaded_repos
+                                    r
+                                    for r in loaded_repos
                                     if r.ingestion_status in ("failed", "pending", "running")
                                 ]
 
@@ -1217,8 +1220,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         repo_block = "\n\n---\nREPO CONTEXT:\n"
                                         for chunk in relevant_chunks:
                                             repo_block += (
-                                                f"\nFILE: {chunk.file_path}\n\n"
-                                                f"{chunk.content}\n"
+                                                f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
                                             )
                                         repo_block += "---\n"
                                         base_system_prompt += repo_block
@@ -1326,10 +1328,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             if relevant_chunks:
                                 file_block += "\n\n---\nREPO CONTEXT:\n"
                                 for chunk in relevant_chunks:
-                                    file_block += (
-                                        f"\nFILE: {chunk.file_path}\n\n"
-                                        f"{chunk.content}\n"
-                                    )
+                                    file_block += f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
                                 file_block += "---\n"
                             elif failed_repo_names:
                                 # PHASE 9: per-repo failure markers explain the empty result;

@@ -24,14 +24,82 @@ logger = logging.getLogger(__name__)
 # Common English stopwords to exclude from keyword extraction
 _STOPWORDS = frozenset(
     {
-        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
-        "of", "with", "by", "from", "as", "is", "was", "are", "were", "be",
-        "been", "being", "have", "has", "had", "do", "does", "did", "will",
-        "would", "could", "should", "may", "might", "shall", "can", "need",
-        "dare", "ought", "used", "it", "its", "this", "that", "these", "those",
-        "i", "me", "my", "we", "our", "you", "your", "he", "she", "his", "her",
-        "they", "them", "their", "what", "which", "who", "how", "when", "where",
-        "why", "if", "not", "no", "so", "up", "about", "out", "into",
+        "a",
+        "an",
+        "the",
+        "and",
+        "or",
+        "but",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "by",
+        "from",
+        "as",
+        "is",
+        "was",
+        "are",
+        "were",
+        "be",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "shall",
+        "can",
+        "need",
+        "dare",
+        "ought",
+        "used",
+        "it",
+        "its",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "me",
+        "my",
+        "we",
+        "our",
+        "you",
+        "your",
+        "he",
+        "she",
+        "his",
+        "her",
+        "they",
+        "them",
+        "their",
+        "what",
+        "which",
+        "who",
+        "how",
+        "when",
+        "where",
+        "why",
+        "if",
+        "not",
+        "no",
+        "so",
+        "up",
+        "about",
+        "out",
+        "into",
     }
 )
 
@@ -182,8 +250,7 @@ def _apply_diversity(
     if len(distinct_files) < min_distinct_files and len(selected) == max_total:
         # Try to swap the lowest-scored chunk from a dominant file for one from a new file
         remaining = [
-            (s, c) for s, c in scored
-            if c not in selected and c.file_path not in distinct_files
+            (s, c) for s, c in scored if c not in selected and c.file_path not in distinct_files
         ]
         if remaining:
             # Find the lowest-priority selected chunk from a file that has >1 chunk
@@ -296,4 +363,3 @@ def retrieve_relevant_chunks(
     fallback_scored = [(0, c) for c in all_chunks]
     selected = _apply_diversity(fallback_scored, max_total=max_chunks)
     return _apply_token_budget(selected, max_tokens=max_tokens)
-

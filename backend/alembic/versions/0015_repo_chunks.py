@@ -46,10 +46,7 @@ def downgrade() -> None:
     if "repo_chunks" not in existing_tables:
         return
 
-    existing_indexes = {
-        idx["name"]
-        for idx in inspector.get_indexes("repo_chunks")
-    }
+    existing_indexes = {idx["name"] for idx in inspector.get_indexes("repo_chunks")}
     if "ix_repo_chunks_chat_file_id" in existing_indexes:
         op.drop_index("ix_repo_chunks_chat_file_id", table_name="repo_chunks")
 

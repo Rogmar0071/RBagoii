@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -26,7 +25,6 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_finalization")
 
 from backend.app.main import app  # noqa: E402
-from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -69,9 +67,10 @@ def client() -> TestClient:
 class TestRepoFirstClassEntity:
     def test_repo_model_independent_of_chat_file(self):
         """Repo rows can be created without any ChatFile dependency."""
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.models import Repo
-        from sqlmodel import Session
 
         with Session(db_module.get_engine()) as session:
             repo = Repo(
@@ -95,9 +94,10 @@ class TestRepoFirstClassEntity:
 
     def test_repo_has_all_required_fields(self):
         """Repo model exposes owner, name, branch, status, files, chunks."""
+        from sqlmodel import Session, select
+
         import backend.app.database as db_module
         from backend.app.models import Repo
-        from sqlmodel import Session, select
 
         cid = str(uuid.uuid4())
         with Session(db_module.get_engine()) as session:
@@ -114,9 +114,7 @@ class TestRepoFirstClassEntity:
             session.add(repo)
             session.commit()
 
-            found = session.exec(
-                select(Repo).where(Repo.conversation_id == cid)
-            ).first()
+            found = session.exec(select(Repo).where(Repo.conversation_id == cid)).first()
             assert found is not None
             assert found.owner == "acme"
             assert found.name == "proj"
@@ -153,9 +151,10 @@ class TestAsyncIngestionEndpoint:
 
     def test_post_repos_creates_repo_row(self, client: TestClient):
         """POST /api/chat/{cid}/repos creates a Repo row in the DB."""
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.models import Repo
-        from sqlmodel import Session, select
 
         cid = str(uuid.uuid4())
 
@@ -207,9 +206,10 @@ class TestAsyncIngestionEndpoint:
 
     def test_ingestion_worker_creates_repo_chunks(self, client: TestClient):
         """run_repo_ingestion creates RepoChunk rows linked via repo_id."""
+        from sqlmodel import Session, select
+
         import backend.app.database as db_module
         from backend.app.models import Repo, RepoChunk
-        from sqlmodel import Session, select
 
         cid = str(uuid.uuid4())
         fake_files = [
@@ -238,9 +238,7 @@ class TestAsyncIngestionEndpoint:
             assert repo.total_files == 2
             assert repo.total_chunks > 0
 
-            chunks = session.exec(
-                select(RepoChunk).where(RepoChunk.repo_id == repo_id)
-            ).all()
+            chunks = session.exec(select(RepoChunk).where(RepoChunk.repo_id == repo_id)).all()
             assert len(chunks) > 0
             # All chunks reference the Repo via repo_id
             for chunk in chunks:
@@ -255,23 +253,32 @@ class TestAsyncIngestionEndpoint:
 class TestRetrievalScopedToRepoIds:
     def test_retrieve_by_repo_ids_not_chat_file_ids(self):
         """retrieve_relevant_chunks queries by repo_id when repo_ids supplied."""
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.models import Repo, RepoChunk
         from backend.app.repo_retrieval import retrieve_relevant_chunks
-        from sqlmodel import Session
 
         with Session(db_module.get_engine()) as session:
             repo_a = Repo(
                 conversation_id="conv1",
                 repo_url="https://github.com/a/r",
-                owner="a", name="r", branch="main",
-                ingestion_status="success", total_files=1, total_chunks=1,
+                owner="a",
+                name="r",
+                branch="main",
+                ingestion_status="success",
+                total_files=1,
+                total_chunks=1,
             )
             repo_b = Repo(
                 conversation_id="conv1",
                 repo_url="https://github.com/b/r",
-                owner="b", name="r", branch="main",
-                ingestion_status="success", total_files=1, total_chunks=1,
+                owner="b",
+                name="r",
+                branch="main",
+                ingestion_status="success",
+                total_files=1,
+                total_chunks=1,
             )
             session.add(repo_a)
             session.add(repo_b)
@@ -412,15 +419,14 @@ class TestEnhancedScoring:
 
 
 class TestRepoStatusBlock:
-    def test_repo_status_injected_into_prompt(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_repo_status_injected_into_prompt(self, client: TestClient, monkeypatch):
         """REPO STATUS block appears in AI system prompt when context.repos is sent."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.models import Repo
-        from sqlmodel import Session
 
         cid = str(uuid.uuid4())
         repo_id = uuid.uuid4()
@@ -471,15 +477,14 @@ class TestRepoStatusBlock:
         assert "status-repo" in prompt
         assert "success" in prompt
 
-    def test_failed_repo_injects_empty_marker(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_failed_repo_injects_empty_marker(self, client: TestClient, monkeypatch):
         """A failed Repo injects REPO_PRESENT_BUT_EMPTY and status block."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.models import Repo
-        from sqlmodel import Session
 
         cid = str(uuid.uuid4())
         repo_id = uuid.uuid4()
@@ -537,9 +542,10 @@ class TestRepoStatusBlock:
 class TestRetryEndpoint:
     def test_retry_resets_repo_to_pending(self, client: TestClient):
         """POST /api/repos/{id}/retry resets status to pending and re-ingests."""
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.models import Repo
-        from sqlmodel import Session
 
         cid = str(uuid.uuid4())
 
@@ -588,9 +594,10 @@ class TestRetryEndpoint:
 
     def test_delete_repo_removes_chunks(self, client: TestClient):
         """DELETE /api/chat/{cid}/repos/{id} removes Repo and its chunks."""
+        from sqlmodel import Session, select
+
         import backend.app.database as db_module
         from backend.app.models import Repo, RepoChunk
-        from sqlmodel import Session, select
 
         cid = str(uuid.uuid4())
         with patch(
@@ -633,9 +640,7 @@ class TestRetryEndpoint:
 
 
 class TestContextReposDrivesRetrieval:
-    def test_context_repos_injects_chunks_into_prompt(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_context_repos_injects_chunks_into_prompt(self, client: TestClient, monkeypatch):
         """When context.repos is sent, repo chunks appear in the AI prompt."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
@@ -684,9 +689,7 @@ class TestContextReposDrivesRetrieval:
         # Repo context or status must appear
         assert "REPO" in prompt or "app.py" in prompt or "greet" in prompt
 
-    def test_context_files_compat_path_still_works(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_context_files_compat_path_still_works(self, client: TestClient, monkeypatch):
         """The legacy context.files path (V1) still works alongside context.repos."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 

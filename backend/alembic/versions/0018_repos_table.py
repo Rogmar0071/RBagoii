@@ -37,9 +37,7 @@ def upgrade() -> None:
             sa.Column("owner", sa.Text(), nullable=False),
             sa.Column("name", sa.Text(), nullable=False),
             sa.Column("branch", sa.Text(), nullable=False, server_default="main"),
-            sa.Column(
-                "ingestion_status", sa.Text(), nullable=False, server_default="pending"
-            ),
+            sa.Column("ingestion_status", sa.Text(), nullable=False, server_default="pending"),
             sa.Column("total_files", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("total_chunks", sa.Integer(), nullable=False, server_default="0"),
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
@@ -86,9 +84,7 @@ def downgrade() -> None:
     # Restore chat_file_id NOT NULL, remove repo_id
     if "repo_chunks" in existing_tables:
         with op.batch_alter_table("repo_chunks", recreate="always") as batch_op:
-            existing_columns = {
-                col["name"] for col in inspector.get_columns("repo_chunks")
-            }
+            existing_columns = {col["name"] for col in inspector.get_columns("repo_chunks")}
             if "repo_id" in existing_columns:
                 batch_op.drop_column("repo_id")
             if "chat_file_id" in existing_columns:

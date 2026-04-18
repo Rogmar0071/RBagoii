@@ -257,9 +257,7 @@ async def upload_chat_file(
 
 
 @router.post(
-    "/{conversation_id}/files/chunks",
-    status_code=202,
-    dependencies=[Depends(require_auth)]
+    "/{conversation_id}/files/chunks", status_code=202, dependencies=[Depends(require_auth)]
 )
 async def upload_chat_file_chunk(
     conversation_id: str,

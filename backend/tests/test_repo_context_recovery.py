@@ -20,7 +20,6 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_repo_recovery")
 
 from backend.app.main import app  # noqa: E402
-from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -157,9 +156,7 @@ class TestIngestionStatusField:
 
 
 class TestContextFallback:
-    def test_fallback_loads_repo_when_context_files_absent(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_fallback_loads_repo_when_context_files_absent(self, client: TestClient, monkeypatch):
         """Backend injects REPO CONTEXT even when context.files is not in the request."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
@@ -204,9 +201,7 @@ class TestContextFallback:
         # Backend fallback must have injected repo context or file reference
         assert "fallback-repo" in captured_prompt[0] or "REPO CONTEXT" in captured_prompt[0]
 
-    def test_no_fallback_when_no_repos_in_conversation(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_no_fallback_when_no_repos_in_conversation(self, client: TestClient, monkeypatch):
         """Backend does not inject repo block when conversation has no repos."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
@@ -245,13 +240,11 @@ class TestContextFallback:
 
 
 class TestRepoPresentButEmpty:
-    def test_marker_injected_when_repo_has_no_chunks(
-        self, client: TestClient, monkeypatch
-    ):
+    def test_marker_injected_when_repo_has_no_chunks(self, client: TestClient, monkeypatch):
         """[REPO_PRESENT_BUT_EMPTY] appears in prompt when ingestion_status is None/failed."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
-        from sqlmodel import Session, select
+        from sqlmodel import Session
 
         import backend.app.database as db_module
         from backend.app.models import ChatFile
@@ -266,7 +259,7 @@ class TestRepoPresentButEmpty:
             filename="owner/ghost-repo",
             mime_type="application/x-git-repository",
             size_bytes=0,
-            object_key=f"github:https://github.com/owner/ghost-repo@main",
+            object_key="github:https://github.com/owner/ghost-repo@main",
             category="github_repo",
             included_in_context=True,
             extracted_text="Repo: owner/ghost-repo\nFiles: 0\nTop Files:\n",

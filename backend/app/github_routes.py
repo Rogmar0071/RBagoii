@@ -58,12 +58,14 @@ class GithubRepoResponse(BaseModel):
 # REPO_CONTEXT_FINALIZATION_V1 — Phase 1+2
 class RepoCreateRequest(BaseModel):
     """Request body for the first-class Repo ingestion endpoint."""
+
     repo_url: str  # Full GitHub URL, e.g., https://github.com/owner/repo
     branch: str = "main"
 
 
 class RepoStatusResponse(BaseModel):
     """Response from the first-class Repo API."""
+
     id: str
     conversation_id: str
     repo_url: str
@@ -79,6 +81,7 @@ class RepoStatusResponse(BaseModel):
 
 class GithubRepoListItem(BaseModel):
     """Repository information from GitHub API."""
+
     name: str
     full_name: str
     description: Optional[str]
@@ -108,7 +111,7 @@ async def get_authenticated_user():
     if not GITHUB_TOKEN:
         raise HTTPException(
             status_code=503,
-            detail="GitHub token not configured. Set GITHUB_TOKEN environment variable."
+            detail="GitHub token not configured. Set GITHUB_TOKEN environment variable.",
         )
 
     headers = {
@@ -119,16 +122,13 @@ async def get_authenticated_user():
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(
-                "https://api.github.com/user",
-                headers=headers,
-                timeout=10.0
+                "https://api.github.com/user", headers=headers, timeout=10.0
             )
 
             if response.status_code != 200:
                 logger.error(f"GitHub API error: {response.status_code} - {response.text}")
                 raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"GitHub API error: {response.text}"
+                    status_code=response.status_code, detail=f"GitHub API error: {response.text}"
                 )
 
             user_data = response.json()
@@ -178,8 +178,7 @@ async def list_user_repos(
             elif response.status_code != 200:
                 logger.error(f"GitHub API error: {response.status_code} - {response.text}")
                 raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"GitHub API error: {response.text}"
+                    status_code=response.status_code, detail=f"GitHub API error: {response.text}"
                 )
 
             repos_data = response.json()
@@ -232,9 +231,7 @@ async def _fetch_repo_file_list(
 
         base = f"https://api.github.com/repos/{owner}/{repo_name}/contents"
         url = f"{base}/{path}" if path else base
-        response = await client.get(
-            url, headers=headers, params={"ref": branch}, timeout=15.0
-        )
+        response = await client.get(url, headers=headers, params={"ref": branch}, timeout=15.0)
         if response.status_code != 200:
             raise RuntimeError(
                 f"GitHub API returned {response.status_code} for {url}: {response.text[:200]}"
@@ -357,11 +354,7 @@ async def add_github_repo(
     file_paths = [path for path, _ in file_list]
     top_paths = file_paths[:10]
     top_files_lines = "\n".join(f"- {p}" for p in top_paths)
-    summary = (
-        f"Repo: {owner}/{repo_name}\n"
-        f"Files: {len(file_paths)}\n"
-        f"Top Files:\n{top_files_lines}"
-    )
+    summary = f"Repo: {owner}/{repo_name}\nFiles: {len(file_paths)}\nTop Files:\n{top_files_lines}"
 
     github_file = ChatFile(
         id=uuid.uuid4(),
@@ -583,9 +576,7 @@ def list_repos(
     List all first-class Repo entities linked to the conversation.
     """
     stmt = (
-        select(Repo)
-        .where(Repo.conversation_id == conversation_id)
-        .order_by(Repo.created_at.desc())
+        select(Repo).where(Repo.conversation_id == conversation_id).order_by(Repo.created_at.desc())
     )
     repos = session.exec(stmt).all()
     return [
@@ -695,4 +686,3 @@ def retry_repo_ingestion(
         created_at=repo.created_at.isoformat(),
         updated_at=repo.updated_at.isoformat(),
     )
-
