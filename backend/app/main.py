@@ -434,12 +434,13 @@ def _enqueue_extraction(session_id: str, clip_path: str) -> None:
             from redis import Redis
             from rq import Queue as RQueue
 
+            from backend.app.jobs import run_extraction_job
             from backend.app.worker import _assert_importable
 
-            _assert_importable(_run_extraction)
+            _assert_importable(run_extraction_job)
             conn = Redis.from_url(redis_url)
             q = RQueue("default", connection=conn)
-            q.enqueue(_run_extraction, session_id, job_timeout=1800)
+            q.enqueue(run_extraction_job, session_id, job_timeout=1800)
             return
         except Exception as exc:
             logger.warning("RQ unavailable (%s); falling back to thread pool.", exc)
