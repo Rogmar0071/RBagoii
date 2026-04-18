@@ -43,6 +43,7 @@ def execute_job(job_name: str, *args) -> object:
     # Lazy import avoids circular-import issues at module load time.
     from backend.app.job_registry import JOB_REGISTRY
 
+    print(f"[JOB_RUNNER] executing: {job_name}")
     fn = JOB_REGISTRY.get(job_name)
     if fn is None:
         raise RuntimeError(

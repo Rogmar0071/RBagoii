@@ -44,6 +44,7 @@ JOB_REGISTRY: dict[str, object] = {
     "analyze_repo": run_analyze_repo_step,
     "repo_ingestion": run_repo_ingestion,
     # Canonical function-name keys (used by execute_job dispatcher)
+    "run_repo_ingestion": run_repo_ingestion,
     "run_extraction_job": run_extraction_job,
     "process_analysis_job": process_analysis_job,
 }
