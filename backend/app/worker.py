@@ -99,6 +99,74 @@ def _redis_queue(name: str = "default"):
         return None
 
 
+def _assert_importable(fn) -> None:
+    """Raise ValueError if *fn* is not a module-level importable function.
+
+    RQ serialises jobs by storing ``fn.__module__`` and ``fn.__qualname__``.
+    Lambdas, closures, and locally-defined functions cannot be imported by the
+    worker process and will cause ``DeserializationError`` at execution time.
+
+    CONTRACT: MQP-CONTRACT:RQ_QUEUE_RESET_AND_IMPORT_ENFORCEMENT_V1
+    """
+    qualname = getattr(fn, "__qualname__", "") or ""
+    name = getattr(fn, "__name__", "") or ""
+
+    # Lambdas have __name__ == '<lambda>'
+    if name == "<lambda>":
+        raise ValueError(
+            f"RQ import enforcement: lambdas cannot be enqueued. "
+            f"Define a module-level function instead. Got: {fn!r}"
+        )
+
+    # Closures / nested functions contain '<locals>' in their qualified name
+    if "<locals>" in qualname:
+        raise ValueError(
+            f"RQ import enforcement: closures and nested functions cannot be "
+            f"enqueued. Define a module-level function instead. Got: {fn!r}"
+        )
+
+    # The qualified name must not contain '<' at all (covers <lambda>, <locals>,
+    # <listcomp>, etc.)
+    if "<" in qualname:
+        raise ValueError(
+            f"RQ import enforcement: function {fn!r} is not a module-level "
+            f"importable callable (qualname={qualname!r})."
+        )
+
+
+def flush_queue(queue_names: list = None) -> None:
+    """Empty the named RQ queues to remove stale or invalid serialised jobs.
+
+    This MUST be called on application startup to purge any jobs whose
+    function references can no longer be deserialised (e.g. jobs created
+    against a previous code version that used lambdas or closures).
+
+    CONTRACT: MQP-CONTRACT:RQ_QUEUE_RESET_AND_IMPORT_ENFORCEMENT_V1
+    """
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if not redis_url:
+        return
+
+    if queue_names is None:
+        queue_names = ["default"]
+
+    try:
+        from redis import Redis
+        from rq import Queue
+
+        conn = Redis.from_url(redis_url)
+        for name in queue_names:
+            q = Queue(name, connection=conn)
+            deleted = q.empty()
+            logger.info(
+                "RQ queue reset: emptied queue %r (%s jobs removed).",
+                name,
+                deleted,
+            )
+    except Exception as exc:  # pragma: no cover – connection errors handled gracefully
+        logger.warning("RQ queue flush failed (non-fatal): %s", exc)
+
+
 def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
     """
     Enqueue *job_type* for *job_id*.
@@ -125,6 +193,7 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
         fn = _JOB_FUNCTIONS.get(job_type)
         if fn is None:
             raise ValueError(f"Unknown job type: {job_type!r}")
+        _assert_importable(fn)
         rq_job = q.enqueue(fn, job_id, job_timeout=job_timeout, result_ttl=result_ttl)
         return rq_job.id
 

@@ -171,6 +171,16 @@ def _startup_init_db() -> None:
         except Exception as exc:
             logger.warning("DB init failed (non-fatal): %s", exc)
 
+    # Flush the RQ queue on startup to purge any stale or invalid serialised
+    # jobs (e.g. jobs referencing lambdas or closures from a previous version).
+    # CONTRACT: MQP-CONTRACT:RQ_QUEUE_RESET_AND_IMPORT_ENFORCEMENT_V1
+    try:
+        from backend.app.worker import flush_queue
+
+        flush_queue()
+    except Exception as exc:
+        logger.warning("RQ queue flush failed on startup (non-fatal): %s", exc)
+
     # Start the background cleanup daemon thread (non-blocking).
     _cleanup_thread = threading.Thread(
         target=_cleanup_old_uploads, daemon=True, name="upload-cleanup"
@@ -434,6 +444,9 @@ def _enqueue_extraction(session_id: str, clip_path: str) -> None:
             from redis import Redis
             from rq import Queue as RQueue
 
+            from backend.app.worker import _assert_importable
+
+            _assert_importable(_run_extraction)
             conn = Redis.from_url(redis_url)
             q = RQueue("default", connection=conn)
             q.enqueue(_run_extraction, session_id, job_timeout=1800)

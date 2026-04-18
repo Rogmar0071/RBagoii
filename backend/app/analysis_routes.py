@@ -79,7 +79,9 @@ def _enqueue_analysis_job(job_id: str, file_path: str) -> None:
             from rq import Queue as RQueue
 
             from backend.app.analysis_job_processor import process_analysis_job
+            from backend.app.worker import _assert_importable
 
+            _assert_importable(process_analysis_job)
             conn = Redis.from_url(redis_url)
             q = RQueue("default", connection=conn)
             q.enqueue(process_analysis_job, job_id, job_timeout=1800)
