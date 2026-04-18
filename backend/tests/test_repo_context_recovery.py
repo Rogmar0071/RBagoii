@@ -118,6 +118,7 @@ class TestIngestionTruthLock:
 
         assert resp.status_code == 201
         body = resp.json()
+        assert body["repo_id"] == body["id"]
         assert body["ingestion_status"] == "success"
 
 
@@ -147,6 +148,7 @@ class TestIngestionStatusField:
         assert list_resp.status_code == 200
         repos = list_resp.json()
         assert len(repos) == 1
+        assert repos[0]["repo_id"] == repos[0]["id"]
         assert repos[0]["ingestion_status"] == "success"
 
 

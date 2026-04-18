@@ -93,9 +93,10 @@ class GithubRepoAdapter(
                     "pending" -> "${statusEmoji} Pending ingestion"
                     else      -> "${statusEmoji} ${repo.ingestionStatus}"
                 }
+                val runtimeLabel = repo.backendId?.let { " | repo_id=$it" }.orEmpty()
                 // Reuse tvRepoLanguage-adjacent space if available; fallback to description
                 binding.tvRepoDescription.text =
-                    "${binding.tvRepoDescription.text}  |  $statusLabel"
+                    "${binding.tvRepoDescription.text}  |  $statusLabel$runtimeLabel"
             }
 
             // Remove listener before setting checked state to avoid triggering callback

@@ -48,6 +48,7 @@ class GithubRepoRequest(BaseModel):
 
 class GithubRepoResponse(BaseModel):
     id: str
+    repo_id: str
     conversation_id: str
     repo_url: str
     branch: str
@@ -67,6 +68,7 @@ class RepoStatusResponse(BaseModel):
     """Response from the first-class Repo API."""
 
     id: str
+    repo_id: str
     conversation_id: str
     repo_url: str
     owner: str
@@ -393,6 +395,7 @@ async def add_github_repo(
 
     return GithubRepoResponse(
         id=str(github_file.id),
+        repo_id=str(github_file.id),
         conversation_id=github_file.conversation_id,
         repo_url=repo.repo_url,
         branch=repo.branch,
@@ -428,6 +431,7 @@ def list_github_repos(
             result.append(
                 GithubRepoResponse(
                     id=str(repo.id),
+                    repo_id=str(repo.id),
                     conversation_id=repo.conversation_id,
                     repo_url=repo_url,
                     branch=branch,
@@ -549,6 +553,7 @@ def create_repo_ingestion_job(
 
     return RepoStatusResponse(
         id=str(new_repo.id),
+        repo_id=str(new_repo.id),
         conversation_id=new_repo.conversation_id,
         repo_url=new_repo.repo_url,
         owner=new_repo.owner,
@@ -582,6 +587,7 @@ def list_repos(
     return [
         RepoStatusResponse(
             id=str(r.id),
+            repo_id=str(r.id),
             conversation_id=r.conversation_id,
             repo_url=r.repo_url,
             owner=r.owner,
@@ -675,6 +681,7 @@ def retry_repo_ingestion(
 
     return RepoStatusResponse(
         id=str(repo.id),
+        repo_id=str(repo.id),
         conversation_id=repo.conversation_id,
         repo_url=repo.repo_url,
         owner=repo.owner,

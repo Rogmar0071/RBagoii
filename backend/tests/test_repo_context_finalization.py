@@ -14,6 +14,7 @@ Phases covered:
 
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from unittest.mock import AsyncMock, patch
@@ -147,6 +148,7 @@ class TestAsyncIngestionEndpoint:
         assert resp.status_code == 202
         body = resp.json()
         assert "id" in body
+        assert body["repo_id"] == body["id"]
         assert body["status"] in ("pending", "running", "success", "failed")
 
     def test_post_repos_creates_repo_row(self, client: TestClient):
@@ -198,6 +200,7 @@ class TestAsyncIngestionEndpoint:
         repos = list_resp.json()
         assert len(repos) == 1
         r = repos[0]
+        assert r["repo_id"] == r["id"]
         assert r["owner"] == "owner"
         assert r["name"] == "testrepo"
         assert "status" in r
@@ -419,7 +422,7 @@ class TestEnhancedScoring:
 
 
 class TestRepoStatusBlock:
-    def test_repo_status_injected_into_prompt(self, client: TestClient, monkeypatch):
+    def test_repo_status_injected_into_prompt(self, client: TestClient, monkeypatch, capsys):
         """REPO STATUS block appears in AI system prompt when context.repos is sent."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
@@ -476,9 +479,13 @@ class TestRepoStatusBlock:
         assert "REPO STATUS" in prompt
         assert "status-repo" in prompt
         assert "success" in prompt
+        stdout = capsys.readouterr().out
+        assert "CTX_REPOS:" in stdout
+        assert "CTX_FILES:" in stdout
+        assert "REPO_CHUNKS:" in stdout
 
-    def test_failed_repo_injects_empty_marker(self, client: TestClient, monkeypatch):
-        """A failed Repo injects REPO_FAILED and status block."""
+    def test_failed_repo_without_chunks_returns_runtime_failure(self, client: TestClient, monkeypatch):
+        """A failed Repo with no chunks fails fast instead of silently continuing."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -506,13 +513,7 @@ class TestRepoStatusBlock:
 
         import backend.app.chat_routes as cr
 
-        captured: list[str] = []
-
-        def _fake_openai(msg, key, history=None, system_prompt=None):
-            captured.append(system_prompt or "")
-            return "ok"
-
-        with patch.object(cr, "_call_openai_chat", side_effect=_fake_openai):
+        with patch.object(cr, "_call_openai_chat", return_value="ok") as fake_openai:
             resp = client.post(
                 "/api/chat",
                 json={
@@ -529,12 +530,15 @@ class TestRepoStatusBlock:
             )
 
         assert resp.status_code == 200
-        prompt = captured[0]
-        assert "[REPO_FAILED:" in prompt
-        assert "failed" in prompt
+        error_data = json.loads(resp.json()["reply"])
+        assert error_data["error"] == "SYSTEM_FAILURE"
+        assert "REPO_CONTEXT_EMPTY" in error_data["detail"]
+        assert fake_openai.call_count == 0
 
-    def test_processing_repo_injects_processing_marker(self, client: TestClient, monkeypatch):
-        """A pending/running Repo injects REPO_PROCESSING and status block."""
+    def test_processing_repo_without_chunks_returns_runtime_failure(
+        self, client: TestClient, monkeypatch
+    ):
+        """A pending/running Repo with no chunks fails fast instead of silently continuing."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -562,13 +566,7 @@ class TestRepoStatusBlock:
 
         import backend.app.chat_routes as cr
 
-        captured: list[str] = []
-
-        def _fake_openai(msg, key, history=None, system_prompt=None):
-            captured.append(system_prompt or "")
-            return "ok"
-
-        with patch.object(cr, "_call_openai_chat", side_effect=_fake_openai):
+        with patch.object(cr, "_call_openai_chat", return_value="ok") as fake_openai:
             resp = client.post(
                 "/api/chat",
                 json={
@@ -585,9 +583,10 @@ class TestRepoStatusBlock:
             )
 
         assert resp.status_code == 200
-        prompt = captured[0]
-        assert "[REPO_PROCESSING:" in prompt
-        assert "running" in prompt
+        error_data = json.loads(resp.json()["reply"])
+        assert error_data["error"] == "SYSTEM_FAILURE"
+        assert "REPO_CONTEXT_EMPTY" in error_data["detail"]
+        assert fake_openai.call_count == 0
 
 
 # ---------------------------------------------------------------------------

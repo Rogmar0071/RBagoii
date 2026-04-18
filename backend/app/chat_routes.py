@@ -1172,6 +1172,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # build the repo context block from Repo entities directly.
                     # Phase 6: always inject REPO STATUS for AI awareness.
                     # -------------------------------------------------------
+                    repo_chunks = []
                     if context.repos and db is not None:
                         active_repo_ids: list[uuid.UUID] = []
                         for rid_str in context.repos:
@@ -1201,27 +1202,26 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 base_system_prompt += status_block
 
                                 # Retrieve chunks scoped to these repo IDs
-                                success_repo_ids = [
-                                    r.id for r in loaded_repos if r.ingestion_status == "success"
-                                ]
-                                processing_repos = [
-                                    r
-                                    for r in loaded_repos
-                                    if r.ingestion_status in ("pending", "running")
-                                ]
-                                failed_repos = [
-                                    r for r in loaded_repos if r.ingestion_status == "failed"
-                                ]
+                                success_repo_ids: list[uuid.UUID] = []
+                                processing_repos: list[Repo] = []
+                                failed_repos: list[Repo] = []
+                                for repo_obj in loaded_repos:
+                                    if repo_obj.ingestion_status == "success":
+                                        success_repo_ids.append(repo_obj.id)
+                                    elif repo_obj.ingestion_status in ("pending", "running"):
+                                        processing_repos.append(repo_obj)
+                                    elif repo_obj.ingestion_status == "failed":
+                                        failed_repos.append(repo_obj)
 
                                 if success_repo_ids:
-                                    relevant_chunks = retrieve_relevant_chunks(
+                                    repo_chunks = retrieve_relevant_chunks(
                                         user_query=message,
                                         db=db,
                                         repo_ids=success_repo_ids,
                                     )
-                                    if relevant_chunks:
+                                    if repo_chunks:
                                         repo_block = "\n\n---\nREPO CONTEXT:\n"
-                                        for chunk in relevant_chunks:
+                                        for chunk in repo_chunks:
                                             repo_block += (
                                                 f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
                                             )
@@ -1238,6 +1238,14 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         f"\n[REPO_FAILED: {r.owner}/{r.name}] "
                                         f"status={r.ingestion_status}\n"
                                     )
+
+                    print("CTX_REPOS:", context.repos)
+                    print("CTX_FILES:", context.files)
+                    print("REPO_CHUNKS:", len(repo_chunks) if repo_chunks else 0)
+                    if context.repos and not repo_chunks:
+                        raise Exception(
+                            f"REPO_CONTEXT_EMPTY: repos={context.repos} but no chunks found"
+                        )
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
