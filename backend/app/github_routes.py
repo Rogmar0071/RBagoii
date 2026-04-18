@@ -524,93 +524,22 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
 
 @router.post(
     "/api/chat/{conversation_id}/repos",
-    status_code=202,
+    status_code=410,
     dependencies=[Depends(require_auth)],
 )
 def create_repo_ingestion_job(
     conversation_id: str,
     repo: RepoCreateRequest,
     session: Session = Depends(get_session),
-) -> RepoStatusResponse:
+) -> None:
     """
-    REPO_CONTEXT_FINALIZATION_V1 — Phase 2.
+    GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1 — DEPRECATED.
 
-    Create a first-class Repo entity (status="pending") and immediately
-    return the repo_id.  Ingestion is processed asynchronously by the
-    worker (run_repo_ingestion).
-
-    Invariant: API NEVER blocks on GitHub fetch.
+    This endpoint has been permanently retired.  Use POST /api/repos/add instead.
     """
-    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
-    if not match:
-        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
-
-    owner, repo_name = match.groups()
-    repo_name = repo_name.rstrip(".git")
-
-    # LAW 1 / I2 — SINGLE INGESTION RULE: identity = (repo_url, branch)
-    # globally.  If a Repo with the same (repo_url, branch) already exists
-    # (regardless of which conversation created it), return it immediately
-    # without creating a duplicate or re-enqueueing ingestion.
-    existing = session.exec(
-        select(Repo).where(
-            Repo.repo_url == repo.repo_url,
-            Repo.branch == repo.branch,
-        )
-    ).first()
-    if existing is not None:
-        # Return the request's conversation_id (path param) rather than
-        # existing.conversation_id: the Repo is now a global asset whose
-        # stored conversation_id may be NULL (created via /api/repos/add) or
-        # belong to a different conversation.  The calling context already
-        # knows its own conversation_id; echoing it back keeps the response
-        # contract consistent for this legacy endpoint.
-        return RepoStatusResponse(
-            id=str(existing.id),
-            repo_id=str(existing.id),
-            conversation_id=conversation_id,
-            repo_url=existing.repo_url,
-            owner=existing.owner,
-            name=existing.name,
-            branch=existing.branch,
-            status=existing.ingestion_status,
-            total_files=existing.total_files,
-            chunk_count=existing.total_chunks,
-            created_at=existing.created_at.isoformat(),
-            updated_at=existing.updated_at.isoformat(),
-        )
-
-    new_repo = Repo(
-        id=uuid.uuid4(),
-        conversation_id=conversation_id,
-        repo_url=repo.repo_url,
-        owner=owner,
-        name=repo_name,
-        branch=repo.branch,
-        ingestion_status="pending",
-        total_files=0,
-        total_chunks=0,
-    )
-    session.add(new_repo)
-    session.commit()
-    session.refresh(new_repo)
-
-    # Trigger ingestion asynchronously
-    _enqueue_repo_ingestion(str(new_repo.id))
-
-    return RepoStatusResponse(
-        id=str(new_repo.id),
-        repo_id=str(new_repo.id),
-        conversation_id=new_repo.conversation_id,
-        repo_url=new_repo.repo_url,
-        owner=new_repo.owner,
-        name=new_repo.name,
-        branch=new_repo.branch,
-        status=new_repo.ingestion_status,
-        total_files=new_repo.total_files,
-        chunk_count=new_repo.total_chunks,
-        created_at=new_repo.created_at.isoformat(),
-        updated_at=new_repo.updated_at.isoformat(),
+    raise HTTPException(
+        status_code=410,
+        detail="DEPRECATED — use /api/repos/add",
     )
 
 
@@ -624,18 +553,21 @@ def list_repos(
     session: Session = Depends(get_session),
 ) -> List[RepoStatusResponse]:
     """
-    REPO_CONTEXT_FINALIZATION_V1.
-    List all first-class Repo entities linked to the conversation.
+    GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1.
+    List all Repo entities bound to the conversation via ConversationRepo.
     """
     stmt = (
-        select(Repo).where(Repo.conversation_id == conversation_id).order_by(Repo.created_at.desc())
+        select(Repo)
+        .join(ConversationRepo, ConversationRepo.repo_id == Repo.id)
+        .where(ConversationRepo.conversation_id == conversation_id)
+        .order_by(Repo.created_at.desc())
     )
     repos = session.exec(stmt).all()
     return [
         RepoStatusResponse(
             id=str(r.id),
             repo_id=str(r.id),
-            conversation_id=r.conversation_id,
+            conversation_id=conversation_id,
             repo_url=r.repo_url,
             owner=r.owner,
             name=r.name,
@@ -661,19 +593,17 @@ def remove_repo(
     session: Session = Depends(get_session),
 ):
     """
-    REPO_CONTEXT_FINALIZATION_V1.
+    GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1.
     Remove a first-class Repo and all its RepoChunk rows.
+    The conversation_id path parameter is accepted for API compatibility but
+    is not used to filter the lookup — repos are now global assets.
     """
     try:
         repo_uuid = uuid.UUID(repo_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid repo ID")
 
-    stmt = select(Repo).where(
-        Repo.id == repo_uuid,
-        Repo.conversation_id == conversation_id,
-    )
-    repo = session.exec(stmt).first()
+    repo = session.get(Repo, repo_uuid)
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
@@ -681,6 +611,11 @@ def remove_repo(
     chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
     for chunk in session.exec(chunk_stmt).all():
         session.delete(chunk)
+
+    # Remove ConversationRepo bindings
+    binding_stmt = select(ConversationRepo).where(ConversationRepo.repo_id == repo_uuid)
+    for binding in session.exec(binding_stmt).all():
+        session.delete(binding)
 
     session.delete(repo)
     session.commit()

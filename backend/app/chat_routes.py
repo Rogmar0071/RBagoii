@@ -1201,51 +1201,40 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     )
                                 base_system_prompt += status_block
 
-                                # Retrieve chunks scoped to these repo IDs
-                                success_repo_ids: list[uuid.UUID] = []
-                                processing_repos: list[Repo] = []
-                                failed_repos: list[Repo] = []
+                                # Strict enforcement — any non-success status
+                                # blocks chat execution immediately (LAW 6).
                                 for repo_obj in loaded_repos:
-                                    if repo_obj.ingestion_status == "success":
-                                        success_repo_ids.append(repo_obj.id)
-                                    elif repo_obj.ingestion_status in ("pending", "running"):
-                                        processing_repos.append(repo_obj)
-                                    elif repo_obj.ingestion_status == "failed":
-                                        failed_repos.append(repo_obj)
+                                    print("REPO_STATUS:", repo_obj.ingestion_status)
+                                    if repo_obj.ingestion_status != "success":
+                                        raise Exception(
+                                            f"REPO_NOT_READY: {repo_obj.id}"
+                                            f" status={repo_obj.ingestion_status}"
+                                        )
 
-                                if success_repo_ids:
-                                    repo_chunks = retrieve_relevant_chunks(
-                                        user_query=message,
-                                        db=db,
-                                        repo_ids=success_repo_ids,
-                                    )
-                                    if repo_chunks:
-                                        repo_block = "\n\n---\nREPO CONTEXT:\n"
-                                        for chunk in repo_chunks:
-                                            repo_block += (
-                                                f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
-                                            )
-                                        repo_block += "---\n"
-                                        base_system_prompt += repo_block
-                                for r in processing_repos:
-                                    base_system_prompt += (
-                                        f"\n[REPO_PROCESSING: {r.owner}/{r.name}] "
-                                        f"status={r.ingestion_status}\n"
+                                repo_chunks = retrieve_relevant_chunks(
+                                    user_query=message,
+                                    db=db,
+                                    repo_ids=[r.id for r in loaded_repos],
+                                )
+
+                                print("REPO_CHUNKS:", len(repo_chunks))
+
+                                if not repo_chunks:
+                                    raise Exception(
+                                        f"REPO_CONTEXT_EMPTY: repos={context.repos}"
+                                        " but no chunks found"
                                     )
 
-                                for r in failed_repos:
-                                    base_system_prompt += (
-                                        f"\n[REPO_FAILED: {r.owner}/{r.name}] "
-                                        f"status={r.ingestion_status}\n"
+                                repo_block = "\n\n---\nREPO CONTEXT:\n"
+                                for chunk in repo_chunks:
+                                    repo_block += (
+                                        f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
                                     )
+                                repo_block += "---\n"
+                                base_system_prompt += repo_block
 
                     print("CTX_REPOS:", context.repos)
                     print("CTX_FILES:", context.files)
-                    print("REPO_CHUNKS:", len(repo_chunks) if repo_chunks else 0)
-                    if context.repos and not repo_chunks:
-                        raise Exception(
-                            f"REPO_CONTEXT_EMPTY: repos={context.repos} but no chunks found"
-                        )
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
