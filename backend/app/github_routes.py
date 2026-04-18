@@ -26,7 +26,7 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile, Repo, RepoChunk
+from backend.app.models import ChatFile, ConversationRepo, Repo, RepoChunk
 from backend.app.repo_retrieval import _split_into_chunks
 
 router = APIRouter()
@@ -69,7 +69,7 @@ class RepoStatusResponse(BaseModel):
 
     id: str
     repo_id: str
-    conversation_id: str
+    conversation_id: Optional[str]
     repo_url: str
     owner: str
     name: str
@@ -79,6 +79,21 @@ class RepoStatusResponse(BaseModel):
     chunk_count: int
     created_at: str
     updated_at: str
+
+
+class RepoAddRequest(BaseModel):
+    """Request body for the global repo upsert + bind endpoint."""
+
+    conversation_id: str
+    repo_url: str
+    branch: str = "main"
+
+
+class RepoAddResponse(BaseModel):
+    """Response from POST /api/repos/add."""
+
+    repo_id: str
+    status: str  # pending / running / success / failed
 
 
 class GithubRepoListItem(BaseModel):
@@ -509,61 +524,22 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
 
 @router.post(
     "/api/chat/{conversation_id}/repos",
-    status_code=202,
+    status_code=410,
     dependencies=[Depends(require_auth)],
 )
 def create_repo_ingestion_job(
     conversation_id: str,
     repo: RepoCreateRequest,
     session: Session = Depends(get_session),
-) -> RepoStatusResponse:
+) -> None:
     """
-    REPO_CONTEXT_FINALIZATION_V1 — Phase 2.
+    GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1 — DEPRECATED.
 
-    Create a first-class Repo entity (status="pending") and immediately
-    return the repo_id.  Ingestion is processed asynchronously by the
-    worker (run_repo_ingestion).
-
-    Invariant: API NEVER blocks on GitHub fetch.
+    This endpoint has been permanently retired.  Use POST /api/repos/add instead.
     """
-    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
-    if not match:
-        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
-
-    owner, repo_name = match.groups()
-    repo_name = repo_name.rstrip(".git")
-
-    new_repo = Repo(
-        id=uuid.uuid4(),
-        conversation_id=conversation_id,
-        repo_url=repo.repo_url,
-        owner=owner,
-        name=repo_name,
-        branch=repo.branch,
-        ingestion_status="pending",
-        total_files=0,
-        total_chunks=0,
-    )
-    session.add(new_repo)
-    session.commit()
-    session.refresh(new_repo)
-
-    # Trigger ingestion asynchronously
-    _enqueue_repo_ingestion(str(new_repo.id))
-
-    return RepoStatusResponse(
-        id=str(new_repo.id),
-        repo_id=str(new_repo.id),
-        conversation_id=new_repo.conversation_id,
-        repo_url=new_repo.repo_url,
-        owner=new_repo.owner,
-        name=new_repo.name,
-        branch=new_repo.branch,
-        status=new_repo.ingestion_status,
-        total_files=new_repo.total_files,
-        chunk_count=new_repo.total_chunks,
-        created_at=new_repo.created_at.isoformat(),
-        updated_at=new_repo.updated_at.isoformat(),
+    raise HTTPException(
+        status_code=410,
+        detail="DEPRECATED — use /api/repos/add",
     )
 
 
@@ -577,18 +553,21 @@ def list_repos(
     session: Session = Depends(get_session),
 ) -> List[RepoStatusResponse]:
     """
-    REPO_CONTEXT_FINALIZATION_V1.
-    List all first-class Repo entities linked to the conversation.
+    GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1.
+    List all Repo entities bound to the conversation via ConversationRepo.
     """
     stmt = (
-        select(Repo).where(Repo.conversation_id == conversation_id).order_by(Repo.created_at.desc())
+        select(Repo)
+        .join(ConversationRepo, ConversationRepo.repo_id == Repo.id)
+        .where(ConversationRepo.conversation_id == conversation_id)
+        .order_by(Repo.created_at.desc())
     )
     repos = session.exec(stmt).all()
     return [
         RepoStatusResponse(
             id=str(r.id),
             repo_id=str(r.id),
-            conversation_id=r.conversation_id,
+            conversation_id=conversation_id,
             repo_url=r.repo_url,
             owner=r.owner,
             name=r.name,
@@ -614,19 +593,17 @@ def remove_repo(
     session: Session = Depends(get_session),
 ):
     """
-    REPO_CONTEXT_FINALIZATION_V1.
+    GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1.
     Remove a first-class Repo and all its RepoChunk rows.
+    The conversation_id path parameter is accepted for API compatibility but
+    is not used to filter the lookup — repos are now global assets.
     """
     try:
         repo_uuid = uuid.UUID(repo_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid repo ID")
 
-    stmt = select(Repo).where(
-        Repo.id == repo_uuid,
-        Repo.conversation_id == conversation_id,
-    )
-    repo = session.exec(stmt).first()
+    repo = session.get(Repo, repo_uuid)
     if not repo:
         raise HTTPException(status_code=404, detail="Repository not found")
 
@@ -634,6 +611,11 @@ def remove_repo(
     chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
     for chunk in session.exec(chunk_stmt).all():
         session.delete(chunk)
+
+    # Remove ConversationRepo bindings
+    binding_stmt = select(ConversationRepo).where(ConversationRepo.repo_id == repo_uuid)
+    for binding in session.exec(binding_stmt).all():
+        session.delete(binding)
 
     session.delete(repo)
     session.commit()
@@ -692,4 +674,94 @@ def retry_repo_ingestion(
         chunk_count=repo.total_chunks,
         created_at=repo.created_at.isoformat(),
         updated_at=repo.updated_at.isoformat(),
+    )
+
+
+# ===========================================================================
+# Global repo upsert + conversation binding
+# GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1
+# ===========================================================================
+
+
+@router.post(
+    "/api/repos/add",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def add_repo(
+    req: RepoAddRequest,
+    session: Session = Depends(get_session),
+) -> RepoAddResponse:
+    """
+    GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1.
+
+    Step 1 — Global upsert: find or create the Repo by (repo_url, branch).
+    Step 2 — Conversation binding: create a ConversationRepo row if one does
+    not already exist for this (conversation_id, repo_id) pair.
+
+    Invariants:
+    - Repo is ingested AT MOST ONCE (LAW 2).
+    - Ingestion is only triggered for newly created Repos.
+    - The binding is idempotent (UNIQUE constraint on conversation_repos).
+    """
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+
+    owner, repo_name = match.groups()
+    repo_name = repo_name.rstrip(".git")
+
+    # ------------------------------------------------------------------
+    # Step 1: global upsert on (repo_url, branch)
+    # ------------------------------------------------------------------
+    repo = session.exec(
+        select(Repo).where(
+            Repo.repo_url == req.repo_url,
+            Repo.branch == req.branch,
+        )
+    ).first()
+
+    newly_created = False
+    if repo is None:
+        repo = Repo(
+            id=uuid.uuid4(),
+            repo_url=req.repo_url,
+            owner=owner,
+            name=repo_name,
+            branch=req.branch,
+            ingestion_status="pending",
+            total_files=0,
+            total_chunks=0,
+        )
+        session.add(repo)
+        session.commit()
+        session.refresh(repo)
+        newly_created = True
+
+    # ------------------------------------------------------------------
+    # Step 2: bind to conversation (idempotent)
+    # ------------------------------------------------------------------
+    existing_binding = session.exec(
+        select(ConversationRepo).where(
+            ConversationRepo.conversation_id == req.conversation_id,
+            ConversationRepo.repo_id == repo.id,
+        )
+    ).first()
+
+    if existing_binding is None:
+        binding = ConversationRepo(
+            id=uuid.uuid4(),
+            conversation_id=req.conversation_id,
+            repo_id=repo.id,
+        )
+        session.add(binding)
+        session.commit()
+
+    # Trigger ingestion only for newly created repos (LAW 2).
+    if newly_created:
+        _enqueue_repo_ingestion(str(repo.id))
+
+    return RepoAddResponse(
+        repo_id=str(repo.id),
+        status=repo.ingestion_status,
     )

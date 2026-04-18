@@ -23,11 +23,11 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Request as FastAPIRequest
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -1167,10 +1167,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         base_system_prompt += "\n\n" + artifact_block
 
                     # -------------------------------------------------------
-                    # REPO_CONTEXT_FINALIZATION_V1 — Phase 9:
-                    # When context.repos (first-class Repo IDs) are present,
-                    # build the repo context block from Repo entities directly.
-                    # Phase 6: always inject REPO STATUS for AI awareness.
+                    # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3 — Section 5 & 7:
+                    # Strict validation: 409 on any non-ready repo.
+                    # Timeout safety: running → failed after threshold (§8).
                     # -------------------------------------------------------
                     repo_chunks = []
                     if context.repos and db is not None:
@@ -1181,11 +1180,29 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             except ValueError:
                                 pass
 
+                        print("CTX_REPOS:", active_repo_ids)
+
                         if active_repo_ids:
+                            _RUNNING_TIMEOUT = timedelta(minutes=15)
+
                             loaded_repos: list[Repo] = []
                             for rid in active_repo_ids:
                                 repo_obj = db.get(Repo, rid)
                                 if repo_obj:
+                                    # Timeout safety: stuck "running" → "failed"
+                                    if repo_obj.ingestion_status == "running":
+                                        # updated_at may be stored as a naive datetime in SQLite;
+                                        # coerce to UTC-aware for safe arithmetic.
+                                        updated = repo_obj.updated_at
+                                        if updated.tzinfo is None:
+                                            updated = updated.replace(tzinfo=timezone.utc)
+                                        age = datetime.now(timezone.utc) - updated
+                                        if age > _RUNNING_TIMEOUT:
+                                            repo_obj.ingestion_status = "failed"
+                                            repo_obj.updated_at = datetime.now(timezone.utc)
+                                            db.add(repo_obj)
+                                            db.commit()
+                                            db.refresh(repo_obj)
                                     loaded_repos.append(repo_obj)
 
                             if loaded_repos:
@@ -1201,51 +1218,53 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     )
                                 base_system_prompt += status_block
 
-                                # Retrieve chunks scoped to these repo IDs
-                                success_repo_ids: list[uuid.UUID] = []
-                                processing_repos: list[Repo] = []
-                                failed_repos: list[Repo] = []
+                                # Strict enforcement — any non-success status or
+                                # zero chunks blocks chat execution (LAW 5 + 8).
                                 for repo_obj in loaded_repos:
-                                    if repo_obj.ingestion_status == "success":
-                                        success_repo_ids.append(repo_obj.id)
-                                    elif repo_obj.ingestion_status in ("pending", "running"):
-                                        processing_repos.append(repo_obj)
-                                    elif repo_obj.ingestion_status == "failed":
-                                        failed_repos.append(repo_obj)
+                                    print("REPO_STATUS:", repo_obj.id, repo_obj.ingestion_status)
+                                    if repo_obj.ingestion_status != "success":
+                                        raise HTTPException(
+                                            status_code=409,
+                                            detail=(
+                                                f"REPO_NOT_READY: {repo_obj.id}"
+                                                f" status={repo_obj.ingestion_status}"
+                                            ),
+                                        )
+                                    if repo_obj.total_chunks == 0:
+                                        raise HTTPException(
+                                            status_code=409,
+                                            detail=(
+                                                f"REPO_CONTEXT_EMPTY: {repo_obj.id}"
+                                                " total_chunks=0"
+                                            ),
+                                        )
 
-                                if success_repo_ids:
-                                    repo_chunks = retrieve_relevant_chunks(
-                                        user_query=message,
-                                        db=db,
-                                        repo_ids=success_repo_ids,
-                                    )
-                                    if repo_chunks:
-                                        repo_block = "\n\n---\nREPO CONTEXT:\n"
-                                        for chunk in repo_chunks:
-                                            repo_block += (
-                                                f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
-                                            )
-                                        repo_block += "---\n"
-                                        base_system_prompt += repo_block
-                                for r in processing_repos:
-                                    base_system_prompt += (
-                                        f"\n[REPO_PROCESSING: {r.owner}/{r.name}] "
-                                        f"status={r.ingestion_status}\n"
+                                repo_chunks = retrieve_relevant_chunks(
+                                    user_query=message,
+                                    db=db,
+                                    repo_ids=[r.id for r in loaded_repos],
+                                )
+
+                                print("REPO_CHUNKS:", len(repo_chunks))
+
+                                if not repo_chunks:
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail=(
+                                            f"REPO_CONTEXT_EMPTY: repos={context.repos}"
+                                            " but no chunks found"
+                                        ),
                                     )
 
-                                for r in failed_repos:
-                                    base_system_prompt += (
-                                        f"\n[REPO_FAILED: {r.owner}/{r.name}] "
-                                        f"status={r.ingestion_status}\n"
+                                repo_block = "\n\n---\nREPO CONTEXT:\n"
+                                for chunk in repo_chunks:
+                                    repo_block += (
+                                        f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
                                     )
+                                repo_block += "---\n"
+                                base_system_prompt += repo_block
 
-                    print("CTX_REPOS:", context.repos)
                     print("CTX_FILES:", context.files)
-                    print("REPO_CHUNKS:", len(repo_chunks) if repo_chunks else 0)
-                    if context.repos and not repo_chunks:
-                        raise Exception(
-                            f"REPO_CONTEXT_EMPTY: repos={context.repos} but no chunks found"
-                        )
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
@@ -1375,6 +1394,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         finally:
             if db is not None:
                 db.close()
+    except HTTPException:
+        # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3: HTTPException (e.g. 409 REPO_NOT_READY)
+        # must propagate as a real HTTP response — not be swallowed into SYSTEM_FAILURE.
+        raise
     # PHASE 3 — API STABILITY LOCK: Final catch-all exception handler
     # This should never be reached due to nested try/except, but provides ultimate safety
     except Exception as e:

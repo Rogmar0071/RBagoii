@@ -1,22 +1,23 @@
 """
-Tests for REPO_CONTEXT_FINALIZATION_V1.
+Tests for REPO_CONTEXT_FINALIZATION_V1 and GLOBAL_REPO_ASSET_SYSTEM_LOCK_V1.
 
 Phases covered:
 - Phase 1: Repo first-class entity (model creation, independent of ChatFile)
-- Phase 2: Async ingestion endpoint POST /api/chat/{cid}/repos returns 202
+- Phase 2: POST /api/chat/{cid}/repos is DEPRECATED (returns 410)
 - Phase 3: Retrieval scoped to repo_ids
 - Phase 4: Token budget enforcement
 - Phase 5: Enhanced scoring (filename match, recency weight)
 - Phase 6: REPO STATUS block injected into AI prompt
 - Phase 8: Retry endpoint POST /api/repos/{id}/retry
 - Phase 9: context.repos is the authoritative repo retrieval path
+- System Lock: POST /api/repos/add is the only valid ingestion entry point
 """
 
 from __future__ import annotations
 
-import json
 import os
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -129,86 +130,64 @@ class TestRepoFirstClassEntity:
 # ---------------------------------------------------------------------------
 
 
-class TestAsyncIngestionEndpoint:
-    def test_post_repos_returns_202(self, client: TestClient):
-        """POST /api/chat/{cid}/repos returns 202 immediately."""
-        cid = str(uuid.uuid4())
+class TestDeprecatedIngestionEndpoint:
+    """POST /api/chat/{cid}/repos is permanently retired — must return 410."""
 
+    def test_post_repos_returns_410(self, client: TestClient):
+        """POST /api/chat/{cid}/repos returns 410 Gone."""
+        cid = str(uuid.uuid4())
+        resp = client.post(
+            f"/api/chat/{cid}/repos",
+            json={"repo_url": "https://github.com/owner/myrepo", "branch": "main"},
+            headers=AUTH,
+        )
+        assert resp.status_code == 410
+        assert "DEPRECATED" in resp.json().get("detail", "")
+
+    def test_post_repos_410_regardless_of_payload(self, client: TestClient):
+        """POST /api/chat/{cid}/repos always returns 410 regardless of body."""
+        cid = str(uuid.uuid4())
+        resp = client.post(
+            f"/api/chat/{cid}/repos",
+            json={"repo_url": "https://github.com/any/repo", "branch": "dev"},
+            headers=AUTH,
+        )
+        assert resp.status_code == 410
+
+    def test_post_repos_410_lists_correct_replacement(self, client: TestClient):
+        """The 410 response detail references /api/repos/add."""
+        cid = str(uuid.uuid4())
+        resp = client.post(
+            f"/api/chat/{cid}/repos",
+            json={"repo_url": "https://github.com/owner/r", "branch": "main"},
+            headers=AUTH,
+        )
+        assert resp.status_code == 410
+        assert "/api/repos/add" in resp.json().get("detail", "")
+
+    def test_repo_creation_via_add_endpoint_still_works(self, client: TestClient):
+        """Repos can still be created — just via POST /api/repos/add."""
         with patch(
             "backend.app.github_routes._fetch_repo_file_list",
             new_callable=AsyncMock,
             return_value=[("README.md", "# Hello world")],
         ):
             resp = client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/myrepo", "branch": "main"},
+                "/api/repos/add",
+                json={
+                    "conversation_id": str(uuid.uuid4()),
+                    "repo_url": "https://github.com/owner/myrepo",
+                    "branch": "main",
+                },
                 headers=AUTH,
             )
-
-        assert resp.status_code == 202
+        assert resp.status_code == 200
         body = resp.json()
-        assert "id" in body
-        assert body["repo_id"] == body["id"]
+        assert "repo_id" in body
         assert body["status"] in ("pending", "running", "success", "failed")
 
-    def test_post_repos_creates_repo_row(self, client: TestClient):
-        """POST /api/chat/{cid}/repos creates a Repo row in the DB."""
-        from sqlmodel import Session
-
-        import backend.app.database as db_module
-        from backend.app.models import Repo
-
-        cid = str(uuid.uuid4())
-
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("main.py", "print('hi')")],
-        ):
-            resp = client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/proj", "branch": "main"},
-                headers=AUTH,
-            )
-
-        assert resp.status_code == 202
-        repo_id = uuid.UUID(resp.json()["id"])
-
-        with Session(db_module.get_engine()) as session:
-            repo = session.get(Repo, repo_id)
-            assert repo is not None
-            assert repo.owner == "owner"
-            assert repo.name == "proj"
-
-    def test_list_repos_returns_repo_objects(self, client: TestClient):
-        """GET /api/chat/{cid}/repos lists Repo entities."""
-        cid = str(uuid.uuid4())
-
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("app.py", "code")],
-        ):
-            client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/testrepo", "branch": "main"},
-                headers=AUTH,
-            )
-
-        list_resp = client.get(f"/api/chat/{cid}/repos", headers=AUTH)
-        assert list_resp.status_code == 200
-        repos = list_resp.json()
-        assert len(repos) == 1
-        r = repos[0]
-        assert r["repo_id"] == r["id"]
-        assert r["owner"] == "owner"
-        assert r["name"] == "testrepo"
-        assert "status" in r
-        assert "total_files" in r
-        assert "chunk_count" in r
-
-    def test_ingestion_worker_creates_repo_chunks(self, client: TestClient):
-        """run_repo_ingestion creates RepoChunk rows linked via repo_id."""
+    def test_ingestion_worker_creates_repo_chunks(self, client: TestClient, capsys):
+        """run_repo_ingestion creates RepoChunk rows and prints INGEST START/DONE (V3 §7)."""
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
@@ -226,12 +205,16 @@ class TestAsyncIngestionEndpoint:
             return_value=fake_files,
         ):
             resp = client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/chunkrepo", "branch": "main"},
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/chunkrepo",
+                    "branch": "main",
+                },
                 headers=AUTH,
             )
-        assert resp.status_code == 202
-        repo_id = uuid.UUID(resp.json()["id"])
+        assert resp.status_code == 200
+        repo_id = uuid.UUID(resp.json()["repo_id"])
 
         # DISABLE_JOBS=1 runs the worker synchronously in _enqueue_repo_ingestion
         with Session(db_module.get_engine()) as session:
@@ -243,9 +226,112 @@ class TestAsyncIngestionEndpoint:
 
             chunks = session.exec(select(RepoChunk).where(RepoChunk.repo_id == repo_id)).all()
             assert len(chunks) > 0
-            # All chunks reference the Repo via repo_id
             for chunk in chunks:
                 assert chunk.repo_id == repo_id
+
+        stdout = capsys.readouterr().out
+        assert "INGEST START:" in stdout
+        assert "INGEST DONE:" in stdout
+
+    def test_post_repos_creates_repo_row_via_add(self, client: TestClient):
+        """POST /api/repos/add creates a Repo row in the DB."""
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("main.py", "print('hi')")],
+        ):
+            resp = client.post(
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/proj",
+                    "branch": "main",
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        repo_id = uuid.UUID(resp.json()["repo_id"])
+
+        with Session(db_module.get_engine()) as session:
+            repo = session.get(Repo, repo_id)
+            assert repo is not None
+            assert repo.owner == "owner"
+            assert repo.name == "proj"
+
+    def test_list_repos_returns_repo_objects(self, client: TestClient):
+        """GET /api/chat/{cid}/repos lists Repo entities bound via ConversationRepo."""
+        cid = str(uuid.uuid4())
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("app.py", "code")],
+        ):
+            client.post(
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/testrepo",
+                    "branch": "main",
+                },
+                headers=AUTH,
+            )
+
+        list_resp = client.get(f"/api/chat/{cid}/repos", headers=AUTH)
+        assert list_resp.status_code == 200
+        repos = list_resp.json()
+        assert len(repos) == 1
+        r = repos[0]
+        assert r["repo_id"] == r["id"]
+        assert r["owner"] == "owner"
+        assert r["name"] == "testrepo"
+        assert "status" in r
+        assert "total_files" in r
+        assert "chunk_count" in r
+
+    def test_duplicate_add_returns_same_repo(self, client: TestClient):
+        """POST /api/repos/add is idempotent: a second identical POST returns the same repo_id."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+        payload = {
+            "conversation_id": cid,
+            "repo_url": "https://github.com/owner/idempotentrepo",
+            "branch": "main",
+        }
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("README.md", "# Hello")],
+        ):
+            resp1 = client.post("/api/repos/add", json=payload, headers=AUTH)
+            resp2 = client.post("/api/repos/add", json=payload, headers=AUTH)
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert resp1.json()["repo_id"] == resp2.json()["repo_id"]
+
+        # Only one Repo row must exist in the DB.
+        with Session(db_module.get_engine()) as session:
+            repos = session.exec(
+                select(Repo).where(
+                    Repo.repo_url == payload["repo_url"],
+                    Repo.branch == payload["branch"],
+                )
+            ).all()
+            assert len(repos) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -498,7 +584,7 @@ class TestRepoStatusBlock:
     def test_failed_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A failed Repo with no chunks fails fast instead of silently continuing."""
+        """A failed Repo raises HTTP 409 REPO_NOT_READY (strict enforcement, V3)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -542,16 +628,14 @@ class TestRepoStatusBlock:
                 headers=AUTH,
             )
 
-        assert resp.status_code == 200
-        error_data = json.loads(resp.json()["reply"])
-        assert error_data["error"] == "SYSTEM_FAILURE"
-        assert "REPO_CONTEXT_EMPTY" in error_data["detail"]
+        assert resp.status_code == 409
+        assert "REPO_NOT_READY" in resp.json().get("detail", "")
         assert fake_openai.call_count == 0
 
     def test_processing_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A pending/running Repo with no chunks fails fast instead of silently continuing."""
+        """A pending/running Repo raises HTTP 409 REPO_NOT_READY (strict enforcement, V3)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -595,11 +679,77 @@ class TestRepoStatusBlock:
                 headers=AUTH,
             )
 
-        assert resp.status_code == 200
-        error_data = json.loads(resp.json()["reply"])
-        assert error_data["error"] == "SYSTEM_FAILURE"
-        assert "REPO_CONTEXT_EMPTY" in error_data["detail"]
+        assert resp.status_code == 409
+        assert "REPO_NOT_READY" in resp.json().get("detail", "")
         assert fake_openai.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Section 8 — Timeout safety: running → failed after threshold
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutSafety:
+    def test_stuck_running_repo_is_flipped_to_failed(
+        self, client: TestClient, monkeypatch
+    ):
+        """A repo stuck in 'running' beyond threshold is auto-failed at chat time (V3 §8)."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+        repo_id = uuid.uuid4()
+
+        old_ts = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+        with Session(db_module.get_engine()) as session:
+            repo = Repo(
+                id=repo_id,
+                conversation_id=cid,
+                repo_url="https://github.com/test/stuck-repo",
+                owner="test",
+                name="stuck-repo",
+                branch="main",
+                ingestion_status="running",
+                total_files=0,
+                total_chunks=0,
+                updated_at=old_ts,
+            )
+            session.add(repo)
+            session.commit()
+
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value="ok") as fake_openai:
+            resp = client.post(
+                "/api/chat",
+                json={
+                    "message": "hello",
+                    "conversation_id": cid,
+                    "agent_mode": False,
+                    "context": {
+                        "session_id": None,
+                        "domain_profile_id": None,
+                        "repos": [str(repo_id)],
+                    },
+                },
+                headers=AUTH,
+            )
+
+        # Timeout → "failed" → 409 REPO_NOT_READY
+        assert resp.status_code == 409
+        assert "REPO_NOT_READY" in resp.json().get("detail", "")
+        assert fake_openai.call_count == 0
+
+        # Verify DB was updated to failed
+        with Session(db_module.get_engine()) as session:
+            r = session.get(Repo, repo_id)
+            assert r is not None
+            assert r.ingestion_status == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -617,19 +767,23 @@ class TestRetryEndpoint:
 
         cid = str(uuid.uuid4())
 
-        # First ingest (fails)
+        # First ingest (fails) — use /api/repos/add
         with patch(
             "backend.app.github_routes._fetch_repo_file_list",
             new_callable=AsyncMock,
             side_effect=RuntimeError("timeout"),
         ):
             resp = client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/flaky-repo", "branch": "main"},
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/flaky-repo",
+                    "branch": "main",
+                },
                 headers=AUTH,
             )
-        assert resp.status_code == 202
-        repo_id = resp.json()["id"]
+        assert resp.status_code == 200
+        repo_id = resp.json()["repo_id"]
 
         # Confirm it is now failed
         with Session(db_module.get_engine()) as session:
@@ -674,12 +828,16 @@ class TestRetryEndpoint:
             return_value=[("main.py", "code here")],
         ):
             add_resp = client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/del-repo", "branch": "main"},
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/del-repo",
+                    "branch": "main",
+                },
                 headers=AUTH,
             )
-        assert add_resp.status_code == 202
-        repo_id = add_resp.json()["id"]
+        assert add_resp.status_code == 200
+        repo_id = add_resp.json()["repo_id"]
 
         # Verify chunks exist
         with Session(db_module.get_engine()) as session:
@@ -721,12 +879,16 @@ class TestContextReposDrivesRetrieval:
             return_value=fake_files,
         ):
             add_resp = client.post(
-                f"/api/chat/{cid}/repos",
-                json={"repo_url": "https://github.com/owner/context-repo", "branch": "main"},
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/context-repo",
+                    "branch": "main",
+                },
                 headers=AUTH,
             )
-        assert add_resp.status_code == 202
-        repo_id = add_resp.json()["id"]
+        assert add_resp.status_code == 200
+        repo_id = add_resp.json()["repo_id"]
 
         import backend.app.chat_routes as cr
 
@@ -813,3 +975,174 @@ class TestContextReposDrivesRetrieval:
         assert chat_resp.status_code == 200
         prompt = captured[0]
         assert "REPO CONTEXT" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1
+# POST /api/repos/add — global upsert + conversation binding
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalRepoAddEndpoint:
+    """Tests for the global repo upsert + conversation binding endpoint."""
+
+    def test_add_repo_returns_200(self, client: TestClient):
+        """POST /api/repos/add returns 200 with repo_id and status."""
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("README.md", "# Hello")],
+        ):
+            resp = client.post(
+                "/api/repos/add",
+                json={
+                    "conversation_id": str(uuid.uuid4()),
+                    "repo_url": "https://github.com/owner/global-repo",
+                    "branch": "main",
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "repo_id" in body
+        assert "status" in body
+        assert body["status"] in ("pending", "running", "success", "failed")
+
+    def test_add_repo_is_globally_idempotent(self, client: TestClient):
+        """Two different conversations adding the same URL share ONE Repo row."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        conv_a = str(uuid.uuid4())
+        conv_b = str(uuid.uuid4())
+        payload_base = {"repo_url": "https://github.com/owner/shared-repo", "branch": "main"}
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("main.py", "print('hi')")],
+        ):
+            resp_a = client.post(
+                "/api/repos/add",
+                json={"conversation_id": conv_a, **payload_base},
+                headers=AUTH,
+            )
+            resp_b = client.post(
+                "/api/repos/add",
+                json={"conversation_id": conv_b, **payload_base},
+                headers=AUTH,
+            )
+
+        assert resp_a.status_code == 200
+        assert resp_b.status_code == 200
+        # Both must reference the same underlying Repo row.
+        assert resp_a.json()["repo_id"] == resp_b.json()["repo_id"]
+
+        # Only ONE Repo row must exist for this (repo_url, branch).
+        with Session(db_module.get_engine()) as session:
+            repos = session.exec(
+                select(Repo).where(
+                    Repo.repo_url == payload_base["repo_url"],
+                    Repo.branch == payload_base["branch"],
+                )
+            ).all()
+            assert len(repos) == 1
+
+    def test_add_repo_creates_conversation_binding(self, client: TestClient):
+        """POST /api/repos/add creates a ConversationRepo binding row."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import ConversationRepo
+
+        cid = str(uuid.uuid4())
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("app.py", "code")],
+        ):
+            resp = client.post(
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/binding-repo",
+                    "branch": "main",
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        repo_id = uuid.UUID(resp.json()["repo_id"])
+
+        with Session(db_module.get_engine()) as session:
+            binding = session.exec(
+                select(ConversationRepo).where(
+                    ConversationRepo.conversation_id == cid,
+                    ConversationRepo.repo_id == repo_id,
+                )
+            ).first()
+            assert binding is not None
+
+    def test_add_repo_binding_is_idempotent(self, client: TestClient):
+        """Calling /api/repos/add twice for the same (conversation, repo)
+        does not create duplicate bindings."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import ConversationRepo
+
+        cid = str(uuid.uuid4())
+        payload = {
+            "conversation_id": cid,
+            "repo_url": "https://github.com/owner/idempotent-binding",
+            "branch": "main",
+        }
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("README.md", "hello")],
+        ):
+            resp1 = client.post("/api/repos/add", json=payload, headers=AUTH)
+            client.post("/api/repos/add", json=payload, headers=AUTH)
+
+        repo_id = uuid.UUID(resp1.json()["repo_id"])
+
+        with Session(db_module.get_engine()) as session:
+            bindings = session.exec(
+                select(ConversationRepo).where(
+                    ConversationRepo.conversation_id == cid,
+                    ConversationRepo.repo_id == repo_id,
+                )
+            ).all()
+            assert len(bindings) == 1
+
+    def test_add_repo_invalid_url(self, client: TestClient):
+        """POST /api/repos/add with a non-GitHub URL returns 400."""
+        resp = client.post(
+            "/api/repos/add",
+            json={
+                "conversation_id": str(uuid.uuid4()),
+                "repo_url": "https://example.com/not-a-repo",
+                "branch": "main",
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 400
+
+    def test_old_endpoint_returns_410(self, client: TestClient):
+        """Old POST /api/chat/{cid}/repos is permanently retired — returns 410."""
+        cid = str(uuid.uuid4())
+        resp = client.post(
+            f"/api/chat/{cid}/repos",
+            json={"repo_url": "https://github.com/owner/convergence-repo", "branch": "main"},
+            headers=AUTH,
+        )
+        assert resp.status_code == 410
+        assert "DEPRECATED" in resp.json().get("detail", "")
+        assert "/api/repos/add" in resp.json().get("detail", "")
+
