@@ -247,6 +247,41 @@ class TestAsyncIngestionEndpoint:
             for chunk in chunks:
                 assert chunk.repo_id == repo_id
 
+    def test_duplicate_post_returns_existing_repo(self, client: TestClient):
+        """POST /api/chat/{cid}/repos is idempotent: a second identical POST
+        returns the existing Repo without creating a duplicate or re-ingesting."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+        payload = {"repo_url": "https://github.com/owner/idempotentrepo", "branch": "main"}
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("README.md", "# Hello")],
+        ):
+            resp1 = client.post(f"/api/chat/{cid}/repos", json=payload, headers=AUTH)
+            resp2 = client.post(f"/api/chat/{cid}/repos", json=payload, headers=AUTH)
+
+        assert resp1.status_code == 202
+        assert resp2.status_code == 202
+        # Both responses must reference the same Repo row.
+        assert resp1.json()["id"] == resp2.json()["id"]
+
+        # Only one Repo row must exist in the DB.
+        with Session(db_module.get_engine()) as session:
+            repos = session.exec(
+                select(Repo).where(
+                    Repo.conversation_id == cid,
+                    Repo.repo_url == payload["repo_url"],
+                    Repo.branch == payload["branch"],
+                )
+            ).all()
+            assert len(repos) == 1
+
 
 # ---------------------------------------------------------------------------
 # Phase 3 — Retrieval scoped to repo_ids

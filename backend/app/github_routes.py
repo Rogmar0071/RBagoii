@@ -533,6 +533,31 @@ def create_repo_ingestion_job(
     owner, repo_name = match.groups()
     repo_name = repo_name.rstrip(".git")
 
+    # I2 — SINGLE INGESTION RULE: return the existing Repo if one with the
+    # same (conversation_id, repo_url, branch) identity already exists.
+    existing = session.exec(
+        select(Repo).where(
+            Repo.conversation_id == conversation_id,
+            Repo.repo_url == repo.repo_url,
+            Repo.branch == repo.branch,
+        )
+    ).first()
+    if existing is not None:
+        return RepoStatusResponse(
+            id=str(existing.id),
+            repo_id=str(existing.id),
+            conversation_id=existing.conversation_id,
+            repo_url=existing.repo_url,
+            owner=existing.owner,
+            name=existing.name,
+            branch=existing.branch,
+            status=existing.ingestion_status,
+            total_files=existing.total_files,
+            chunk_count=existing.total_chunks,
+            created_at=existing.created_at.isoformat(),
+            updated_at=existing.updated_at.isoformat(),
+        )
+
     new_repo = Repo(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
