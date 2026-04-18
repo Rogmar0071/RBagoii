@@ -178,19 +178,99 @@ async def list_user_repos(
         raise HTTPException(status_code=503, detail="Failed to connect to GitHub API")
 
 
+_ALLOWED_EXTENSIONS = {".py", ".kt", ".java", ".ts", ".js", ".json", ".md"}
+_MAX_FILES = 50
+_MAX_DEPTH = 3
+_MAX_FILE_CHARS = 5000
+
+
+async def _fetch_repo_contents(
+    owner: str,
+    repo_name: str,
+    branch: str,
+    headers: dict,
+) -> str:
+    """
+    Recursively fetch text files from a GitHub repository and return them
+    aggregated as a single string.  Depth is limited to _MAX_DEPTH levels and
+    at most _MAX_FILES files are collected.
+
+    Returns a REPO_FETCH_FAILED message on any GitHub API error.
+    """
+    file_parts: list[str] = []
+    file_count = 0
+
+    async def _traverse(path: str, depth: int, client: httpx.AsyncClient) -> None:
+        nonlocal file_count
+        if depth > _MAX_DEPTH or file_count >= _MAX_FILES:
+            return
+
+        base = f"https://api.github.com/repos/{owner}/{repo_name}/contents"
+        url = f"{base}/{path}" if path else base
+        response = await client.get(
+            url, headers=headers, params={"ref": branch}, timeout=15.0
+        )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"GitHub API returned {response.status_code} for {url}: {response.text[:200]}"
+            )
+
+        items = response.json()
+        if isinstance(items, dict):
+            items = [items]
+
+        for item in items:
+            if file_count >= _MAX_FILES:
+                break
+            if item["type"] == "file":
+                ext = os.path.splitext(item["name"])[1].lower()
+                if ext not in _ALLOWED_EXTENSIONS:
+                    continue
+                download_url = item.get("download_url")
+                if not download_url:
+                    continue
+                raw_resp = await client.get(download_url, timeout=15.0)
+                if raw_resp.status_code != 200:
+                    logger.warning(
+                        "Failed to fetch %s: HTTP %s", item["path"], raw_resp.status_code
+                    )
+                    continue
+                content = raw_resp.text[:_MAX_FILE_CHARS]
+                file_parts.append(f"---\nFILE: {item['path']}\n{content}\n")
+                file_count += 1
+            elif item["type"] == "dir":
+                await _traverse(item["path"], depth + 1, client)
+
+    try:
+        async with httpx.AsyncClient() as client:
+            await _traverse("", 1, client)
+    except Exception as exc:
+        logger.error("GitHub repo fetch failed for %s/%s: %s", owner, repo_name, exc)
+        return f"REPO_FETCH_FAILED: {owner}/{repo_name} — {exc}"
+
+    if not file_parts:
+        return (
+            f"GitHub Repository: {owner}/{repo_name} (branch: {branch})"
+            " — no supported source files found."
+        )
+    return "\n".join(file_parts)
+
+
 @router.post(
     "/api/chat/{conversation_id}/github/repos",
     status_code=201,
     dependencies=[Depends(require_auth)],
 )
-def add_github_repo(
+async def add_github_repo(
     conversation_id: str,
     repo: GithubRepoRequest,
     session: Session = Depends(get_session),
 ) -> GithubRepoResponse:
     """
     Add a GitHub repository to the conversation context.
-    For now, this stores it as a special file entry with category 'github_repo'.
+    Fetches and ingests real repository file contents, stores them as a
+    ChatFile with category 'github_repo' and extracted_text set to the
+    full aggregated source before the AI call is made.
     """
     # Parse owner/repo from URL
     match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
@@ -200,20 +280,22 @@ def add_github_repo(
     owner, repo_name = match.groups()
     repo_name = repo_name.rstrip(".git")
 
-    # Create a "file" entry to represent the GitHub repo
-    # We use the ChatFile table but with a special category
+    headers: dict = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
+    aggregated_content = await _fetch_repo_contents(owner, repo_name, repo.branch, headers)
+
     github_file = ChatFile(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
         filename=f"{owner}/{repo_name}",
         mime_type="application/x-git-repository",
-        size_bytes=0,  # Unknown size
+        size_bytes=len(aggregated_content.encode("utf-8")),
         object_key=f"github:{repo.repo_url}@{repo.branch}",
         category="github_repo",
         included_in_context=True,
-        extracted_text=(
-            f"GitHub Repository: {owner}/{repo_name} (branch: {repo.branch})\nURL: {repo.repo_url}"
-        ),
+        extracted_text=aggregated_content,
     )
 
     session.add(github_file)
