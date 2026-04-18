@@ -23,11 +23,11 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import httpx
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi import Request as FastAPIRequest
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -1167,10 +1167,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         base_system_prompt += "\n\n" + artifact_block
 
                     # -------------------------------------------------------
-                    # REPO_CONTEXT_FINALIZATION_V1 — Phase 9:
-                    # When context.repos (first-class Repo IDs) are present,
-                    # build the repo context block from Repo entities directly.
-                    # Phase 6: always inject REPO STATUS for AI awareness.
+                    # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3 — Section 5 & 7:
+                    # Strict validation: 409 on any non-ready repo.
+                    # Timeout safety: running → failed after threshold (§8).
                     # -------------------------------------------------------
                     repo_chunks = []
                     if context.repos and db is not None:
@@ -1181,11 +1180,26 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             except ValueError:
                                 pass
 
+                        print("CTX_REPOS:", active_repo_ids)
+
                         if active_repo_ids:
+                            _RUNNING_TIMEOUT = timedelta(minutes=15)
+
                             loaded_repos: list[Repo] = []
                             for rid in active_repo_ids:
                                 repo_obj = db.get(Repo, rid)
                                 if repo_obj:
+                                    # Timeout safety: stuck "running" → "failed"
+                                    if repo_obj.ingestion_status == "running":
+                                        age = datetime.now(timezone.utc) - repo_obj.updated_at.replace(
+                                            tzinfo=timezone.utc
+                                        )
+                                        if age > _RUNNING_TIMEOUT:
+                                            repo_obj.ingestion_status = "failed"
+                                            repo_obj.updated_at = datetime.now(timezone.utc)
+                                            db.add(repo_obj)
+                                            db.commit()
+                                            db.refresh(repo_obj)
                                     loaded_repos.append(repo_obj)
 
                             if loaded_repos:
@@ -1201,14 +1215,25 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     )
                                 base_system_prompt += status_block
 
-                                # Strict enforcement — any non-success status
-                                # blocks chat execution immediately (LAW 6).
+                                # Strict enforcement — any non-success status or
+                                # zero chunks blocks chat execution (LAW 5 + 8).
                                 for repo_obj in loaded_repos:
-                                    print("REPO_STATUS:", repo_obj.ingestion_status)
+                                    print("REPO_STATUS:", repo_obj.id, repo_obj.ingestion_status)
                                     if repo_obj.ingestion_status != "success":
-                                        raise Exception(
-                                            f"REPO_NOT_READY: {repo_obj.id}"
-                                            f" status={repo_obj.ingestion_status}"
+                                        raise HTTPException(
+                                            status_code=409,
+                                            detail=(
+                                                f"REPO_NOT_READY: {repo_obj.id}"
+                                                f" status={repo_obj.ingestion_status}"
+                                            ),
+                                        )
+                                    if repo_obj.total_chunks == 0:
+                                        raise HTTPException(
+                                            status_code=409,
+                                            detail=(
+                                                f"REPO_CONTEXT_EMPTY: {repo_obj.id}"
+                                                " total_chunks=0"
+                                            ),
                                         )
 
                                 repo_chunks = retrieve_relevant_chunks(
@@ -1220,9 +1245,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 print("REPO_CHUNKS:", len(repo_chunks))
 
                                 if not repo_chunks:
-                                    raise Exception(
-                                        f"REPO_CONTEXT_EMPTY: repos={context.repos}"
-                                        " but no chunks found"
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail=(
+                                            f"REPO_CONTEXT_EMPTY: repos={context.repos}"
+                                            " but no chunks found"
+                                        ),
                                     )
 
                                 repo_block = "\n\n---\nREPO CONTEXT:\n"
@@ -1233,7 +1261,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 repo_block += "---\n"
                                 base_system_prompt += repo_block
 
-                    print("CTX_REPOS:", context.repos)
                     print("CTX_FILES:", context.files)
 
                     # -------------------------------------------------------
@@ -1364,6 +1391,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         finally:
             if db is not None:
                 db.close()
+    except HTTPException:
+        # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3: HTTPException (e.g. 409 REPO_NOT_READY)
+        # must propagate as a real HTTP response — not be swallowed into SYSTEM_FAILURE.
+        raise
     # PHASE 3 — API STABILITY LOCK: Final catch-all exception handler
     # This should never be reached due to nested try/except, but provides ultimate safety
     except Exception as e:

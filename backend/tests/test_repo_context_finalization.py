@@ -186,8 +186,8 @@ class TestDeprecatedIngestionEndpoint:
         assert "repo_id" in body
         assert body["status"] in ("pending", "running", "success", "failed")
 
-    def test_ingestion_worker_creates_repo_chunks(self, client: TestClient):
-        """run_repo_ingestion creates RepoChunk rows linked via repo_id (setup via /api/repos/add)."""
+    def test_ingestion_worker_creates_repo_chunks(self, client: TestClient, capsys):
+        """run_repo_ingestion creates RepoChunk rows and prints INGEST START/DONE (V3 §7)."""
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
@@ -228,6 +228,10 @@ class TestDeprecatedIngestionEndpoint:
             assert len(chunks) > 0
             for chunk in chunks:
                 assert chunk.repo_id == repo_id
+
+        stdout = capsys.readouterr().out
+        assert "INGEST START:" in stdout
+        assert "INGEST DONE:" in stdout
 
     def test_post_repos_creates_repo_row_via_add(self, client: TestClient):
         """POST /api/repos/add creates a Repo row in the DB."""
@@ -580,7 +584,7 @@ class TestRepoStatusBlock:
     def test_failed_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A failed Repo raises REPO_NOT_READY immediately (strict enforcement)."""
+        """A failed Repo raises HTTP 409 REPO_NOT_READY (strict enforcement, V3)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -624,16 +628,14 @@ class TestRepoStatusBlock:
                 headers=AUTH,
             )
 
-        assert resp.status_code == 200
-        error_data = json.loads(resp.json()["reply"])
-        assert error_data["error"] == "SYSTEM_FAILURE"
-        assert "REPO_NOT_READY" in error_data["detail"]
+        assert resp.status_code == 409
+        assert "REPO_NOT_READY" in resp.json().get("detail", "")
         assert fake_openai.call_count == 0
 
     def test_processing_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A pending/running Repo raises REPO_NOT_READY immediately (strict enforcement)."""
+        """A pending/running Repo raises HTTP 409 REPO_NOT_READY (strict enforcement, V3)."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -677,11 +679,79 @@ class TestRepoStatusBlock:
                 headers=AUTH,
             )
 
-        assert resp.status_code == 200
-        error_data = json.loads(resp.json()["reply"])
-        assert error_data["error"] == "SYSTEM_FAILURE"
-        assert "REPO_NOT_READY" in error_data["detail"]
+        assert resp.status_code == 409
+        assert "REPO_NOT_READY" in resp.json().get("detail", "")
         assert fake_openai.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Section 8 — Timeout safety: running → failed after threshold
+# ---------------------------------------------------------------------------
+
+
+class TestTimeoutSafety:
+    def test_stuck_running_repo_is_flipped_to_failed(
+        self, client: TestClient, monkeypatch
+    ):
+        """A repo stuck in 'running' beyond threshold is auto-failed at chat time (V3 §8)."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+        from datetime import timedelta
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid = str(uuid.uuid4())
+        repo_id = uuid.uuid4()
+
+        old_ts = __import__("datetime").datetime(2020, 1, 1, tzinfo=__import__("datetime").timezone.utc)
+
+        with Session(db_module.get_engine()) as session:
+            repo = Repo(
+                id=repo_id,
+                conversation_id=cid,
+                repo_url="https://github.com/test/stuck-repo",
+                owner="test",
+                name="stuck-repo",
+                branch="main",
+                ingestion_status="running",
+                total_files=0,
+                total_chunks=0,
+                updated_at=old_ts,
+            )
+            session.add(repo)
+            session.commit()
+
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value="ok") as fake_openai:
+            resp = client.post(
+                "/api/chat",
+                json={
+                    "message": "hello",
+                    "conversation_id": cid,
+                    "agent_mode": False,
+                    "context": {
+                        "session_id": None,
+                        "domain_profile_id": None,
+                        "repos": [str(repo_id)],
+                    },
+                },
+                headers=AUTH,
+            )
+
+        # Timeout → "failed" → 409 REPO_NOT_READY
+        assert resp.status_code == 409
+        assert "REPO_NOT_READY" in resp.json().get("detail", "")
+        assert fake_openai.call_count == 0
+
+        # Verify DB was updated to failed
+        with Session(db_module.get_engine()) as session:
+            r = session.get(Repo, repo_id)
+            assert r is not None
+            assert r.ingestion_status == "failed"
 
 
 # ---------------------------------------------------------------------------
