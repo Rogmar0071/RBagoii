@@ -84,19 +84,49 @@ def folder_object_key(folder_id: str, filename: str) -> str:
 
 
 def upload_bytes(
-    folder_id: str,
-    filename: str,
-    data: bytes,
+    folder_id: Optional[str] = None,
+    filename: Optional[str] = None,
+    data: Optional[bytes] = None,
     content_type: str = "application/octet-stream",
+    key: Optional[str] = None,
+    object_key: Optional[str] = None,
 ) -> str:
     """
-    Upload *data* to R2 under ``folders/{folder_id}/{filename}``.
+    Upload *data* to R2.
+
+    Callers may specify the object key in one of two ways:
+
+    * **Legacy positional style** – ``upload_bytes(folder_id, filename, data)``
+      computes the key as ``folders/{folder_id}/{filename}``.
+    * **Explicit key style** – ``upload_bytes(data=..., key=...)`` or
+      ``upload_bytes(data=..., object_key=...)`` uses the supplied key directly.
+
+    If ``object_key`` is provided and ``key`` is ``None``, ``object_key``
+    is used as the key.  If ``key`` is already set, ``object_key`` is ignored.
 
     Returns the object key.
     Raises ``RuntimeError`` if R2 is not configured.
+    Raises ``ValueError`` if neither a key nor folder_id/filename are supplied,
+    or if *data* is ``None``.
     """
+    # Normalize object_key → key (accept either spelling).
+    if object_key is not None and key is None:
+        key = object_key
+
+    # Derive key from folder_id / filename when no explicit key was given.
+    if not key:
+        if folder_id is not None and filename is not None:
+            key = folder_object_key(folder_id, filename)
+        else:
+            raise ValueError(
+                "upload_bytes requires 'key' or 'object_key', "
+                "or both 'folder_id' and 'filename'."
+            )
+
+    if data is None:
+        raise ValueError("upload_bytes requires 'data'.")
+
     client = _get_client()
-    key = folder_object_key(folder_id, filename)
     client.upload_fileobj(
         io.BytesIO(data),
         _bucket(),
