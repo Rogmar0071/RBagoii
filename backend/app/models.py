@@ -324,6 +324,9 @@ class AnalysisJob(SQLModel, table=True):
 # chat_files
 # ---------------------------------------------------------------------------
 
+# NOTE: RepoChunk (repo_chunks table) is defined AFTER ChatFile because it
+# carries a foreign key to chat_files.id.
+
 
 class ChatFile(SQLModel, table=True):
     """Files uploaded to a chat conversation for AI reference."""
@@ -361,4 +364,36 @@ class ChatFile(SQLModel, table=True):
             data["created_at"] = _utcnow()
         if "updated_at" not in data or data["updated_at"] is None:
             data["updated_at"] = _utcnow()
+        super().__init__(**data)
+
+# ---------------------------------------------------------------------------
+# repo_chunks
+# ---------------------------------------------------------------------------
+
+
+class RepoChunk(SQLModel, table=True):
+    """A content chunk from an ingested GitHub repository file."""
+
+    __tablename__ = "repo_chunks"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # The ChatFile (github_repo) this chunk belongs to
+    chat_file_id: uuid.UUID = Field(
+        foreign_key="chat_files.id",
+        index=True,
+    )
+    # Path of the source file within the repository
+    file_path: str = Field(sa_column=Column(sa.Text))
+    # Chunk text content (max ~1500 chars)
+    content: str = Field(sa_column=Column(sa.Text))
+    # Approximate token count (characters / 4)
+    token_estimate: int = Field(default=0)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
         super().__init__(**data)

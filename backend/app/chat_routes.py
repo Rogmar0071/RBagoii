@@ -46,6 +46,7 @@ from backend.app.mode_engine import (
     mode_engine_gateway,
 )
 from backend.app.models import ChatFile  # Import ChatFile model
+from backend.app.repo_retrieval import retrieve_relevant_chunks
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
 from ui_blueprint.prompt_security import (
@@ -1161,11 +1162,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # FILE_CONTEXT_INJECTION_V1: inject uploaded file references
                     if context.files:
                         file_block = "\n\n--- Uploaded Files Available for Reference ---\n"
+                        repo_file_ids: list[str] = []
+
                         for file_ref in context.files:
                             file_id_str = file_ref.get("id", "")
                             filename = file_ref.get("filename", "unnamed")
                             category = file_ref.get("category", "other")
                             file_block += f"\n- {filename} (Category: {category})"
+
+                            if category == "github_repo":
+                                # Selective retrieval — handled below via RepoChunk
+                                repo_file_ids.append(file_id_str)
+                                continue
 
                             # Fetch file content from database if text was extracted
                             try:
@@ -1180,6 +1188,24 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     file_block += f"\n  Content preview:\n{content}\n"
                             except (ValueError, AttributeError):
                                 pass  # Invalid UUID or missing data, skip content
+
+                        # REPO_CONTEXT_SELECTIVE_RETRIEVAL_LAYER_V1 — Phase 4:
+                        # Replace full extracted_text dump for github_repo files with
+                        # deterministic keyword-based chunk retrieval.
+                        if repo_file_ids and active_conversation_id:
+                            relevant_chunks = retrieve_relevant_chunks(
+                                conversation_id=active_conversation_id,
+                                user_query=message,
+                                db=db,
+                            )
+                            if relevant_chunks:
+                                file_block += "\n\n---\nREPO CONTEXT:\n"
+                                for chunk in relevant_chunks:
+                                    file_block += (
+                                        f"\nFILE: {chunk.file_path}\n"
+                                        f"{chunk.content}\n"
+                                    )
+                                file_block += "---\n"
 
                         file_block += "\n--- End of Uploaded Files ---\n"
                         base_system_prompt += file_block

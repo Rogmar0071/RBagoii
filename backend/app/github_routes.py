@@ -26,7 +26,8 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile
+from backend.app.models import ChatFile, RepoChunk
+from backend.app.repo_retrieval import _split_into_chunks
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -184,20 +185,20 @@ _MAX_DEPTH = 3
 _MAX_FILE_CHARS = 5000
 
 
-async def _fetch_repo_contents(
+async def _fetch_repo_file_list(
     owner: str,
     repo_name: str,
     branch: str,
     headers: dict,
-) -> str:
+) -> list[tuple[str, str]]:
     """
-    Recursively fetch text files from a GitHub repository and return them
-    aggregated as a single string.  Depth is limited to _MAX_DEPTH levels and
-    at most _MAX_FILES files are collected.
+    Recursively fetch text files from a GitHub repository.
 
-    Returns a REPO_FETCH_FAILED message on any GitHub API error.
+    Returns a list of ``(file_path, content)`` tuples, one per fetched file.
+    Depth is limited to _MAX_DEPTH levels and at most _MAX_FILES files are
+    collected.  Raises ``RuntimeError`` on GitHub API errors.
     """
-    file_parts: list[str] = []
+    files: list[tuple[str, str]] = []
     file_count = 0
 
     async def _traverse(path: str, depth: int, client: httpx.AsyncClient) -> None:
@@ -236,24 +237,43 @@ async def _fetch_repo_contents(
                     )
                     continue
                 content = raw_resp.text[:_MAX_FILE_CHARS]
-                file_parts.append(f"---\nFILE: {item['path']}\n{content}\n")
+                files.append((item["path"], content))
                 file_count += 1
             elif item["type"] == "dir":
                 await _traverse(item["path"], depth + 1, client)
 
+    async with httpx.AsyncClient() as client:
+        await _traverse("", 1, client)
+
+    return files
+
+
+async def _fetch_repo_contents(
+    owner: str,
+    repo_name: str,
+    branch: str,
+    headers: dict,
+) -> str:
+    """
+    Recursively fetch text files from a GitHub repository and return them
+    aggregated as a single string.  Depth is limited to _MAX_DEPTH levels and
+    at most _MAX_FILES files are collected.
+
+    Returns a REPO_FETCH_FAILED message on any GitHub API error.
+    """
     try:
-        async with httpx.AsyncClient() as client:
-            await _traverse("", 1, client)
+        files = await _fetch_repo_file_list(owner, repo_name, branch, headers)
     except Exception as exc:
         logger.error("GitHub repo fetch failed for %s/%s: %s", owner, repo_name, exc)
         return f"REPO_FETCH_FAILED: {owner}/{repo_name} — {exc}"
 
-    if not file_parts:
+    if not files:
         return (
             f"GitHub Repository: {owner}/{repo_name} (branch: {branch})"
             " — no supported source files found."
         )
-    return "\n".join(file_parts)
+    parts = [f"---\nFILE: {path}\n{content}\n" for path, content in files]
+    return "\n".join(parts)
 
 
 @router.post(
@@ -268,9 +288,11 @@ async def add_github_repo(
 ) -> GithubRepoResponse:
     """
     Add a GitHub repository to the conversation context.
-    Fetches and ingests real repository file contents, stores them as a
-    ChatFile with category 'github_repo' and extracted_text set to the
-    full aggregated source before the AI call is made.
+
+    Fetches repository file contents, stores them as RepoChunk rows for
+    selective retrieval (REPO_CONTEXT_SELECTIVE_RETRIEVAL_LAYER_V1), and
+    creates a ChatFile with category 'github_repo' whose extracted_text is
+    reduced to a compact summary (file list only).
     """
     # Parse owner/repo from URL
     match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
@@ -284,21 +306,48 @@ async def add_github_repo(
     if GITHUB_TOKEN:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
 
-    aggregated_content = await _fetch_repo_contents(owner, repo_name, repo.branch, headers)
+    try:
+        file_list = await _fetch_repo_file_list(owner, repo_name, repo.branch, headers)
+    except Exception as exc:
+        logger.error("GitHub repo fetch failed for %s/%s: %s", owner, repo_name, exc)
+        file_list = []
+
+    # Build compact summary for extracted_text (not full content)
+    file_paths = [path for path, _ in file_list]
+    top_paths = file_paths[:10]
+    top_files_lines = "\n".join(f"- {p}" for p in top_paths)
+    summary = (
+        f"Repo: {owner}/{repo_name}\n"
+        f"Files: {len(file_paths)}\n"
+        f"Top Files:\n{top_files_lines}"
+    )
 
     github_file = ChatFile(
         id=uuid.uuid4(),
         conversation_id=conversation_id,
         filename=f"{owner}/{repo_name}",
         mime_type="application/x-git-repository",
-        size_bytes=len(aggregated_content.encode("utf-8")),
+        size_bytes=len(summary.encode("utf-8")),
         object_key=f"github:{repo.repo_url}@{repo.branch}",
         category="github_repo",
         included_in_context=True,
-        extracted_text=aggregated_content,
+        extracted_text=summary,
     )
 
     session.add(github_file)
+    session.flush()  # Assign github_file.id before creating chunks
+
+    # Store file content as RepoChunk rows for selective retrieval
+    for file_path, content in file_list:
+        for chunk_text in _split_into_chunks(content):
+            chunk = RepoChunk(
+                chat_file_id=github_file.id,
+                file_path=file_path,
+                content=chunk_text,
+                token_estimate=max(1, len(chunk_text) // 4),
+            )
+            session.add(chunk)
+
     session.commit()
     session.refresh(github_file)
 
