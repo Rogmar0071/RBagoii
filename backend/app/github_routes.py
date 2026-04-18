@@ -757,103 +757,127 @@ def add_repo(
     - Ingestion is only triggered for newly created Repos.
     - The binding is idempotent (UNIQUE constraint on conversation_repos).
     """
-    match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
-    if not match:
-        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+    try:
+        print("TRACE 1: start")
 
-    owner, repo_name = match.groups()
-    repo_name = repo_name.rstrip(".git")
+        match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
+        if not match:
+            raise HTTPException(status_code=400, detail="Invalid GitHub URL")
 
-    # ------------------------------------------------------------------
-    # Step 1: global upsert on (repo_url, branch)
-    # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
-    # ------------------------------------------------------------------
-    def _find_repo() -> Repo | None:
-        return session.exec(
-            select(Repo).where(
-                Repo.repo_url == req.repo_url,
-                Repo.branch == req.branch,
+        owner, repo_name = match.groups()
+        repo_name = repo_name.rstrip(".git")
+
+        # ------------------------------------------------------------------
+        # Step 1: global upsert on (repo_url, branch)
+        # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
+        # ------------------------------------------------------------------
+        def _find_repo() -> Repo | None:
+            return session.exec(
+                select(Repo).where(
+                    Repo.repo_url == req.repo_url,
+                    Repo.branch == req.branch,
+                )
+            ).first()
+
+        repo = _find_repo()
+
+        newly_created = False
+        if repo is None:
+            try:
+                repo = Repo(
+                    id=uuid.uuid4(),
+                    repo_url=req.repo_url,
+                    owner=owner,
+                    name=repo_name,
+                    branch=req.branch,
+                    ingestion_status="pending",
+                    total_files=0,
+                    total_chunks=0,
+                )
+                session.add(repo)
+                session.commit()
+                session.refresh(repo)
+                newly_created = True
+            except IntegrityError:
+                # A concurrent request already created the row — roll back and
+                # fall through to the existing-repo path without triggering ingestion.
+                session.rollback()
+                repo = _find_repo()
+                if repo is None:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=(
+                            f"Failed to create or find repository: "
+                            f"url={req.repo_url!r} branch={req.branch!r}"
+                        ),
+                    )
+
+        print("TRACE 2: repo loaded", repo.id, repo.ingestion_status)
+
+        # ------------------------------------------------------------------
+        # Step 2: bind to conversation (idempotent)
+        # ------------------------------------------------------------------
+        existing_binding = session.exec(
+            select(ConversationRepo).where(
+                ConversationRepo.conversation_id == req.conversation_id,
+                ConversationRepo.repo_id == repo.id,
             )
         ).first()
 
-    repo = _find_repo()
-
-    newly_created = False
-    if repo is None:
-        try:
-            repo = Repo(
+        if existing_binding is None:
+            binding = ConversationRepo(
                 id=uuid.uuid4(),
-                repo_url=req.repo_url,
-                owner=owner,
-                name=repo_name,
-                branch=req.branch,
-                ingestion_status="pending",
-                total_files=0,
-                total_chunks=0,
+                conversation_id=req.conversation_id,
+                repo_id=repo.id,
             )
-            session.add(repo)
+            session.add(binding)
             session.commit()
-            session.refresh(repo)
-            newly_created = True
-        except IntegrityError:
-            # A concurrent request already created the row — roll back and
-            # fall through to the existing-repo path without triggering ingestion.
-            session.rollback()
-            repo = _find_repo()
-            if repo is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail=(
-                        f"Failed to create or find repository: "
-                        f"url={req.repo_url!r} branch={req.branch!r}"
-                    ),
-                )
 
-    # ------------------------------------------------------------------
-    # Step 2: bind to conversation (idempotent)
-    # ------------------------------------------------------------------
-    existing_binding = session.exec(
-        select(ConversationRepo).where(
-            ConversationRepo.conversation_id == req.conversation_id,
-            ConversationRepo.repo_id == repo.id,
-        )
-    ).first()
+        print("TRACE 3: binding created")
 
-    if existing_binding is None:
-        binding = ConversationRepo(
-            id=uuid.uuid4(),
-            conversation_id=req.conversation_id,
-            repo_id=repo.id,
-        )
-        session.add(binding)
+        print("TRACE 4: before commit")
+
         session.commit()
 
-    # State-driven ingestion dispatch (MQP-CONTRACT: REPO_INGESTION_STATE_MACHINE_V5).
-    if newly_created:
-        print("STEP 1: before enqueue", repo.id)
-        try:
-            _enqueue_repo_ingestion(str(repo.id))
-            print("STEP 2: enqueue success", repo.id)
-        except Exception as e:
-            print("ENQUEUE ERROR:", repr(e))
-            raise
+        print("TRACE 5: after commit")
 
-    elif repo.ingestion_status in ("pending", "failed"):
-        # Enqueue ingestion for retryable states.
-        try:
-            _enqueue_repo_ingestion(str(repo.id))
-        except Exception as e:
-            print("ENQUEUE ERROR:", repr(e))
-            raise
+        session.refresh(repo)
 
-    elif repo.ingestion_status in ("running", "success"):
-        # Return 409 when ingestion is already in progress or complete.
-        raise HTTPException(
-            status_code=409,
-            detail=f"REPO_INGESTION_{repo.ingestion_status.upper()}",
+        print("TRACE 6: after refresh", repo.ingestion_status)
+
+        # State-driven ingestion dispatch (MQP-CONTRACT: REPO_INGESTION_STATE_MACHINE_V5).
+        print("TRACE 7: entering state logic")
+
+        if newly_created:
+            print("STEP 1: before enqueue", repo.id)
+            try:
+                _enqueue_repo_ingestion(str(repo.id))
+                print("STEP 2: enqueue success", repo.id)
+            except Exception as e:
+                print("ENQUEUE ERROR:", repr(e))
+                raise
+
+        elif repo.ingestion_status in ("pending", "failed"):
+            # Enqueue ingestion for retryable states.
+            try:
+                _enqueue_repo_ingestion(str(repo.id))
+            except Exception as e:
+                print("ENQUEUE ERROR:", repr(e))
+                raise
+
+        elif repo.ingestion_status in ("running", "success"):
+            # Return 409 when ingestion is already in progress or complete.
+            raise HTTPException(
+                status_code=409,
+                detail=f"REPO_INGESTION_{repo.ingestion_status.upper()}",
+            )
+
+        return RepoAddResponse(
+            repo_id=str(repo.id),
+            status=repo.ingestion_status,
         )
-
-    return RepoAddResponse(
-        repo_id=str(repo.id),
-        status=repo.ingestion_status,
-    )
+    except Exception as e:
+        print("FATAL ERROR:", repr(e))
+        import traceback
+        traceback.print_exc()
+        raise
