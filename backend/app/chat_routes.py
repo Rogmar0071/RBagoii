@@ -1249,22 +1249,23 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         f"{chunk.content}\n"
                                     )
                                 file_block += "---\n"
-                            else:
-                                # PHASE 10: ids present but no chunks → explicit marker
-                                file_block += (
-                                    "\n\n[NO_REPO_CONTENT_AVAILABLE]: "
-                                    "Repository files were referenced but no content "
-                                    "could be retrieved from storage.\n"
-                                )
-
-                            # PHASE 9: inject per-repo failure markers
-                            if failed_repo_names:
+                            elif failed_repo_names:
+                                # PHASE 9: per-repo failure markers explain the empty result;
+                                # skip the generic NO_REPO_CONTENT_AVAILABLE to avoid duplication.
                                 for name in failed_repo_names:
                                     file_block += (
                                         f"\n[REPO_PRESENT_BUT_EMPTY]: "
                                         f"Repository '{name}' was added but ingestion "
                                         f"produced no usable content.\n"
                                     )
+                            else:
+                                # PHASE 10: ids present, no known failure, but no chunks —
+                                # emit the generic retrieval-failure marker.
+                                file_block += (
+                                    "\n\n[NO_REPO_CONTENT_AVAILABLE]: "
+                                    "Repository files were referenced but no content "
+                                    "could be retrieved from storage.\n"
+                                )
 
                         file_block += "\n--- End of Uploaded Files ---\n"
                         base_system_prompt += file_block
