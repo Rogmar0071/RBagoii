@@ -417,18 +417,26 @@ class RepoChunk(SQLModel, table=True):
 
 class Repo(SQLModel, table=True):
     """
-    REPO_CONTEXT_FINALIZATION_V1 — Phase 1.
+    GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1.
 
-    First-class repository entity, independent of ChatFile.
-    Stores ingestion metadata and serves as the FK anchor for RepoChunk rows
-    created via the async ingestion pipeline.
+    Global repository asset.  Identity = (repo_url, branch) — unique across
+    the entire system.  conversation_id is retained as nullable for backward
+    compatibility with the legacy per-conversation ingestion path.
+    Conversation-level bindings are expressed via ConversationRepo.
     """
 
     __tablename__ = "repos"
+    __table_args__ = (
+        sa.UniqueConstraint("repo_url", "branch", name="uq_repos_url_branch"),
+    )
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    # Conversation this repo belongs to
-    conversation_id: str = Field(index=True)
+    # Legacy field: set by the old per-conversation endpoint; NULL for repos
+    # created via the new global POST /api/repos/add endpoint.
+    conversation_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True, index=True),
+    )
     # Full GitHub URL, e.g. https://github.com/owner/repo
     repo_url: str = Field(sa_column=Column(sa.Text))
     # GitHub owner login
@@ -456,4 +464,42 @@ class Repo(SQLModel, table=True):
             data["created_at"] = _utcnow()
         if "updated_at" not in data or data["updated_at"] is None:
             data["updated_at"] = _utcnow()
+        super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# conversation_repos
+# ---------------------------------------------------------------------------
+
+
+class ConversationRepo(SQLModel, table=True):
+    """
+    GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1.
+
+    Pure binding layer between a conversation and a global Repo asset.
+    No ingestion logic lives here — this is a pointer only.
+    """
+
+    __tablename__ = "conversation_repos"
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "conversation_id", "repo_id", name="uq_conversation_repos"
+        ),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    conversation_id: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    repo_id: uuid.UUID = Field(
+        sa_column=Column(
+            sa.Uuid, sa.ForeignKey("repos.id"), nullable=False, index=True
+        )
+    )
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
         super().__init__(**data)

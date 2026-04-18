@@ -26,7 +26,7 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile, Repo, RepoChunk
+from backend.app.models import ChatFile, ConversationRepo, Repo, RepoChunk
 from backend.app.repo_retrieval import _split_into_chunks
 
 router = APIRouter()
@@ -69,7 +69,7 @@ class RepoStatusResponse(BaseModel):
 
     id: str
     repo_id: str
-    conversation_id: str
+    conversation_id: Optional[str]
     repo_url: str
     owner: str
     name: str
@@ -79,6 +79,21 @@ class RepoStatusResponse(BaseModel):
     chunk_count: int
     created_at: str
     updated_at: str
+
+
+class RepoAddRequest(BaseModel):
+    """Request body for the global repo upsert + bind endpoint."""
+
+    conversation_id: str
+    repo_url: str
+    branch: str = "main"
+
+
+class RepoAddResponse(BaseModel):
+    """Response from POST /api/repos/add."""
+
+    repo_id: str
+    status: str  # pending / running / success / failed
 
 
 class GithubRepoListItem(BaseModel):
@@ -533,11 +548,12 @@ def create_repo_ingestion_job(
     owner, repo_name = match.groups()
     repo_name = repo_name.rstrip(".git")
 
-    # I2 — SINGLE INGESTION RULE: return the existing Repo if one with the
-    # same (conversation_id, repo_url, branch) identity already exists.
+    # LAW 1 / I2 — SINGLE INGESTION RULE: identity = (repo_url, branch)
+    # globally.  If a Repo with the same (repo_url, branch) already exists
+    # (regardless of which conversation created it), return it immediately
+    # without creating a duplicate or re-enqueueing ingestion.
     existing = session.exec(
         select(Repo).where(
-            Repo.conversation_id == conversation_id,
             Repo.repo_url == repo.repo_url,
             Repo.branch == repo.branch,
         )
@@ -546,7 +562,7 @@ def create_repo_ingestion_job(
         return RepoStatusResponse(
             id=str(existing.id),
             repo_id=str(existing.id),
-            conversation_id=existing.conversation_id,
+            conversation_id=conversation_id,
             repo_url=existing.repo_url,
             owner=existing.owner,
             name=existing.name,
@@ -717,4 +733,94 @@ def retry_repo_ingestion(
         chunk_count=repo.total_chunks,
         created_at=repo.created_at.isoformat(),
         updated_at=repo.updated_at.isoformat(),
+    )
+
+
+# ===========================================================================
+# Global repo upsert + conversation binding
+# GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1
+# ===========================================================================
+
+
+@router.post(
+    "/api/repos/add",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def add_repo(
+    req: RepoAddRequest,
+    session: Session = Depends(get_session),
+) -> RepoAddResponse:
+    """
+    GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1.
+
+    Step 1 — Global upsert: find or create the Repo by (repo_url, branch).
+    Step 2 — Conversation binding: create a ConversationRepo row if one does
+    not already exist for this (conversation_id, repo_id) pair.
+
+    Invariants:
+    - Repo is ingested AT MOST ONCE (LAW 2).
+    - Ingestion is only triggered for newly created Repos.
+    - The binding is idempotent (UNIQUE constraint on conversation_repos).
+    """
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+
+    owner, repo_name = match.groups()
+    repo_name = repo_name.rstrip(".git")
+
+    # ------------------------------------------------------------------
+    # Step 1: global upsert on (repo_url, branch)
+    # ------------------------------------------------------------------
+    repo = session.exec(
+        select(Repo).where(
+            Repo.repo_url == req.repo_url,
+            Repo.branch == req.branch,
+        )
+    ).first()
+
+    newly_created = False
+    if repo is None:
+        repo = Repo(
+            id=uuid.uuid4(),
+            repo_url=req.repo_url,
+            owner=owner,
+            name=repo_name,
+            branch=req.branch,
+            ingestion_status="pending",
+            total_files=0,
+            total_chunks=0,
+        )
+        session.add(repo)
+        session.commit()
+        session.refresh(repo)
+        newly_created = True
+
+    # ------------------------------------------------------------------
+    # Step 2: bind to conversation (idempotent)
+    # ------------------------------------------------------------------
+    existing_binding = session.exec(
+        select(ConversationRepo).where(
+            ConversationRepo.conversation_id == req.conversation_id,
+            ConversationRepo.repo_id == repo.id,
+        )
+    ).first()
+
+    if existing_binding is None:
+        binding = ConversationRepo(
+            id=uuid.uuid4(),
+            conversation_id=req.conversation_id,
+            repo_id=repo.id,
+        )
+        session.add(binding)
+        session.commit()
+
+    # Trigger ingestion only for newly created repos (LAW 2).
+    if newly_created:
+        _enqueue_repo_ingestion(str(repo.id))
+
+    return RepoAddResponse(
+        repo_id=str(repo.id),
+        status=repo.ingestion_status,
     )

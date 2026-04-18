@@ -848,3 +848,202 @@ class TestContextReposDrivesRetrieval:
         assert chat_resp.status_code == 200
         prompt = captured[0]
         assert "REPO CONTEXT" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1
+# POST /api/repos/add — global upsert + conversation binding
+# ---------------------------------------------------------------------------
+
+
+class TestGlobalRepoAddEndpoint:
+    """Tests for the global repo upsert + conversation binding endpoint."""
+
+    def test_add_repo_returns_200(self, client: TestClient):
+        """POST /api/repos/add returns 200 with repo_id and status."""
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("README.md", "# Hello")],
+        ):
+            resp = client.post(
+                "/api/repos/add",
+                json={
+                    "conversation_id": str(uuid.uuid4()),
+                    "repo_url": "https://github.com/owner/global-repo",
+                    "branch": "main",
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "repo_id" in body
+        assert "status" in body
+        assert body["status"] in ("pending", "running", "success", "failed")
+
+    def test_add_repo_is_globally_idempotent(self, client: TestClient):
+        """Two different conversations adding the same URL share ONE Repo row."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        conv_a = str(uuid.uuid4())
+        conv_b = str(uuid.uuid4())
+        payload_base = {"repo_url": "https://github.com/owner/shared-repo", "branch": "main"}
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("main.py", "print('hi')")],
+        ):
+            resp_a = client.post(
+                "/api/repos/add",
+                json={"conversation_id": conv_a, **payload_base},
+                headers=AUTH,
+            )
+            resp_b = client.post(
+                "/api/repos/add",
+                json={"conversation_id": conv_b, **payload_base},
+                headers=AUTH,
+            )
+
+        assert resp_a.status_code == 200
+        assert resp_b.status_code == 200
+        # Both must reference the same underlying Repo row.
+        assert resp_a.json()["repo_id"] == resp_b.json()["repo_id"]
+
+        # Only ONE Repo row must exist for this (repo_url, branch).
+        with Session(db_module.get_engine()) as session:
+            repos = session.exec(
+                select(Repo).where(
+                    Repo.repo_url == payload_base["repo_url"],
+                    Repo.branch == payload_base["branch"],
+                )
+            ).all()
+            assert len(repos) == 1
+
+    def test_add_repo_creates_conversation_binding(self, client: TestClient):
+        """POST /api/repos/add creates a ConversationRepo binding row."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import ConversationRepo, Repo
+
+        cid = str(uuid.uuid4())
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("app.py", "code")],
+        ):
+            resp = client.post(
+                "/api/repos/add",
+                json={
+                    "conversation_id": cid,
+                    "repo_url": "https://github.com/owner/binding-repo",
+                    "branch": "main",
+                },
+                headers=AUTH,
+            )
+
+        assert resp.status_code == 200
+        repo_id = uuid.UUID(resp.json()["repo_id"])
+
+        with Session(db_module.get_engine()) as session:
+            binding = session.exec(
+                select(ConversationRepo).where(
+                    ConversationRepo.conversation_id == cid,
+                    ConversationRepo.repo_id == repo_id,
+                )
+            ).first()
+            assert binding is not None
+
+    def test_add_repo_binding_is_idempotent(self, client: TestClient):
+        """Calling /api/repos/add twice for the same (conversation, repo) does not create duplicate bindings."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import ConversationRepo
+
+        cid = str(uuid.uuid4())
+        payload = {
+            "conversation_id": cid,
+            "repo_url": "https://github.com/owner/idempotent-binding",
+            "branch": "main",
+        }
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("README.md", "hello")],
+        ):
+            client.post("/api/repos/add", json=payload, headers=AUTH)
+            client.post("/api/repos/add", json=payload, headers=AUTH)
+
+        with Session(db_module.get_engine()) as session:
+            repo_id = uuid.UUID(
+                client.post("/api/repos/add", json=payload, headers=AUTH).json()["repo_id"]
+            )
+            bindings = session.exec(
+                select(ConversationRepo).where(
+                    ConversationRepo.conversation_id == cid,
+                    ConversationRepo.repo_id == repo_id,
+                )
+            ).all()
+            assert len(bindings) == 1
+
+    def test_add_repo_invalid_url(self, client: TestClient):
+        """POST /api/repos/add with a non-GitHub URL returns 400."""
+        resp = client.post(
+            "/api/repos/add",
+            json={
+                "conversation_id": str(uuid.uuid4()),
+                "repo_url": "https://example.com/not-a-repo",
+                "branch": "main",
+            },
+            headers=AUTH,
+        )
+        assert resp.status_code == 400
+
+    def test_old_and_new_endpoints_share_same_repo_row(self, client: TestClient):
+        """Old POST /api/chat/{cid}/repos and new POST /api/repos/add converge
+        on the same global Repo row for the same (repo_url, branch)."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import Repo
+
+        cid_old = str(uuid.uuid4())
+        cid_new = str(uuid.uuid4())
+        url = "https://github.com/owner/convergence-repo"
+        branch = "main"
+
+        with patch(
+            "backend.app.github_routes._fetch_repo_file_list",
+            new_callable=AsyncMock,
+            return_value=[("main.py", "x = 1")],
+        ):
+            old_resp = client.post(
+                f"/api/chat/{cid_old}/repos",
+                json={"repo_url": url, "branch": branch},
+                headers=AUTH,
+            )
+            new_resp = client.post(
+                "/api/repos/add",
+                json={"conversation_id": cid_new, "repo_url": url, "branch": branch},
+                headers=AUTH,
+            )
+
+        assert old_resp.status_code == 202
+        assert new_resp.status_code == 200
+        # Both must reference the same Repo row.
+        assert old_resp.json()["id"] == new_resp.json()["repo_id"]
+
+        with Session(db_module.get_engine()) as session:
+            repos = session.exec(
+                select(Repo).where(Repo.repo_url == url, Repo.branch == branch)
+            ).all()
+            assert len(repos) == 1
+
