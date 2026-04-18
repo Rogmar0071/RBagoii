@@ -26,7 +26,7 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile, RepoChunk
+from backend.app.models import ChatFile, Repo, RepoChunk
 from backend.app.repo_retrieval import _split_into_chunks
 
 router = APIRouter()
@@ -53,6 +53,28 @@ class GithubRepoResponse(BaseModel):
     branch: str
     created_at: str
     ingestion_status: Optional[str] = None
+
+
+# REPO_CONTEXT_FINALIZATION_V1 — Phase 1+2
+class RepoCreateRequest(BaseModel):
+    """Request body for the first-class Repo ingestion endpoint."""
+    repo_url: str  # Full GitHub URL, e.g., https://github.com/owner/repo
+    branch: str = "main"
+
+
+class RepoStatusResponse(BaseModel):
+    """Response from the first-class Repo API."""
+    id: str
+    conversation_id: str
+    repo_url: str
+    owner: str
+    name: str
+    branch: str
+    ingestion_status: str  # pending / running / success / failed
+    total_files: int
+    total_chunks: int
+    created_at: str
+    updated_at: str
 
 
 class GithubRepoListItem(BaseModel):
@@ -454,3 +476,223 @@ def remove_github_repo(
     session.commit()
 
     return None
+
+
+# ===========================================================================
+# REPO_CONTEXT_FINALIZATION_V1 — Phase 1+2+8
+# First-class Repo endpoints (async ingestion pipeline)
+# ===========================================================================
+
+
+def _enqueue_repo_ingestion(repo_id: str) -> None:
+    """
+    Enqueue or synchronously run repo ingestion.
+
+    Uses the existing worker.enqueue_job infrastructure so it works with
+    both Redis (async) and BACKEND_DISABLE_JOBS=0/1 modes.
+    """
+    import os as _os
+
+    from backend.app.worker import enqueue_job
+
+    disable = _os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
+    if disable:
+        # In test/DISABLE_JOBS mode: run inline in a background thread so the
+        # API returns immediately but the DB gets populated before test assertions.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        from backend.app.worker import run_repo_ingestion
+
+        e = _TPE(max_workers=1)
+        e.submit(run_repo_ingestion, repo_id)
+        e.shutdown(wait=True)  # tests need it to complete synchronously
+    else:
+        enqueue_job(repo_id, "repo_ingestion")
+
+
+@router.post(
+    "/api/chat/{conversation_id}/repos",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+def create_repo_ingestion_job(
+    conversation_id: str,
+    repo: RepoCreateRequest,
+    session: Session = Depends(get_session),
+) -> RepoStatusResponse:
+    """
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 2.
+
+    Create a first-class Repo entity (status="pending") and immediately
+    return the repo_id.  Ingestion is processed asynchronously by the
+    worker (run_repo_ingestion).
+
+    Invariant: API NEVER blocks on GitHub fetch.
+    """
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo.repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+
+    owner, repo_name = match.groups()
+    repo_name = repo_name.rstrip(".git")
+
+    new_repo = Repo(
+        id=uuid.uuid4(),
+        conversation_id=conversation_id,
+        repo_url=repo.repo_url,
+        owner=owner,
+        name=repo_name,
+        branch=repo.branch,
+        ingestion_status="pending",
+        total_files=0,
+        total_chunks=0,
+    )
+    session.add(new_repo)
+    session.commit()
+    session.refresh(new_repo)
+
+    # Trigger ingestion asynchronously
+    _enqueue_repo_ingestion(str(new_repo.id))
+
+    return RepoStatusResponse(
+        id=str(new_repo.id),
+        conversation_id=new_repo.conversation_id,
+        repo_url=new_repo.repo_url,
+        owner=new_repo.owner,
+        name=new_repo.name,
+        branch=new_repo.branch,
+        ingestion_status=new_repo.ingestion_status,
+        total_files=new_repo.total_files,
+        total_chunks=new_repo.total_chunks,
+        created_at=new_repo.created_at.isoformat(),
+        updated_at=new_repo.updated_at.isoformat(),
+    )
+
+
+@router.get(
+    "/api/chat/{conversation_id}/repos",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def list_repos(
+    conversation_id: str,
+    session: Session = Depends(get_session),
+) -> List[RepoStatusResponse]:
+    """
+    REPO_CONTEXT_FINALIZATION_V1.
+    List all first-class Repo entities linked to the conversation.
+    """
+    stmt = (
+        select(Repo)
+        .where(Repo.conversation_id == conversation_id)
+        .order_by(Repo.created_at.desc())
+    )
+    repos = session.exec(stmt).all()
+    return [
+        RepoStatusResponse(
+            id=str(r.id),
+            conversation_id=r.conversation_id,
+            repo_url=r.repo_url,
+            owner=r.owner,
+            name=r.name,
+            branch=r.branch,
+            ingestion_status=r.ingestion_status,
+            total_files=r.total_files,
+            total_chunks=r.total_chunks,
+            created_at=r.created_at.isoformat(),
+            updated_at=r.updated_at.isoformat(),
+        )
+        for r in repos
+    ]
+
+
+@router.delete(
+    "/api/chat/{conversation_id}/repos/{repo_id}",
+    status_code=204,
+    dependencies=[Depends(require_auth)],
+)
+def remove_repo(
+    conversation_id: str,
+    repo_id: str,
+    session: Session = Depends(get_session),
+):
+    """
+    REPO_CONTEXT_FINALIZATION_V1.
+    Remove a first-class Repo and all its RepoChunk rows.
+    """
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    stmt = select(Repo).where(
+        Repo.id == repo_uuid,
+        Repo.conversation_id == conversation_id,
+    )
+    repo = session.exec(stmt).first()
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Delete associated chunks first
+    chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
+    for chunk in session.exec(chunk_stmt).all():
+        session.delete(chunk)
+
+    session.delete(repo)
+    session.commit()
+    return None
+
+
+@router.post(
+    "/api/repos/{repo_id}/retry",
+    status_code=202,
+    dependencies=[Depends(require_auth)],
+)
+def retry_repo_ingestion(
+    repo_id: str,
+    session: Session = Depends(get_session),
+) -> RepoStatusResponse:
+    """
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 8.
+
+    Retry ingestion for a failed (or stuck) Repo.
+    Resets status to "pending" and re-enqueues the ingestion worker.
+    """
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    repo = session.get(Repo, repo_uuid)
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    # Delete stale chunks from previous attempt
+    chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
+    for chunk in session.exec(chunk_stmt).all():
+        session.delete(chunk)
+
+    repo.ingestion_status = "pending"
+    repo.total_files = 0
+    repo.total_chunks = 0
+    session.add(repo)
+    session.commit()
+    session.refresh(repo)
+
+    # Re-trigger ingestion
+    _enqueue_repo_ingestion(str(repo.id))
+
+    return RepoStatusResponse(
+        id=str(repo.id),
+        conversation_id=repo.conversation_id,
+        repo_url=repo.repo_url,
+        owner=repo.owner,
+        name=repo.name,
+        branch=repo.branch,
+        ingestion_status=repo.ingestion_status,
+        total_files=repo.total_files,
+        total_chunks=repo.total_chunks,
+        created_at=repo.created_at.isoformat(),
+        updated_at=repo.updated_at.isoformat(),
+    )
+

@@ -128,6 +128,8 @@ class ResourceActivity : AppCompatActivity() {
         // Reload files when returning to this activity
         if (conversationId != null) {
             loadChatFiles()
+            // REPO_CONTEXT_FINALIZATION_V1: also refresh backend repo status
+            loadActiveRepos()
         }
     }
 
@@ -528,7 +530,8 @@ class ResourceActivity : AppCompatActivity() {
                 var successCount = 0
                 var failureCount = 0
 
-                // Add selected GitHub repos
+                // Add selected GitHub repos via the first-class Repo endpoint.
+                // Falls back to the legacy /github/repos path if the new endpoint fails.
                 for (repo in selectedRepos) {
                     try {
                         val jsonBody = JSONObject().apply {
@@ -536,8 +539,10 @@ class ResourceActivity : AppCompatActivity() {
                             put("branch", repo.defaultBranch)
                         }.toString()
 
+                        // REPO_CONTEXT_FINALIZATION_V1 — Phase 2:
+                        // Use new first-class endpoint POST /api/chat/{cid}/repos (202)
                         val request = Request.Builder()
-                            .url("$baseUrl/api/chat/$convId/github/repos")
+                            .url("$baseUrl/api/chat/$convId/repos")
                             .addHeader("Authorization", "Bearer $apiKey")
                             .addHeader("Content-Type", "application/json")
                             .post(jsonBody.toRequestBody("application/json".toMediaType()))
@@ -546,6 +551,21 @@ class ResourceActivity : AppCompatActivity() {
                         val response = BackendClient.executeWithRetry(request)
                         if (response.isSuccessful) {
                             successCount++
+                        } else if (response.code == 404) {
+                            // New endpoint not yet deployed — fall back to legacy endpoint
+                            val legacyRequest = Request.Builder()
+                                .url("$baseUrl/api/chat/$convId/github/repos")
+                                .addHeader("Authorization", "Bearer $apiKey")
+                                .addHeader("Content-Type", "application/json")
+                                .post(jsonBody.toRequestBody("application/json".toMediaType()))
+                                .build()
+                            val legacyResp = BackendClient.executeWithRetry(legacyRequest)
+                            if (legacyResp.isSuccessful) {
+                                successCount++
+                            } else {
+                                failureCount++
+                                Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${legacyResp.code}")
+                            }
                         } else {
                             failureCount++
                             Log.e("ResourceActivity", "Failed to add repo ${repo.fullName}: ${response.code}")
@@ -601,6 +621,67 @@ class ResourceActivity : AppCompatActivity() {
                     binding.btnApply.isEnabled = true
                     Toast.makeText(this, "Failed to apply selections: ${e.message}", Toast.LENGTH_LONG).show()
                 }
+            }
+        }
+    }
+
+    /**
+     * REPO_CONTEXT_FINALIZATION_V1 — Phase 7.
+     * Load committed repos from the backend and overlay their ingestion status
+     * onto the displayed repo list.  Called after applySelections or on resume.
+     */
+    private fun loadActiveRepos() {
+        val convId = conversationId ?: return
+        executor.execute {
+            try {
+                val apiKey = apiKey()
+                val baseUrl = baseUrl()
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat/$convId/repos")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .get()
+                    .build()
+                val response = BackendClient.executeWithRetry(request)
+                if (!response.isSuccessful) return@execute
+                val body = response.body?.string() ?: "[]"
+                val arr = JSONArray(body)
+                val statusMap = mutableMapOf<String, RepoStatus>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val rs = RepoStatus(
+                        id = obj.getString("id"),
+                        conversationId = obj.getString("conversation_id"),
+                        repoUrl = obj.getString("repo_url"),
+                        owner = obj.getString("owner"),
+                        name = obj.getString("name"),
+                        branch = obj.getString("branch"),
+                        ingestionStatus = obj.getString("ingestion_status"),
+                        totalFiles = obj.getInt("total_files"),
+                        totalChunks = obj.getInt("total_chunks"),
+                    )
+                    statusMap[rs.repoUrl] = rs
+                }
+                // Overlay status onto displayed repos
+                if (statusMap.isNotEmpty()) {
+                    runOnUiThread {
+                        val updated = githubRepos.map { repo ->
+                            val rs = statusMap[repo.htmlUrl]
+                            if (rs != null) {
+                                repo.copy(
+                                    ingestionStatus = rs.ingestionStatus,
+                                    totalFiles = rs.totalFiles,
+                                    totalChunks = rs.totalChunks,
+                                    backendId = rs.id,
+                                )
+                            } else repo
+                        }
+                        githubRepos.clear()
+                        githubRepos.addAll(updated)
+                        repoAdapter.submitList(githubRepos)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("ResourceActivity", "loadActiveRepos failed: ${e.message}")
             }
         }
     }

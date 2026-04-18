@@ -69,6 +69,10 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     // GLOBAL_CONVERSATION_ACTIVATION_V1: single active conversation per session.
     private var conversationId: String? = null
     private val chatFiles = mutableListOf<ChatFile>()
+    // REPO_CONTEXT_FINALIZATION_V1 — Phase 9:
+    // Tracks first-class Repo entities for the active conversation.
+    // Updated by loadActiveRepos() on resume and after ResourceActivity returns.
+    private val activeRepos = mutableListOf<RepoStatus>()
 
     private val speechInputLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -277,6 +281,8 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         // Reload files to pick up any GitHub repos added in ResourceActivity
         if (conversationId != null) {
             loadChatFiles()
+            // REPO_CONTEXT_FINALIZATION_V1: also refresh first-class repo list
+            loadActiveRepos()
         }
     }
 
@@ -870,8 +876,24 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         put("session_id", JSONObject.NULL)
                         put("domain_profile_id", JSONObject.NULL)
 
-                        // Add file context
-                        val includedFiles = chatFiles.filter { it.includedInContext }
+                        // REPO_CONTEXT_FINALIZATION_V1 — Phase 9:
+                        // Include first-class Repo IDs in context.repos so the backend
+                        // uses the deterministic Repo entity path for retrieval.
+                        val successRepos = activeRepos.filter {
+                            it.ingestionStatus == "success"
+                        }
+                        if (successRepos.isNotEmpty()) {
+                            val reposArray = JSONArray()
+                            successRepos.forEach { repo ->
+                                reposArray.put(repo.id)
+                            }
+                            put("repos", reposArray)
+                        }
+
+                        // Add non-repo file context (documents, images, etc.)
+                        val includedFiles = chatFiles.filter {
+                            it.includedInContext && it.category != "github_repo"
+                        }
                         if (includedFiles.isNotEmpty()) {
                             val filesArray = JSONArray()
                             includedFiles.forEach { file ->
@@ -972,6 +994,55 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         }
     }
 
+    /**
+     * REPO_CONTEXT_FINALIZATION_V1 — Phase 9.
+     * Fetch first-class Repo entities from GET /api/chat/{cid}/repos and
+     * update [activeRepos] so [onSendClicked] can include context.repos.
+     * Runs asynchronously on the executor thread.
+     */
+    private fun loadActiveRepos() {
+        val convId = conversationId ?: return
+        val baseUrl = BuildConfig.BACKEND_BASE_URL.trimEnd('/')
+        val apiKey = BuildConfig.BACKEND_API_KEY
+        executor.execute {
+            try {
+                val request = Request.Builder()
+                    .url("$baseUrl/api/chat/$convId/repos")
+                    .addHeader("Authorization", "Bearer $apiKey")
+                    .get()
+                    .build()
+                BackendClient.executeWithRetry(request).use { response ->
+                    if (!response.isSuccessful) return@execute
+                    val body = response.body?.string() ?: "[]"
+                    val arr = JSONArray(body)
+                    val repos = mutableListOf<RepoStatus>()
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.getJSONObject(i)
+                        repos.add(
+                            RepoStatus(
+                                id = obj.getString("id"),
+                                conversationId = obj.getString("conversation_id"),
+                                repoUrl = obj.getString("repo_url"),
+                                owner = obj.getString("owner"),
+                                name = obj.getString("name"),
+                                branch = obj.getString("branch"),
+                                ingestionStatus = obj.getString("ingestion_status"),
+                                totalFiles = obj.getInt("total_files"),
+                                totalChunks = obj.getInt("total_chunks"),
+                            )
+                        )
+                    }
+                    synchronized(activeRepos) {
+                        activeRepos.clear()
+                        activeRepos.addAll(repos)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("ChatActivity", "loadActiveRepos failed: ${e.message}")
+            }
+        }
+    }
+
     // GLOBAL_CONVERSATION_ACTIVATION_V1: called from the worker thread before the first send.
     private fun fetchNewConversationId(baseUrl: String, apiKey: String): String? {
         val request = Request.Builder()
@@ -995,6 +1066,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             null
         }
     }
+
 
     // -------------------------------------------------------------------------
     // Edit message

@@ -1,12 +1,12 @@
 """
 backend.app.repo_retrieval
 ==========================
-REPO_CONTEXT_INTELLIGENCE_LAYER_V2
+REPO_CONTEXT_INTELLIGENCE_LAYER_V2 / REPO_CONTEXT_FINALIZATION_V1
 
 Deterministic, bounded, high-signal repository context retrieval.
 NO embeddings.  ALL retrieval uses pre-stored RepoChunk rows — no network calls.
 
-Pipeline: Normalize → Extract → Query → Score → Rank → Diversity → Return
+Pipeline: Normalize → Extract → Query → Score → Rank → Diversity → Budget → Return
 """
 
 from __future__ import annotations
@@ -37,14 +37,17 @@ _STOPWORDS = frozenset(
 
 _CHUNK_MAX_CHARS = 1500
 
-# Phase 4: diversity limits
+# Phase 4 — diversity limits
 _MAX_CHUNKS_TOTAL = 5
 _MAX_CHUNKS_PER_FILE = 2
 _MIN_DISTINCT_FILES = 2
 
-# Phase 3: path-based boost tokens
+# Phase 3 — path-based boost tokens
 _BOOST_HIGH_TOKENS = frozenset({"main", "app", "index"})
 _BOOST_DOC_TOKENS = frozenset({"readme", "docs"})
+
+# Phase 4 (FINALIZATION) — token budget (40 % of 8 000 total context tokens)
+_MAX_CONTEXT_TOKENS_REPO = 3200
 
 
 def _extract_keywords(query: str) -> list[str]:
@@ -88,13 +91,15 @@ def _score_chunk(
     """
     Compute the ranking score for a single chunk.
 
-    Phase 3 rules:
-    - +1 per keyword occurrence in content  (base)
-    - +3 if file_path stem contains "main", "app", or "index"
-    - +2 if file_path stem contains "readme" or "docs"
-    - +2 if query contains "explain" AND file_path is a documentation file
-    - +2 if query contains "where" or "location" AND file_path contains a keyword
-    - +1 if chunk is the first chunk in its source file (chunk_index == 0)
+    Scoring rules (FINALIZATION V1 — Phase 5):
+    - +1 per keyword occurrence in content          (base keyword match)
+    - +2 if file_path stem (filename) contains a query keyword (filename match)
+    - +3 if file_path contains "main", "app", or "index" (path relevance — high-signal)
+    - +2 if file_path contains "readme" or "docs"    (path relevance — documentation)
+    - +2 if query contains "explain" AND doc file    (explain boost)
+    - +2 if query contains "where"/"location" AND file path contains a keyword
+    - +1 if chunk_index == 0                        (recency: first chunk of file)
+    - -1 * (chunk_index // 3) clamped to -2         (recency weight: deeper chunks score less)
     """
     lower_content = chunk.content.lower()
     lower_path = chunk.file_path.lower()
@@ -106,11 +111,16 @@ def _score_chunk(
     if score == 0 and not keywords:
         return 0
 
-    # +3 boost: high-signal file names
+    # +2 boost: filename contains a query keyword (filename match)
+    filename_stem = lower_path.split("/")[-1].split(".")[0]
+    if keywords and any(kw in filename_stem for kw in keywords):
+        score += 2
+
+    # +3 boost: high-signal file names (path relevance)
     if any(tok in lower_path for tok in _BOOST_HIGH_TOKENS):
         score += 3
 
-    # +2 boost: documentation files
+    # +2 boost: documentation files (path relevance)
     is_doc_file = any(tok in lower_path for tok in _BOOST_DOC_TOKENS)
     if is_doc_file:
         score += 2
@@ -124,9 +134,12 @@ def _score_chunk(
         if any(kw in lower_path for kw in keywords):
             score += 2
 
-    # +1 boost: first chunk of the file (earliest position)
+    # Recency weight: first chunk of file scores highest
     if chunk.chunk_index == 0:
         score += 1
+    else:
+        # Progressively reduce score for deeper chunks (max -2)
+        score -= min(2, chunk.chunk_index // 3)
 
     return score
 
@@ -184,37 +197,74 @@ def _apply_diversity(
     return selected
 
 
+def _apply_token_budget(
+    chunks: list[RepoChunk],
+    max_tokens: int = _MAX_CONTEXT_TOKENS_REPO,
+) -> list[RepoChunk]:
+    """
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 4.
+
+    Trim *chunks* so total token_estimate does not exceed *max_tokens*.
+    Chunks are assumed to already be priority-ordered (highest relevance first).
+    """
+    result: list[RepoChunk] = []
+    used = 0
+    for chunk in chunks:
+        estimate = chunk.token_estimate or max(1, len(chunk.content) // 4)
+        if used + estimate > max_tokens:
+            break
+        result.append(chunk)
+        used += estimate
+    return result
+
+
 def retrieve_relevant_chunks(
     user_query: str,
     db: Session,
-    chat_file_ids: list[uuid.UUID],
+    chat_file_ids: list[uuid.UUID] | None = None,
+    repo_ids: list[uuid.UUID] | None = None,
     max_chunks: int = _MAX_CHUNKS_TOTAL,
+    max_tokens: int = _MAX_CONTEXT_TOKENS_REPO,
 ) -> List[RepoChunk]:
     """
-    Return at most *max_chunks* RepoChunk rows relevant to *user_query*.
+    Return at most *max_chunks* RepoChunk rows relevant to *user_query*,
+    subject to the token budget *max_tokens*.
 
-    Phase 5 — Multi-repo isolation:
-    Only chunks from the explicitly supplied *chat_file_ids* are considered.
-    No blind conversation-wide scanning.
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 3: accepts explicit *repo_ids* for
+    scoped retrieval via the first-class Repo model.  Falls back to the
+    *chat_file_ids* path for backward compatibility with the V1 ingestion route.
 
-    Pipeline (V2):
+    Priority: repo_ids > chat_file_ids.  At least one must be non-empty.
+
+    Pipeline (FINALIZATION V1):
     1. Normalize query / extract keywords
-    2. Query RepoChunk by chat_file_id membership
-    3. Score each chunk (Phase 3 boost rules)
+    2. Query RepoChunk by repo_id or chat_file_id membership
+    3. Score each chunk (Phase 3+5 boost rules including recency weight)
     4. Sort descending by score
     5. Apply diversity enforcement (Phase 4)
-    6. Return bounded result
+    6. Apply token budget (Phase 4 FINALIZATION)
+    7. Return bounded result
     """
-    if not chat_file_ids:
+    has_repo_ids = bool(repo_ids)
+    has_file_ids = bool(chat_file_ids)
+
+    if not has_repo_ids and not has_file_ids:
         return []
 
     lower_query = user_query.lower()
     keywords = _extract_keywords(user_query)
 
-    # Phase 5: scope strictly to the provided file IDs
-    chunk_stmt = select(RepoChunk).where(
-        RepoChunk.chat_file_id.in_(chat_file_ids)  # type: ignore[attr-defined]
-    )
+    # Phase 3 (FINALIZATION): scope strictly to provided IDs
+    if has_repo_ids:
+        chunk_stmt = select(RepoChunk).where(
+            RepoChunk.repo_id.in_(repo_ids)  # type: ignore[attr-defined]
+        )
+    else:
+        # Backward-compat path: query by chat_file_id
+        chunk_stmt = select(RepoChunk).where(
+            RepoChunk.chat_file_id.in_(chat_file_ids)  # type: ignore[attr-defined]
+        )
+
     all_chunks = db.exec(chunk_stmt).all()
 
     if not all_chunks:
@@ -223,9 +273,10 @@ def retrieve_relevant_chunks(
     if not keywords:
         # No keywords — fall back to first N from Phase 4 diversity pass
         fallback_scored = [(0, c) for c in all_chunks]
-        return _apply_diversity(fallback_scored, max_total=max_chunks)
+        selected = _apply_diversity(fallback_scored, max_total=max_chunks)
+        return _apply_token_budget(selected, max_tokens=max_tokens)
 
-    # Phase 3: score every chunk
+    # Phase 3+5: score every chunk
     scored: list[tuple[int, RepoChunk]] = []
     for chunk in all_chunks:
         score = _score_chunk(chunk, keywords, lower_query)
@@ -236,9 +287,12 @@ def retrieve_relevant_chunks(
     scored.sort(key=lambda x: x[0], reverse=True)
 
     if scored:
-        # Phase 4: diversity enforcement
-        return _apply_diversity(scored, max_total=max_chunks)
+        # Phase 4: diversity enforcement then token budget
+        selected = _apply_diversity(scored, max_total=max_chunks)
+        return _apply_token_budget(selected, max_tokens=max_tokens)
 
-    # No hits at all — return diversity-filtered fallback
+    # No hits at all — return diversity-filtered + budgeted fallback
     fallback_scored = [(0, c) for c in all_chunks]
-    return _apply_diversity(fallback_scored, max_total=max_chunks)
+    selected = _apply_diversity(fallback_scored, max_total=max_chunks)
+    return _apply_token_budget(selected, max_tokens=max_tokens)
+

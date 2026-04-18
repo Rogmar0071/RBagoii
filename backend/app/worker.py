@@ -2653,6 +2653,7 @@ def run_analyze_repo_step(job_id: str) -> None:
         )
 
 
+
 # ---------------------------------------------------------------------------
 # Job-function registry
 # ---------------------------------------------------------------------------
@@ -2662,4 +2663,135 @@ _JOB_FUNCTIONS = {
     "analyze_optional": run_analyze_optional_step,
     "blueprint": run_blueprint,
     "analyze_repo": run_analyze_repo_step,
+    "repo_ingestion": lambda repo_id: run_repo_ingestion(repo_id),
 }
+
+
+# ---------------------------------------------------------------------------
+# REPO_CONTEXT_FINALIZATION_V1 — Phase 2
+# Async repo ingestion worker
+# ---------------------------------------------------------------------------
+
+
+def run_repo_ingestion(repo_id: str) -> None:
+    """
+    Background worker: fetch a GitHub repository, chunk the files, and
+    update the Repo entity with ingestion results.
+
+    Flow:
+    1. Set Repo.ingestion_status = "running"
+    2. Fetch file list via _fetch_repo_file_list
+    3. Create RepoChunk rows (repo_id FK)
+    4. Set Repo.ingestion_status = "success" | "failed"
+    5. Update total_files / total_chunks counts
+
+    Invariants:
+    - Repo status is ALWAYS updated (never left as "running" on error).
+    - No ChatFile row is created — Repo is self-contained.
+    """
+    import asyncio
+
+    from sqlmodel import Session
+
+    from backend.app.database import get_engine
+    from backend.app.github_routes import GITHUB_TOKEN, _fetch_repo_file_list
+    from backend.app.models import Repo, RepoChunk
+    from backend.app.repo_retrieval import _split_into_chunks
+
+    # -----------------------------------------------------------------------
+    # Step 1: mark as running
+    # -----------------------------------------------------------------------
+    with Session(get_engine()) as session:
+        repo = session.get(Repo, uuid.UUID(repo_id))
+        if repo is None:
+            logger.error("run_repo_ingestion: Repo %s not found in DB — aborting", repo_id)
+            return
+        owner = repo.owner
+        name = repo.name
+        branch = repo.branch
+        repo.ingestion_status = "running"
+        repo.updated_at = datetime.now(timezone.utc)
+        session.add(repo)
+        session.commit()
+
+    # -----------------------------------------------------------------------
+    # Step 2: fetch files from GitHub
+    # -----------------------------------------------------------------------
+    headers: dict = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            file_list = loop.run_until_complete(
+                _fetch_repo_file_list(owner, name, branch, headers)
+            )
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+    except Exception as exc:
+        logger.error(
+            "run_repo_ingestion: fetch failed for %s/%s (repo_id=%s): %s",
+            owner,
+            name,
+            repo_id,
+            exc,
+        )
+        with Session(get_engine()) as session:
+            r = session.get(Repo, uuid.UUID(repo_id))
+            if r:
+                r.ingestion_status = "failed"
+                r.updated_at = datetime.now(timezone.utc)
+                session.add(r)
+                session.commit()
+        return
+
+    # -----------------------------------------------------------------------
+    # Step 3+4+5: create chunks and update status
+    # -----------------------------------------------------------------------
+    with Session(get_engine()) as session:
+        r = session.get(Repo, uuid.UUID(repo_id))
+        if r is None:
+            logger.error(
+                "run_repo_ingestion: Repo %s disappeared during ingestion", repo_id
+            )
+            return
+
+        if not file_list:
+            r.ingestion_status = "failed"
+            r.updated_at = datetime.now(timezone.utc)
+            session.add(r)
+            session.commit()
+            return
+
+        chunk_count = 0
+        for file_path, content in file_list:
+            for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
+                chunk = RepoChunk(
+                    repo_id=r.id,
+                    file_path=file_path,
+                    content=chunk_text,
+                    chunk_index=chunk_index,
+                    token_estimate=max(1, len(chunk_text) // 4),
+                )
+                session.add(chunk)
+                chunk_count += 1
+
+        r.ingestion_status = "success" if chunk_count > 0 else "failed"
+        r.total_files = len(file_list)
+        r.total_chunks = chunk_count
+        r.updated_at = datetime.now(timezone.utc)
+        session.add(r)
+        session.commit()
+
+    logger.info(
+        "run_repo_ingestion: completed for %s/%s — %d files, %d chunks (status=%s)",
+        owner,
+        name,
+        len(file_list),
+        chunk_count,
+        "success" if chunk_count > 0 else "failed",
+    )
+

@@ -379,10 +379,16 @@ class RepoChunk(SQLModel, table=True):
     __tablename__ = "repo_chunks"
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    # The ChatFile (github_repo) this chunk belongs to
-    chat_file_id: uuid.UUID = Field(
-        foreign_key="chat_files.id",
-        index=True,
+    # REPO_CONTEXT_FINALIZATION_V1 — Phase 1:
+    # repo_id is the primary FK (Repo first-class entity).
+    # chat_file_id is kept nullable for backward compatibility with V1 ingestion path.
+    repo_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), nullable=True, index=True),
+    )
+    chat_file_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("chat_files.id"), nullable=True, index=True),
     )
     # Path of the source file within the repository
     file_path: str = Field(sa_column=Column(sa.Text))
@@ -400,4 +406,53 @@ class RepoChunk(SQLModel, table=True):
     def __init__(self, **data):
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# repos
+# ---------------------------------------------------------------------------
+
+
+class Repo(SQLModel, table=True):
+    """
+    REPO_CONTEXT_FINALIZATION_V1 — Phase 1.
+
+    First-class repository entity, independent of ChatFile.
+    Stores ingestion metadata and serves as the FK anchor for RepoChunk rows
+    created via the async ingestion pipeline.
+    """
+
+    __tablename__ = "repos"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # Conversation this repo belongs to
+    conversation_id: str = Field(index=True)
+    # Full GitHub URL, e.g. https://github.com/owner/repo
+    repo_url: str = Field(sa_column=Column(sa.Text))
+    # GitHub owner login
+    owner: str = Field(sa_column=Column(sa.Text))
+    # Repository name (without owner prefix)
+    name: str = Field(sa_column=Column(sa.Text))
+    # Target branch
+    branch: str = Field(default="main")
+    # pending / running / success / failed
+    ingestion_status: str = Field(default="pending")
+    # Counts populated by the ingestion worker
+    total_files: int = Field(default=0)
+    total_chunks: int = Field(default=0)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
         super().__init__(**data)
