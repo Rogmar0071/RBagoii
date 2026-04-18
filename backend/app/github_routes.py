@@ -501,12 +501,12 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
     """
     Enqueue or synchronously run repo ingestion.
 
-    Uses the existing worker.enqueue_job infrastructure so it works with
-    both Redis (async) and BACKEND_DISABLE_JOBS=0/1 modes.
+    Uses the string-based RQ entry point so the worker resolves the function
+    at execution time (no pickling / DeserializationError risk).
+
+    CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V5 §2
     """
     import os as _os
-
-    from backend.app.worker import enqueue_job
 
     disable = _os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
@@ -519,8 +519,32 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
         e = _TPE(max_workers=1)
         e.submit(run_repo_ingestion, repo_id)
         e.shutdown(wait=True)  # tests need it to complete synchronously
+        return
+
+    redis_url = _os.environ.get("REDIS_URL", "").strip()
+    if redis_url:
+        from redis import Redis
+        from rq import Queue as RQueue
+
+        conn = Redis.from_url(redis_url)
+        q = RQueue("default", connection=conn)
+        print("ENQUEUE: start")
+        q.enqueue(
+            "backend.app.job_runner.execute_job",
+            "run_repo_ingestion",
+            repo_id,
+            job_timeout=1800,
+        )
+        print("ENQUEUE: submitted")
     else:
-        enqueue_job(repo_id, "repo_ingestion")
+        # No Redis — run in a background thread pool.
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+
+        from backend.app.worker import run_repo_ingestion
+
+        e = _TPE(max_workers=1)
+        e.submit(run_repo_ingestion, repo_id)
+        e.shutdown(wait=False)
 
 
 @router.post(
@@ -672,7 +696,9 @@ def retry_repo_ingestion(
     session.refresh(repo)
 
     # Re-trigger ingestion
+    print("STEP 1: before enqueue")
     _enqueue_repo_ingestion(str(repo.id))
+    print("STEP 2: after enqueue")
 
     return RepoStatusResponse(
         id=str(repo.id),
@@ -790,7 +816,9 @@ def add_repo(
 
     # Trigger ingestion only for newly created repos (LAW 2).
     if newly_created:
+        print("STEP 1: before enqueue")
         _enqueue_repo_ingestion(str(repo.id))
+        print("STEP 2: after enqueue")
     elif repo.ingestion_status in ("running", "success"):
         # CONTRACT: MQP-CONTRACT:RQ_RUNTIME_STABILITY_AND_STATE_TRUTH_V3 §5
         # Case 2 — return 409 when the repo is already running or successfully

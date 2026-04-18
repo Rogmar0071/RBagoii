@@ -40,6 +40,8 @@ def execute_job(job_name: str, *args) -> object:
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
     """
+    print(f"[JOB_RUNNER] executing: {job_name}")
+
     # Lazy import avoids circular-import issues at module load time.
     from backend.app.job_registry import JOB_REGISTRY
 
