@@ -653,7 +653,13 @@ class ResourceActivity : AppCompatActivity() {
             val jobsToMonitor = jobIds.toMutableSet()
             
             while (jobsToMonitor.isNotEmpty() && isPollingActive) {
-                Thread.sleep(2000)  // Poll every 2 seconds
+                try {
+                    Thread.sleep(2000)  // Poll every 2 seconds
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    Log.d("ResourceActivity", "Polling interrupted")
+                    break
+                }
                 
                 if (!isPollingActive) break  // Check again after sleep
                 
@@ -708,6 +714,10 @@ class ResourceActivity : AppCompatActivity() {
     /**
      * Update a repo's ingestion status in the UI based on IngestJob data.
      * SOURCE OF TRUTH: All state comes from IngestJob fields.
+     * 
+     * @param source Expected format: "{repo_url}@{branch}" where repo_url is the HTTPS URL
+     *               (e.g., "https://github.com/owner/repo@main"). The backend constructs
+     *               this in ingest_routes.py by concatenating repo_url and branch.
      */
     private fun updateRepoStatus(
         source: String,  // "{repo_url}@{branch}"
@@ -719,6 +729,7 @@ class ResourceActivity : AppCompatActivity() {
         jobId: String
     ) {
         // Extract repo_url from source (format: "url@branch")
+        // Uses substringBeforeLast to handle the last @ as the separator
         val repoUrl = source.substringBeforeLast("@")
         
         // Find and update the matching repo
