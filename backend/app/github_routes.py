@@ -22,7 +22,6 @@ from typing import List, Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
@@ -505,6 +504,11 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V5 §2
     Queue always stores the stable string path "backend.app.job_runner.execute_job"
     with job name "run_repo_ingestion" — never a function object.
+
+    CONTRACT: MQP-CONTRACT:REPO_INGESTION_REBUILD_V1 Phase 3
+    Uses a deterministic job_id to prevent duplicate enqueue.  When Redis is
+    available the function checks whether a job with that id is already queued
+    or running before submitting a new one.
     """
     import os as _os
 
@@ -523,29 +527,35 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
 
     redis_url = _os.environ.get("REDIS_URL", "").strip()
     if redis_url:
-        print("ENQUEUE: start", repo_id)
-
         from redis import Redis
-
-        print("ENQUEUE: redis import OK")
-
         from rq import Queue as RQueue
-
-        print("ENQUEUE: rq import OK")
+        from rq.exceptions import NoSuchJobError
+        from rq.job import Job as RQJob
 
         conn = Redis.from_url(redis_url)
-        print("ENQUEUE: redis connected")
+        job_id = f"repo_ingestion_{repo_id}"
+
+        # Phase 3 — queue discipline: skip if job is already queued or running.
+        try:
+            existing = RQJob.fetch(job_id, connection=conn)
+            status = existing.get_status()
+            if status in ("queued", "started"):
+                logger.info(
+                    {"event": "skipped_duplicate", "repo_id": repo_id, "job_status": str(status)}
+                )
+                return
+        except NoSuchJobError:
+            pass  # No existing job — proceed to enqueue.
 
         q = RQueue("default", connection=conn)
-        print("ENQUEUE: queue ready")
-
         q.enqueue(
             "backend.app.job_runner.execute_job",
             "run_repo_ingestion",
             repo_id,
+            job_id=job_id,
             job_timeout=1800,
         )
-        print("ENQUEUE: submitted", repo_id)
+        logger.info({"event": "job_enqueued", "repo_id": repo_id, "job_id": job_id})
         return
 
     # No Redis and jobs enabled — run in a background thread (non-blocking).
@@ -743,98 +753,114 @@ def add_repo(
     session: Session = Depends(get_session),
 ) -> RepoAddResponse:
     """
-    GLOBAL_REPO_ASSET_INGESTION_AND_CONTEXT_BINDING_V1.
+    MQP-CONTRACT: REPO_INGESTION_REBUILD_V1
 
-    Step 1 — Global upsert: find or create the Repo by (repo_url, branch).
-    Step 2 — Conversation binding: create a ConversationRepo row if one does
-    not already exist for this (conversation_id, repo_id) pair.
-
-    Invariants:
-    - Repo is ingested AT MOST ONCE (LAW 2).
-    - Ingestion is only triggered for newly created Repos.
-    - The binding is idempotent (UNIQUE constraint on conversation_repos).
+    Phase 1 — Canonical GitHub resolution: parse URL with regex then confirm
+              identity via the GitHub API.  Owner and name are ALWAYS taken
+              from the API response, never from user input.
+    Phase 2 — Atomic DB transaction: find-or-create Repo by (repo_url, branch)
+              and idempotently bind to conversation.  Single commit on exit.
+    Phase 3 — Queue discipline: enqueue ingestion only when no job is already
+              queued or running for this repo.
     """
-    print("TRACE:ADD_REPO_V2_ACTIVE")
+    logger.info({"event": "add_repo_entered", "repo_url": req.repo_url})
+
+    # -----------------------------------------------------------------------
+    # Phase 1 — Canonical repo resolution via GitHub API
+    # -----------------------------------------------------------------------
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail="INVALID_REPO")
+
+    raw_owner, raw_repo = match.groups()
+    # Strip .git suffix from the initial URL parse — this is the ONLY point
+    # at which we tolerate user-supplied string mutation.
+    if raw_repo.endswith(".git"):
+        raw_repo = raw_repo[:-4]
+
+    _gh_headers: dict = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        _gh_headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
     try:
-        print("TRACE:add_repo:entered")
-        print(f"TRACE:INPUT repo_url={req.repo_url}")
+        with httpx.Client(timeout=10.0) as _client:
+            _gh_resp = _client.get(
+                f"https://api.github.com/repos/{raw_owner}/{raw_repo}",
+                headers=_gh_headers,
+            )
+    except httpx.RequestError as exc:
+        logger.error({"event": "canonical_resolution_failed", "error": str(exc)})
+        raise HTTPException(status_code=400, detail="INVALID_REPO")
 
-        match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
-        if not match:
-            raise HTTPException(status_code=400, detail="Invalid GitHub URL")
+    if _gh_resp.status_code != 200:
+        logger.warning(
+            {
+                "event": "canonical_resolution_failed",
+                "github_status": _gh_resp.status_code,
+            }
+        )
+        raise HTTPException(status_code=400, detail="INVALID_REPO")
 
-        owner, repo_name = match.groups()
-        print(f"TRACE:PARSED owner={owner} repo_name={repo_name} len={len(repo_name)}")
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
-        print(f"TRACE:NORMALIZED owner={owner} repo_name={repo_name} len={len(repo_name)}")
-        print(f"TRACE:CANONICAL owner={owner} repo_name={repo_name} len={len(repo_name)}")
+    _gh_data = _gh_resp.json()
+    owner: str = _gh_data["owner"]["login"]
+    repo_name: str = _gh_data["name"]
 
-        # ------------------------------------------------------------------
-        # Step 1: global upsert on (repo_url, branch)
-        # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
-        # ------------------------------------------------------------------
-        if not req.conversation_id:
-            raise HTTPException(status_code=400, detail="MISSING_CONVERSATION_ID")
+    logger.info({"event": "canonical_resolved", "owner": owner, "name": repo_name})
 
-        print(f"TRACE:PRE_UPSERT owner={owner} repo_name={repo_name} len={len(repo_name)}")
+    # -----------------------------------------------------------------------
+    # Validate conversation_id before touching the DB
+    # -----------------------------------------------------------------------
+    if not req.conversation_id:
+        raise HTTPException(status_code=400, detail="MISSING_CONVERSATION_ID")
 
-        def _find_repo() -> Repo | None:
-            return session.exec(
-                select(Repo).where(
-                    Repo.repo_url == req.repo_url,
-                    Repo.branch == req.branch,
-                )
-            ).first()
+    # -----------------------------------------------------------------------
+    # Phase 2 — Atomic upsert (single transaction, single commit on block exit)
+    # -----------------------------------------------------------------------
+    branch = req.branch or "main"
+    newly_created = False
+    repo_id_str: str
+    current_status: str
 
-        repo = _find_repo()
+    with session.begin():
+        repo = session.exec(
+            select(Repo).where(
+                Repo.repo_url == req.repo_url,
+                Repo.branch == branch,
+            )
+        ).first()
 
-        newly_created = False
         if repo is None:
-            try:
-                repo = Repo(
-                    id=uuid.uuid4(),
-                    repo_url=req.repo_url,
-                    owner=owner,
-                    name=repo_name,
-                    branch=req.branch,
-                    ingestion_status="pending",
-                    total_files=0,
-                    total_chunks=0,
-                )
-                session.add(repo)
-                print(
-                    f"TRACE:PRE_COMMIT owner={repo.owner} "
-                    f"repo_name={repo.name} len={len(repo.name)}"
-                )
-                session.commit()
-                print(
-                    f"TRACE:POST_COMMIT owner={repo.owner} "
-                    f"repo_name={repo.name} len={len(repo.name)}"
-                )
-                session.refresh(repo)
-                newly_created = True
-            except IntegrityError:
-                # A concurrent request already created the row — roll back and
-                # fall through to the existing-repo path without triggering ingestion.
-                session.rollback()
-                repo = _find_repo()
-                if repo is None:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=(
-                            f"Failed to create or find repository: "
-                            f"url={req.repo_url!r} branch={req.branch!r}"
-                        ),
-                    )
+            repo = Repo(
+                id=uuid.uuid4(),
+                repo_url=req.repo_url,
+                owner=owner,
+                name=repo_name,
+                branch=branch,
+                ingestion_status="pending",
+                total_files=0,
+                total_chunks=0,
+            )
+            session.add(repo)
+            session.flush()  # assign PK before binding FK
+            newly_created = True
+            logger.info(
+                {
+                    "event": "repo_created",
+                    "repo_id": str(repo.id),
+                    "owner": owner,
+                    "name": repo_name,
+                }
+            )
+        else:
+            logger.info(
+                {
+                    "event": "repo_found",
+                    "repo_id": str(repo.id),
+                    "owner": repo.owner,
+                    "name": repo.name,
+                }
+            )
 
-        print(f"TRACE:repo_loaded id={repo.id} status={repo.ingestion_status}")
-        print(f"TRACE:DB_OBJECT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
-
-        # ------------------------------------------------------------------
-        # Step 2: bind to conversation (idempotent — ConversationRepo is the
-        # sole source of truth for conversation↔repo relationships).
-        # ------------------------------------------------------------------
         existing_binding = session.exec(
             select(ConversationRepo).where(
                 ConversationRepo.conversation_id == req.conversation_id,
@@ -843,61 +869,48 @@ def add_repo(
         ).first()
 
         if existing_binding is None:
-            binding = ConversationRepo(
-                id=uuid.uuid4(),
-                conversation_id=req.conversation_id,
-                repo_id=repo.id,
+            session.add(
+                ConversationRepo(
+                    id=uuid.uuid4(),
+                    conversation_id=req.conversation_id,
+                    repo_id=repo.id,
+                )
             )
-            session.add(binding)
-            session.commit()
-
-        print("TRACE:binding_created")
-
-        print("TRACE 4: before commit")
-
-        session.commit()
-
-        print("TRACE 5: after commit")
-
-        session.refresh(repo)
-
-        print("TRACE 6: after refresh", repo.ingestion_status)
-
-        # State-driven ingestion dispatch (MQP-CONTRACT: REPO_INGESTION_STATE_MACHINE_V5).
-        print("TRACE 7: entering state logic")
-
-        if newly_created:
-            print(f"TRACE:enqueue_attempt repo_id={repo.id}")
-            try:
-                _enqueue_repo_ingestion(str(repo.id))
-                print(f"TRACE:enqueue_success repo_id={repo.id}")
-            except Exception as e:
-                print(f"TRACE:enqueue_error repo_id={repo.id} err={repr(e)}")
-                raise
-
-        elif repo.ingestion_status in ("pending", "failed"):
-            # Enqueue ingestion for retryable states.
-            print(f"TRACE:enqueue_attempt repo_id={repo.id}")
-            try:
-                _enqueue_repo_ingestion(str(repo.id))
-                print(f"TRACE:enqueue_success repo_id={repo.id}")
-            except Exception as e:
-                print(f"TRACE:enqueue_error repo_id={repo.id} err={repr(e)}")
-                raise
-
-        elif repo.ingestion_status in ("running", "success"):
-            # Return 409 when ingestion is already in progress or complete.
-            raise HTTPException(
-                status_code=409,
-                detail=f"REPO_INGESTION_{repo.ingestion_status.upper()}",
+            logger.info(
+                {
+                    "event": "binding_created",
+                    "conversation_id": req.conversation_id,
+                    "repo_id": str(repo.id),
+                }
+            )
+        else:
+            logger.info(
+                {
+                    "event": "binding_exists",
+                    "conversation_id": req.conversation_id,
+                    "repo_id": str(repo.id),
+                }
             )
 
-        return RepoAddResponse(
-            repo_id=str(repo.id),
-            status=repo.ingestion_status,
+        repo_id_str = str(repo.id)
+        current_status = repo.ingestion_status
+        # Single commit happens on exit from `with session.begin()` block.
+
+    # -----------------------------------------------------------------------
+    # Phase 3 — Queue discipline (after transaction is committed)
+    # -----------------------------------------------------------------------
+    if not newly_created and current_status in ("running", "success"):
+        # Repo is already being ingested or fully ingested — idempotent guard.
+        raise HTTPException(
+            status_code=409,
+            detail=f"REPO_INGESTION_{current_status.upper()}",
         )
-    except Exception as e:
-        print("FATAL ERROR:", repr(e))
-        import traceback
-        traceback.print_exc()
-        raise
+
+    if newly_created or current_status in ("pending", "failed"):
+        _enqueue_repo_ingestion(repo_id_str)
+        logger.info({"event": "job_enqueued", "repo_id": repo_id_str})
+
+    return RepoAddResponse(
+        repo_id=repo_id_str,
+        status=current_status,
+    )
