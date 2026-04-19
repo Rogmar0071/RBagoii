@@ -9,8 +9,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = '0023_add_ingest_job_progress'
-down_revision = '0022_repo_chunk_graph_fields'
+revision = "0023"
+down_revision = "0022"
 branch_labels = None
 depends_on = None
 
