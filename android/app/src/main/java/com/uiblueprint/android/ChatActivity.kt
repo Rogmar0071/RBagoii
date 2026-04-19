@@ -497,11 +497,13 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             
             // Track last known status to avoid spamming toasts
             var lastStatus: String? = null
+            var shouldContinuePolling = true
             
             // Poll immediately, then wait before next poll
-            while (true) {
+            while (shouldContinuePolling) {
                 synchronized(activeFileJobIds) {
                     if (!activeFileJobIds.contains(jobId) || !isPollingFileJobs) {
+                        shouldContinuePolling = false
                         break
                     }
                 }
@@ -517,10 +519,10 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     if (response.isSuccessful) {
                         val body = response.body?.string() ?: "{}"
                         val json = JSONObject(body)
-                        val status = json.getString("status")
-                        val progress = json.getInt("progress")
+                        val status = json.optString("status", "unknown")
+                        val progress = json.optInt("progress", 0)
                         val error = if (json.isNull("error")) null else json.getString("error")
-                        val source = json.getString("source")  // filename
+                        val source = json.optString("source", "file")
                         
                         // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §3 — DIRECT STATE MAPPING
                         val statusText = when (status) {
@@ -534,23 +536,21 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         // Only show toast if status changed or terminal
                         if (status != lastStatus) {
                             runOnUiThread {
-                                if (isPollingFileJobs) {
-                                    // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §5 — FAILURE VISIBILITY
-                                    if (status == "failed" && error != null) {
-                                        Toast.makeText(
-                                            this,
-                                            "File ingestion failed: $error",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    } else if (status == "success") {
-                                        Toast.makeText(
-                                            this,
-                                            "File ingestion completed: $source",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                        // Reload files to show the newly ingested file
-                                        loadChatFiles()
-                                    }
+                                // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §5 — FAILURE VISIBILITY
+                                if (status == "failed" && error != null) {
+                                    Toast.makeText(
+                                        this,
+                                        "File ingestion failed: $error",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else if (status == "success") {
+                                    Toast.makeText(
+                                        this,
+                                        "File ingestion completed: $source",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    // Reload files to show the newly ingested file
+                                    loadChatFiles()
                                 }
                             }
                             lastStatus = status
@@ -562,12 +562,14 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                                 activeFileJobIds.remove(jobId)
                             }
                             Log.d("ChatActivity", "File job $jobId completed with status=$status")
-                            break
+                            shouldContinuePolling = false
                         }
                     }
                 } catch (e: Exception) {
                     Log.e("ChatActivity", "Error polling file job $jobId", e)
                 }
+                
+                if (!shouldContinuePolling) break
                 
                 // Wait before next poll
                 try {
@@ -575,7 +577,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
                     Log.d("ChatActivity", "File job polling interrupted")
-                    break
+                    shouldContinuePolling = false
                 }
             }
         }
