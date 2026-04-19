@@ -359,7 +359,7 @@ async def upload_chat_file(
         session.refresh(chat_file)
 
         # Get download URL
-        download_url = get_presigned_url(object_key, expiration=3600)
+        download_url = get_presigned_url(object_key, expires_in=3600)
 
         return ChatFileResponse(
             id=str(chat_file.id),
@@ -492,7 +492,7 @@ async def finalize_chat_file_upload(
         cleanup(upload_id)
 
         # Get download URL
-        download_url = get_presigned_url(object_key, expiration=3600)
+        download_url = get_presigned_url(object_key, expires_in=3600)
 
         return ChatFileResponse(
             id=str(chat_file.id),
@@ -544,7 +544,7 @@ def list_chat_files(
 
     result = []
     for f in files:
-        download_url = get_presigned_url(f.object_key, expiration=3600)
+        download_url = get_presigned_url(f.object_key, expires_in=3600)
         result.append(
             ChatFileResponse(
                 id=str(f.id),
@@ -599,7 +599,7 @@ def update_chat_file(
     session.commit()
     session.refresh(chat_file)
 
-    download_url = get_presigned_url(chat_file.object_key, expiration=3600)
+    download_url = get_presigned_url(chat_file.object_key, expires_in=3600)
 
     return ChatFileResponse(
         id=str(chat_file.id),

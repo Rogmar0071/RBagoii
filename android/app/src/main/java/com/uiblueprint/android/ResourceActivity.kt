@@ -266,10 +266,10 @@ class ResourceActivity : AppCompatActivity() {
                             GithubRepo(
                                 name = obj.getString("name"),
                                 fullName = obj.getString("full_name"),
-                                description = obj.optString("description", ""),
+                                description = if (obj.isNull("description")) "" else obj.optString("description", ""),
                                 htmlUrl = obj.getString("html_url"),
                                 defaultBranch = obj.optString("default_branch", "main"),
-                                language = obj.optString("language", ""),
+                                language = if (obj.isNull("language")) "" else obj.optString("language", ""),
                                 stars = obj.optInt("stargazers_count", 0),
                                 isPrivate = obj.optBoolean("private", false),
                                 selected = false
