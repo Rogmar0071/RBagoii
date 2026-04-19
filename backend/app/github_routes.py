@@ -757,9 +757,8 @@ def add_repo(
     - Ingestion is only triggered for newly created Repos.
     - The binding is idempotent (UNIQUE constraint on conversation_repos).
     """
-    raise RuntimeError("TRACE_HIT_V1")
     try:
-        print("TRACE 1: start")
+        print("TRACE:add_repo:entered")
 
         match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
         if not match:
@@ -813,7 +812,7 @@ def add_repo(
                         ),
                     )
 
-        print("TRACE 2: repo loaded", repo.id, repo.ingestion_status)
+        print(f"TRACE:repo_loaded id={repo.id} status={repo.ingestion_status}")
 
         # ------------------------------------------------------------------
         # Step 2: bind to conversation (idempotent)
@@ -834,7 +833,7 @@ def add_repo(
             session.add(binding)
             session.commit()
 
-        print("TRACE 3: binding created")
+        print("TRACE:binding_created")
 
         print("TRACE 4: before commit")
 
@@ -850,20 +849,22 @@ def add_repo(
         print("TRACE 7: entering state logic")
 
         if newly_created:
-            print("STEP 1: before enqueue", repo.id)
+            print(f"TRACE:enqueue_attempt repo_id={repo.id}")
             try:
                 _enqueue_repo_ingestion(str(repo.id))
-                print("STEP 2: enqueue success", repo.id)
+                print(f"TRACE:enqueue_success repo_id={repo.id}")
             except Exception as e:
-                print("ENQUEUE ERROR:", repr(e))
+                print(f"TRACE:enqueue_error repo_id={repo.id} err={repr(e)}")
                 raise
 
         elif repo.ingestion_status in ("pending", "failed"):
             # Enqueue ingestion for retryable states.
+            print(f"TRACE:enqueue_attempt repo_id={repo.id}")
             try:
                 _enqueue_repo_ingestion(str(repo.id))
+                print(f"TRACE:enqueue_success repo_id={repo.id}")
             except Exception as e:
-                print("ENQUEUE ERROR:", repr(e))
+                print(f"TRACE:enqueue_error repo_id={repo.id} err={repr(e)}")
                 raise
 
         elif repo.ingestion_status in ("running", "success"):
