@@ -645,6 +645,9 @@ class IngestJob(SQLModel, table=True):
     # queued / running / success / failed
     status: str = Field(default="queued", sa_column=Column(sa.Text, index=True))
 
+    # Progress percentage (0-100)
+    progress: int = Field(default=0)
+
     # Human-readable error message (set on failure)
     error: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
 

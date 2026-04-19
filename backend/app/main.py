@@ -191,7 +191,8 @@ def _startup_init_db() -> None:
                 raise RuntimeError(
                     f"SYSTEM_INTEGRITY_ERROR: Intermediate queue violation detected. "
                     f"Found prohibited keys: {keys}. "
-                    f"Only 'rq:queue:default' is allowed per MQP-CONTRACT:INGESTION_EXECUTION_ALIGNMENT_V1"
+                    f"Only 'rq:queue:default' is allowed per "
+                    f"MQP-CONTRACT:INGESTION_EXECUTION_ALIGNMENT_V1"
                 )
         except RuntimeError:
             raise

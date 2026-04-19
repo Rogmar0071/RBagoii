@@ -469,6 +469,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
+    _update_ingest_job(str(job.id), progress=10)
+
     path = Path(job.source_path)
     if not path.exists():
         raise FileNotFoundError(f"Staged file not found: {path}")
@@ -480,6 +482,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     if not text or not text.strip():
         logger.warning("No extractable text in uploaded file: %s", path.name)
         return 0, 0
+
+    _update_ingest_job(str(job.id), progress=50)
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
@@ -499,6 +503,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
                 end_line=structure["end_line"],
             )
         )
+
+    _update_ingest_job(str(job.id), progress=95)
     return 1, len(chunks)
 
 
@@ -513,6 +519,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
+    _update_ingest_job(str(job.id), progress=10)
+
     url = job.source
     try:
         with httpx.Client(timeout=_URL_FETCH_TIMEOUT, follow_redirects=True) as client:
@@ -522,6 +530,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
 
     if resp.status_code != 200:
         raise RuntimeError(f"URL {url!r} returned HTTP {resp.status_code}")
+
+    _update_ingest_job(str(job.id), progress=30)
 
     content_bytes = resp.content[:_URL_FETCH_MAX_BYTES]
     content_type = resp.headers.get("content-type", "text/html").split(";")[0].strip()
@@ -538,6 +548,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     if not text or not text.strip():
         logger.warning("No extractable text from URL: %s", url)
         return 0, 0
+
+    _update_ingest_job(str(job.id), progress=50)
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
@@ -558,6 +570,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
                 end_line=structure["end_line"],
             )
         )
+
+    _update_ingest_job(str(job.id), progress=95)
     return 1, len(chunks)
 
 
@@ -610,6 +624,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
     file_count = 0
     chunk_count = 0
+    total_files = len(blobs)
 
     with httpx.Client(timeout=30.0) as client:
         for item in blobs:
@@ -650,13 +665,20 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             if file_count % 20 == 0:
                 job.chunk_count = chunk_count
                 job.file_count = file_count
+                # Calculate progress: 0-95% based on files processed
+                job.progress = (
+                    min(95, int((file_count / total_files) * 95))
+                    if total_files > 0
+                    else 95
+                )
                 session.add(job)
                 session.commit()
                 logger.info(
-                    "IngestJob %s: progress %d files / %d chunks",
+                    "IngestJob %s: progress %d files / %d chunks (%d%%)",
                     str(job.id),
                     file_count,
                     chunk_count,
+                    job.progress,
                 )
 
     return file_count, chunk_count
@@ -679,7 +701,7 @@ def process_ingest_job(job_id: str) -> None:
         Callers never need to handle partial or stuck state.
     """
     logger.info("IngestJob %s: starting", job_id)
-    _update_ingest_job(job_id, status="running")
+    _update_ingest_job(job_id, status="running", progress=0)
 
     try:
         from sqlmodel import Session
@@ -703,6 +725,7 @@ def process_ingest_job(job_id: str) -> None:
                 raise ValueError(f"Unknown IngestJob kind: {job.kind!r}")
 
             job.status = "success"
+            job.progress = 100
             job.file_count = file_count
             job.chunk_count = chunk_count
             job.updated_at = datetime.now(timezone.utc)
@@ -718,4 +741,4 @@ def process_ingest_job(job_id: str) -> None:
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
-        _update_ingest_job(job_id, status="failed", error=str(exc)[:1000])
+        _update_ingest_job(job_id, status="failed", error=str(exc)[:1000], progress=0)
