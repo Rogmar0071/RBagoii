@@ -221,6 +221,17 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
     if disable:
         return None
 
+    # --------------------------------------------------
+    # Validate job_id for run_repo_validation jobs
+    # --------------------------------------------------
+    if job_type == "run_repo_validation":
+        try:
+            uuid.UUID(job_id)
+        except (ValueError, AttributeError, TypeError) as exc:
+            raise ValueError(
+                f"Invalid repo_id for run_repo_validation: {job_id!r} - {exc}"
+            )
+
     job_timeout = int(os.environ.get("RQ_JOB_TIMEOUT_S", 1800))
     result_ttl = int(os.environ.get("RQ_RESULT_TTL_S", 86400))
 
@@ -3023,12 +3034,26 @@ def run_repo_validation(repo_id: str) -> None:
 
     logger.info({"event": "validation_started", "repo_id": repo_id})
 
+    # --------------------------------------------------
+    # Validate repo_id is a valid UUID
+    # --------------------------------------------------
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except (ValueError, AttributeError, TypeError) as exc:
+        logger.error({
+            "event": "INVALID_REPO_ID",
+            "repo_id": repo_id,
+            "error": str(exc),
+        })
+        # Invalid repo_id - mark as failed without retry
+        return
+
     with Session(get_engine()) as session:
         try:
             # --------------------------------------------------
             # Load repo + chunks (read phase)
             # --------------------------------------------------
-            repo = session.get(Repo, uuid.UUID(repo_id))
+            repo = session.get(Repo, repo_uuid)
 
             if repo is None:
                 logger.error({
@@ -3089,7 +3114,7 @@ def run_repo_validation(repo_id: str) -> None:
             # FAILURE STATE COMMIT (also atomic)
             # --------------------------------------------------
             with Session(get_engine()) as fail_session:
-                repo = fail_session.get(Repo, uuid.UUID(repo_id))
+                repo = fail_session.get(Repo, repo_uuid)
                 if repo:
                     repo.validation_status = "failed"
                     repo.validated_at = datetime.now(timezone.utc)
