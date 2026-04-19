@@ -148,6 +148,7 @@ class IngestJobResponse(BaseModel):
     kind: str
     source: str
     status: str
+    progress: int = 0
     file_count: int
     chunk_count: int
     error: Optional[str] = None
@@ -163,6 +164,7 @@ def _to_response(job: object) -> IngestJobResponse:
         kind=job.kind,  # type: ignore[attr-defined]
         source=job.source,  # type: ignore[attr-defined]
         status=job.status,  # type: ignore[attr-defined]
+        progress=getattr(job, "progress", 0),  # type: ignore[attr-defined]
         file_count=job.file_count,  # type: ignore[attr-defined]
         chunk_count=job.chunk_count,  # type: ignore[attr-defined]
         error=job.error,  # type: ignore[attr-defined]
