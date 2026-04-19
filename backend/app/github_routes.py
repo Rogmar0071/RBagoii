@@ -339,7 +339,8 @@ async def add_github_repo(
         raise HTTPException(status_code=400, detail="Invalid GitHub URL")
 
     owner, repo_name = match.groups()
-    repo_name = repo_name.rstrip(".git")
+    if repo_name.endswith(".git"):
+        repo_name = repo_name[:-4]
 
     headers: dict = {"Accept": "application/vnd.github.v3+json"}
     if GITHUB_TOKEN:
@@ -764,7 +765,8 @@ def add_repo(
 
         owner, repo_name = match.groups()
         print(f"TRACE:PARSED owner={owner} repo_name={repo_name} len={len(repo_name)}")
-        repo_name = repo_name.rstrip(".git")
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
         print(f"TRACE:NORMALIZED owner={owner} repo_name={repo_name} len={len(repo_name)}")
         print(f"TRACE:CANONICAL owner={owner} repo_name={repo_name} len={len(repo_name)}")
 
@@ -772,6 +774,9 @@ def add_repo(
         # Step 1: global upsert on (repo_url, branch)
         # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
         # ------------------------------------------------------------------
+        if not req.conversation_id:
+            raise HTTPException(status_code=400, detail="MISSING_CONVERSATION_ID")
+
         print(f"TRACE:PRE_UPSERT owner={owner} repo_name={repo_name} len={len(repo_name)}")
 
         def _find_repo() -> Repo | None:
@@ -789,6 +794,7 @@ def add_repo(
             try:
                 repo = Repo(
                     id=uuid.uuid4(),
+                    conversation_id=req.conversation_id,
                     repo_url=req.repo_url,
                     owner=owner,
                     name=repo_name,
@@ -798,6 +804,13 @@ def add_repo(
                     total_chunks=0,
                 )
                 session.add(repo)
+                # Atomically bind conversation at insert (PATCH 3)
+                binding = ConversationRepo(
+                    id=uuid.uuid4(),
+                    conversation_id=req.conversation_id,
+                    repo_id=repo.id,
+                )
+                session.add(binding)
                 print(
                     f"TRACE:PRE_COMMIT owner={repo.owner} "
                     f"repo_name={repo.name} len={len(repo.name)}"
@@ -827,23 +840,24 @@ def add_repo(
         print(f"TRACE:DB_OBJECT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
 
         # ------------------------------------------------------------------
-        # Step 2: bind to conversation (idempotent)
+        # Step 2: bind to conversation (idempotent — for pre-existing repos)
         # ------------------------------------------------------------------
-        existing_binding = session.exec(
-            select(ConversationRepo).where(
-                ConversationRepo.conversation_id == req.conversation_id,
-                ConversationRepo.repo_id == repo.id,
-            )
-        ).first()
+        if not newly_created:
+            existing_binding = session.exec(
+                select(ConversationRepo).where(
+                    ConversationRepo.conversation_id == req.conversation_id,
+                    ConversationRepo.repo_id == repo.id,
+                )
+            ).first()
 
-        if existing_binding is None:
-            binding = ConversationRepo(
-                id=uuid.uuid4(),
-                conversation_id=req.conversation_id,
-                repo_id=repo.id,
-            )
-            session.add(binding)
-            session.commit()
+            if existing_binding is None:
+                binding = ConversationRepo(
+                    id=uuid.uuid4(),
+                    conversation_id=req.conversation_id,
+                    repo_id=repo.id,
+                )
+                session.add(binding)
+                session.commit()
 
         print("TRACE:binding_created")
 
