@@ -40,6 +40,10 @@ class ResourceActivity : AppCompatActivity() {
     private lateinit var binding: ActivityResourceBinding
     private lateinit var prefs: SharedPreferences
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
+    
+    // Track active polling to prevent memory leaks
+    @Volatile
+    private var isPollingActive = false
 
     private lateinit var repoAdapter: GithubRepoAdapter
     private lateinit var fileAdapter: ChatFileAdapter
@@ -131,6 +135,8 @@ class ResourceActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        // Cancel any active polling to prevent memory leaks
+        isPollingActive = false
         executor.shutdownNow()
     }
 
@@ -636,19 +642,25 @@ class ResourceActivity : AppCompatActivity() {
      * POLLING (NO NEW MECHANISM):
      * - Interval: 2 seconds
      * - Stop polling when: status in ("success", "failed")
+     * - Lifecycle-aware: stops when Activity is destroyed
      */
     private fun startPollingIngestJobs(jobIds: List<String>) {
         val convId = conversationId ?: return
+        isPollingActive = true
         executor.execute {
             val apiKey = apiKey()
             val baseUrl = baseUrl()
             val jobsToMonitor = jobIds.toMutableSet()
             
-            while (jobsToMonitor.isNotEmpty()) {
+            while (jobsToMonitor.isNotEmpty() && isPollingActive) {
                 Thread.sleep(2000)  // Poll every 2 seconds
+                
+                if (!isPollingActive) break  // Check again after sleep
                 
                 val completedJobs = mutableSetOf<String>()
                 for (jobId in jobsToMonitor) {
+                    if (!isPollingActive) break
+                    
                     try {
                         val request = Request.Builder()
                             .url("$baseUrl/v1/ingest/$jobId")
@@ -669,7 +681,9 @@ class ResourceActivity : AppCompatActivity() {
                             
                             // Update UI with current status
                             runOnUiThread {
-                                updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
+                                if (isPollingActive) {
+                                    updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
+                                }
                             }
                             
                             // Stop polling this job if it's terminal
@@ -686,7 +700,8 @@ class ResourceActivity : AppCompatActivity() {
                 jobsToMonitor.removeAll(completedJobs)
             }
             
-            Log.d("ResourceActivity", "All ingestion jobs completed")
+            isPollingActive = false
+            Log.d("ResourceActivity", "Polling stopped. Remaining jobs: ${jobsToMonitor.size}")
         }
     }
     
@@ -707,7 +722,7 @@ class ResourceActivity : AppCompatActivity() {
         val repoUrl = source.substringBeforeLast("@")
         
         // Find and update the matching repo
-        val updated = githubRepos.map { repo ->
+        val updatedRepos = githubRepos.map { repo ->
             if (repo.htmlUrl == repoUrl) {
                 repo.copy(
                     ingestionStatus = status,
@@ -721,8 +736,8 @@ class ResourceActivity : AppCompatActivity() {
         }
         
         githubRepos.clear()
-        githubRepos.addAll(updated)
-        repoAdapter.submitList(githubRepos)
+        githubRepos.addAll(updatedRepos)
+        repoAdapter.submitList(updatedRepos)
     }
 
     /**
@@ -773,7 +788,7 @@ class ResourceActivity : AppCompatActivity() {
                 // Overlay status onto displayed repos
                 if (jobMap.isNotEmpty()) {
                     runOnUiThread {
-                        val updated = githubRepos.map { repo ->
+                        val updatedRepos = githubRepos.map { repo ->
                             val job = jobMap[repo.htmlUrl]
                             if (job != null) {
                                 repo.copy(
@@ -787,8 +802,8 @@ class ResourceActivity : AppCompatActivity() {
                             } else repo
                         }
                         githubRepos.clear()
-                        githubRepos.addAll(updated)
-                        repoAdapter.submitList(githubRepos)
+                        githubRepos.addAll(updatedRepos)
+                        repoAdapter.submitList(updatedRepos)
                         
                         // Start polling for any active jobs
                         val activeJobIds = jobMap.values

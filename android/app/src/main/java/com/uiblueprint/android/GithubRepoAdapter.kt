@@ -49,6 +49,10 @@ class GithubRepoAdapter(
 ) : RecyclerView.Adapter<GithubRepoAdapter.RepoViewHolder>() {
 
     private val repos = mutableListOf<GithubRepo>()
+    
+    companion object {
+        private const val MAX_ERROR_MESSAGE_LENGTH = 100
+    }
 
     fun submitList(newRepos: List<GithubRepo>) {
         repos.clear()
@@ -104,7 +108,7 @@ class GithubRepoAdapter(
                     "success" -> "${statusEmoji} $statusText — ${repo.totalFiles} files, ${repo.totalChunks} chunks"
                     "failed"  -> {
                         // FAILURE VISIBILITY (CRITICAL) — display error message
-                        val errorMsg = repo.errorMessage?.take(100) ?: "Unknown error"
+                        val errorMsg = repo.errorMessage?.take(MAX_ERROR_MESSAGE_LENGTH) ?: "Unknown error"
                         "${statusEmoji} $statusText: $errorMsg"
                     }
                     "running" -> {
