@@ -81,15 +81,12 @@ def _enqueue(job_id: str) -> None:
     """
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
-        # Tests: run synchronously in a thread pool so DB is populated before
-        # the test assertions run.
-        from concurrent.futures import ThreadPoolExecutor
-
+        # Tests: run synchronously in the calling thread so DB is fully
+        # updated before the test assertion, and to avoid SQLite concurrency
+        # issues with ThreadPoolExecutor.
         from backend.app.ingest_pipeline import process_ingest_job
 
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(process_ingest_job, job_id)
-            future.result()  # wait for completion in test mode
+        process_ingest_job(job_id)
         return
 
     redis_url = os.environ.get("REDIS_URL", "").strip()
@@ -211,9 +208,10 @@ async def ingest_file(
     )
     session.add(job)
     session.commit()
-    session.refresh(job)
 
     _enqueue(str(job_id))
+    # After commit + synchronous enqueue, lazy-load on _to_response(job) reads
+    # the terminal status committed by process_ingest_job.
     return _to_response(job)
 
 
@@ -260,7 +258,6 @@ def ingest_url(
     )
     session.add(job)
     session.commit()
-    session.refresh(job)
 
     _enqueue(str(job_id))
     return _to_response(job)
@@ -301,7 +298,8 @@ def ingest_repo(
 
     from backend.app.models import IngestJob
 
-    if not re.search(r"github\.com/[^/]+/[^/]+", body.repo_url):
+    # Require github.com as a proper domain — reject substrings like notgithub.com
+    if not re.search(r"(?<![a-zA-Z0-9])github\.com/[^/]+/[^/]+", body.repo_url):
         raise HTTPException(
             status_code=400,
             detail="Invalid GitHub repository URL. Expected https://github.com/owner/repo",
@@ -333,7 +331,6 @@ def ingest_repo(
     )
     session.add(job)
     session.commit()
-    session.refresh(job)
 
     _enqueue(str(job_id))
     return _to_response(job)

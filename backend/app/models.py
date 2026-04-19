@@ -413,6 +413,35 @@ class RepoChunk(SQLModel, table=True):
     source_url: Optional[str] = Field(
         default=None, sa_column=Column(sa.Text, nullable=True)
     )
+    # ------------------------------------------------------------------
+    # GRAPH_RECONSTRUCTION_LAYER_V1
+    # Structural metadata for deterministic code-graph reconstruction.
+    # All fields are nullable — existing chunks are unaffected.
+    # ------------------------------------------------------------------
+
+    # High-level structural category: CLASS | FUNCTION | IMPORT | CONFIG | DATA | DOC
+    chunk_type: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True, index=True),
+    )
+    # Logical grouping key — file path or module path (mirrors file_path for most chunks)
+    graph_group: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True, index=True),
+    )
+    # Primary symbol defined in this chunk (class name, function name, etc.)
+    symbol: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True, index=True),
+    )
+    # Extracted dependency references (imports, calls, links) — JSON list of strings
+    dependencies: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
+    # Line range within the source chunk for precise reconstruction
+    start_line: Optional[int] = Field(default=None)
+    end_line: Optional[int] = Field(default=None)
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),

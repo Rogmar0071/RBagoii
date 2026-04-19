@@ -117,10 +117,19 @@ def extract_text(data: bytes, mime_type: str, filename: str) -> str | None:
     """
     _, ext = os.path.splitext(filename.lower())
 
+    # HTML — must be checked before the `text/*` fast-path (text/html is a
+    # subtype of text/) so that we strip tags rather than return raw markup.
+    if mime_type in {"text/html", "application/xhtml+xml"} or ext in {".html", ".htm"}:
+        return _extract_html(data, filename)
+
+    # CSV — same reasoning: return structured rows, not raw bytes.
+    if mime_type == "text/csv" or ext == ".csv":
+        return _extract_csv(data, filename)
+
     # Fast path: plain text and code files
     if (
         mime_type.startswith("text/")
-        or mime_type in {"application/json", "application/xml", "application/xhtml+xml"}
+        or mime_type in {"application/json", "application/xml"}
         or ext in INGESTIBLE_EXTENSIONS
     ):
         try:
@@ -137,12 +146,6 @@ def extract_text(data: bytes, mime_type: str, filename: str) -> str | None:
         "application/msword",
     } or ext in {".docx", ".doc"}:
         return _extract_docx(data, filename)
-
-    if mime_type in {"text/html", "application/xhtml+xml"} or ext in {".html", ".htm"}:
-        return _extract_html(data, filename)
-
-    if mime_type == "text/csv" or ext == ".csv":
-        return _extract_csv(data, filename)
 
     if mime_type in {"application/zip", "application/x-zip-compressed"} or ext == ".zip":
         return _extract_zip_text(data, filename)
@@ -464,6 +467,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     Returns ``(file_count, chunk_count)``.
     """
     from backend.app.models import RepoChunk
+    from backend.app.repo_chunk_extractor import extract_structure
 
     path = Path(job.source_path)
     if not path.exists():
@@ -479,6 +483,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
+        structure = extract_structure(chunk_text, path.name)
         session.add(
             RepoChunk(
                 ingest_job_id=job.id,
@@ -486,6 +491,12 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
                 content=chunk_text,
                 chunk_index=idx,
                 token_estimate=max(1, len(chunk_text) // 4),
+                chunk_type=structure["chunk_type"],
+                symbol=structure["symbol"],
+                dependencies=structure["dependencies"],
+                graph_group=structure["graph_group"],
+                start_line=structure["start_line"],
+                end_line=structure["end_line"],
             )
         )
     return 1, len(chunks)
@@ -500,6 +511,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     import httpx
 
     from backend.app.models import RepoChunk
+    from backend.app.repo_chunk_extractor import extract_structure
 
     url = job.source
     try:
@@ -529,6 +541,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
+        structure = extract_structure(chunk_text, filename)
         session.add(
             RepoChunk(
                 ingest_job_id=job.id,
@@ -537,6 +550,12 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
                 chunk_index=idx,
                 token_estimate=max(1, len(chunk_text) // 4),
                 source_url=url,
+                chunk_type=structure["chunk_type"],
+                symbol=structure["symbol"],
+                dependencies=structure["dependencies"],
+                graph_group=structure["graph_group"],
+                start_line=structure["start_line"],
+                end_line=structure["end_line"],
             )
         )
     return 1, len(chunks)
@@ -551,6 +570,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     import httpx
 
     from backend.app.models import RepoChunk
+    from backend.app.repo_chunk_extractor import extract_structure
 
     # source format: "{repo_url}@{branch}"
     source = job.source  # e.g. "https://github.com/owner/repo@main"
@@ -606,6 +626,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             text = text[:max_file_chars]
             chunks = split_with_overlap(text)
             for idx, chunk_text in enumerate(chunks):
+                structure = extract_structure(chunk_text, path)
                 session.add(
                     RepoChunk(
                         ingest_job_id=job.id,
@@ -613,6 +634,12 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                         content=chunk_text,
                         chunk_index=idx,
                         token_estimate=max(1, len(chunk_text) // 4),
+                        chunk_type=structure["chunk_type"],
+                        symbol=structure["symbol"],
+                        dependencies=structure["dependencies"],
+                        graph_group=structure["graph_group"],
+                        start_line=structure["start_line"],
+                        end_line=structure["end_line"],
                     )
                 )
                 chunk_count += 1
@@ -681,14 +708,13 @@ def process_ingest_job(job_id: str) -> None:
             job.updated_at = datetime.now(timezone.utc)
             session.add(job)
             session.commit()
-
-        logger.info(
-            "IngestJob %s: success (kind=%s, files=%d, chunks=%d)",
-            job_id,
-            job.kind,
-            file_count,
-            chunk_count,
-        )
+            logger.info(
+                "IngestJob %s: success (kind=%s, files=%d, chunks=%d)",
+                job_id,
+                job.kind,
+                file_count,
+                chunk_count,
+            )
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)

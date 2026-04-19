@@ -2912,14 +2912,23 @@ def run_repo_ingestion(repo_id: str) -> None:
             if r is None:
                 raise RuntimeError(f"Repo {repo_id} disappeared during ingestion")
 
+            from backend.app.repo_chunk_extractor import extract_structure
+
             for file_path, content in file_list:
                 for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
+                    structure = extract_structure(chunk_text, file_path)
                     chunk = RepoChunk(
                         repo_id=r.id,
                         file_path=file_path,
                         content=chunk_text,
                         chunk_index=chunk_index,
                         token_estimate=max(1, len(chunk_text) // 4),
+                        chunk_type=structure["chunk_type"],
+                        symbol=structure["symbol"],
+                        dependencies=structure["dependencies"],
+                        graph_group=structure["graph_group"],
+                        start_line=structure["start_line"],
+                        end_line=structure["end_line"],
                     )
                     session.add(chunk)
                     chunk_count += 1

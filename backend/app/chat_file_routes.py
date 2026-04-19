@@ -144,11 +144,20 @@ def extract_text_content(file_content: bytes, mime_type: str, filename: str) -> 
     Returns None for binary files that cannot be decoded to text.
     """
     try:
+        _, ext = os.path.splitext(filename.lower())
+
+        # HTML — strip tags before the text/* fast-path
+        if mime_type in {"text/html", "application/xhtml+xml"} or ext in {".html", ".htm"}:
+            return _extract_html_text(file_content, filename)
+
+        # CSV — structured row extraction before text/* fast-path
+        if mime_type == "text/csv" or ext == ".csv":
+            return _extract_csv_text(file_content, filename)
+
         # Plain text and code files (fast path)
         if mime_type.startswith("text/") or mime_type in {"application/json", "application/xml"}:
             return file_content.decode("utf-8", errors="ignore")
 
-        _, ext = os.path.splitext(filename.lower())
         if ext in CODE_EXTENSIONS:
             return file_content.decode("utf-8", errors="ignore")
 
@@ -162,14 +171,6 @@ def extract_text_content(file_content: bytes, mime_type: str, filename: str) -> 
             "application/msword",
         } or ext in {".docx", ".doc"}:
             return _extract_docx_text(file_content, filename)
-
-        # HTML extraction via stdlib html.parser
-        if mime_type in {"text/html", "application/xhtml+xml"} or ext in {".html", ".htm"}:
-            return _extract_html_text(file_content, filename)
-
-        # CSV extraction via stdlib csv
-        if mime_type == "text/csv" or ext == ".csv":
-            return _extract_csv_text(file_content, filename)
 
         return None
     except Exception as e:

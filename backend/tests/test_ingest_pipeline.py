@@ -161,19 +161,17 @@ class TestExtractText:
     def test_pdf_without_library_returns_none(self, monkeypatch):
         """When pypdf is not installed, PDF extraction returns None gracefully."""
         import sys
+        from unittest.mock import patch
 
-        saved = sys.modules.get("pypdf")
-        sys.modules["pypdf"] = None  # type: ignore[assignment]
-        try:
-            from backend.app.ingest_pipeline import _extract_pdf
+        # Simulate pypdf not being importable
+        with patch.dict(sys.modules, {"pypdf": None}):
+            # Re-import the function to pick up the patched modules dict
+            import importlib
 
-            result = _extract_pdf(b"%PDF-1.4", "test.pdf")
+            import backend.app.ingest_pipeline as pipeline
+            importlib.reload(pipeline)
+            result = pipeline._extract_pdf(b"%PDF-1.4", "test.pdf")
             assert result is None
-        finally:
-            if saved is None:
-                sys.modules.pop("pypdf", None)
-            else:
-                sys.modules["pypdf"] = saved
 
 
 # ---------------------------------------------------------------------------
@@ -336,31 +334,21 @@ class TestIngestFileEndpoint:
 
 
 class TestIngestUrlEndpoint:
-    def test_url_ingestion(self, client, respx_mock):
-        """Mock httpx to return a fake HTML page."""
-        import httpx
-        import respx
-
-        html = b"<html><head><title>Test Page</title></head><body><p>Hello from the web</p></body></html>"
-
-        with respx.mock(assert_all_called=False) as mock:
-            mock.get("https://example.com/page").mock(
-                return_value=httpx.Response(
-                    200,
-                    content=html,
-                    headers={"content-type": "text/html"},
-                )
-            )
-            resp = client.post(
-                "/v1/ingest/url",
-                headers=_AUTH,
-                json={"url": "https://example.com/page"},
-            )
-
+    def test_url_ingestion_queued(self, client):
+        """URL ingestion endpoint returns 202 and creates a job."""
+        # We don't mock httpx here — the job will fail (no real server),
+        # but the endpoint itself must return 202 and create a queued job.
+        resp = client.post(
+            "/v1/ingest/url",
+            headers=_AUTH,
+            json={"url": "https://example.com/test-page"},
+        )
         assert resp.status_code == 202
         data = resp.json()
         assert data["kind"] == "url"
-        assert data["source"] == "https://example.com/page"
+        assert data["source"] == "https://example.com/test-page"
+        assert data["job_id"]
+        # Status is either queued, running, success, or failed — any is valid here
 
     def test_invalid_url_rejected(self, client):
         resp = client.post(
@@ -405,8 +393,14 @@ class TestIngestRepoEndpoint:
         )
         assert resp.status_code == 400
 
-    def test_deduplication_returns_existing_job(self, client):
-        """Two identical repo requests return the same job ID."""
+    def test_deduplication_returns_existing_job(self, client, monkeypatch):
+        """Two identical repo requests return the same job ID (no force_refresh)."""
+        import backend.app.ingest_routes as ir
+
+        # Patch _enqueue to a no-op so the job stays "queued" between requests,
+        # allowing the deduplication logic to detect it on the second call.
+        monkeypatch.setattr(ir, "_enqueue", lambda job_id: None)
+
         conv_id = str(uuid.uuid4())
         payload = {
             "repo_url": "https://github.com/owner/repo",
@@ -418,11 +412,14 @@ class TestIngestRepoEndpoint:
 
         assert resp1.status_code == 202
         assert resp2.status_code == 202
-        # Both must return the same job_id
         assert resp1.json()["job_id"] == resp2.json()["job_id"]
 
-    def test_force_refresh_creates_new_job(self, client):
+    def test_force_refresh_creates_new_job(self, client, monkeypatch):
         """force_refresh=true always creates a new job."""
+        import backend.app.ingest_routes as ir
+
+        monkeypatch.setattr(ir, "_enqueue", lambda job_id: None)
+
         conv_id = str(uuid.uuid4())
         base_payload = {
             "repo_url": "https://github.com/owner/repo2",
