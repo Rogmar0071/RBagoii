@@ -77,6 +77,11 @@ def _enqueue(job_id: str) -> None:
     Dispatch *process_ingest_job(job_id)* through the appropriate executor.
 
     Priority: BACKEND_DISABLE_JOBS > REDIS_URL > daemon thread.
+
+    MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §A
+        RULE A1 — SINGLE QUEUE: All jobs enqueued to Queue("default")
+        RULE A2 — DIRECT ENQUEUE ONLY: Using q.enqueue() directly
+        RULE A3 — VALIDATION CHECK: Assert queue name is "rq:queue:default"
     """
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
@@ -103,7 +108,21 @@ def _enqueue(job_id: str) -> None:
                 job_timeout=3600,
             )
             logger.info("IngestJob %s enqueued via RQ", job_id)
+
+            # MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §A3 — Validation
+            # Verify no intermediate queue exists
+            keys = conn.keys("rq:queue:*:intermediate")
+            if keys:
+                logger.error(
+                    "QUEUE_VIOLATION: Intermediate queue detected after enqueue: %s",
+                    keys,
+                )
+                raise RuntimeError(
+                    f"QUEUE_VIOLATION: Intermediate queue prohibited. Found: {keys}"
+                )
             return
+        except RuntimeError:
+            raise
         except Exception as exc:
             logger.warning("RQ unavailable (%s) — falling back to thread", exc)
 
