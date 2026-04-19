@@ -2796,6 +2796,7 @@ def run_repo_ingestion(repo_id: str) -> None:
     from backend.app.repo_retrieval import _split_into_chunks
 
     print("INGEST START:", repo_id)
+    print(f"TRACE:WORKER_INPUT repo_id={repo_id}")
 
     # -----------------------------------------------------------------------
     # Step 1: load repo and mark as running
@@ -2819,6 +2820,7 @@ def run_repo_ingestion(repo_id: str) -> None:
         owner = repo.owner
         name = repo.name
         branch = repo.branch
+        print(f"TRACE:WORKER_DB_READ owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
         repo.ingestion_status = "running"
         repo.updated_at = datetime.now(timezone.utc)
         session.add(repo)
