@@ -798,9 +798,15 @@ def add_repo(
                     total_chunks=0,
                 )
                 session.add(repo)
-                print(f"TRACE:PRE_COMMIT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
+                print(
+                    f"TRACE:PRE_COMMIT owner={repo.owner} "
+                    f"repo_name={repo.name} len={len(repo.name)}"
+                )
                 session.commit()
-                print(f"TRACE:POST_COMMIT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
+                print(
+                    f"TRACE:POST_COMMIT owner={repo.owner} "
+                    f"repo_name={repo.name} len={len(repo.name)}"
+                )
                 session.refresh(repo)
                 newly_created = True
             except IntegrityError:
