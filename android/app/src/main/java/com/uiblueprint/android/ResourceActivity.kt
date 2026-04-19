@@ -40,10 +40,6 @@ class ResourceActivity : AppCompatActivity() {
     private lateinit var binding: ActivityResourceBinding
     private lateinit var prefs: SharedPreferences
     private val executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
-    
-    // Track active polling to prevent memory leaks
-    @Volatile
-    private var isPollingActive = false
 
     private lateinit var repoAdapter: GithubRepoAdapter
     private lateinit var fileAdapter: ChatFileAdapter
@@ -136,7 +132,6 @@ class ResourceActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         // Cancel any active polling to prevent memory leaks
-        isPollingActive = false
         executor.shutdownNow()
     }
 
@@ -605,9 +600,9 @@ class ResourceActivity : AppCompatActivity() {
                         selectionsCommitted = true
                         Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
                         
-                        // Start polling for ingestion status
-                        if (jobIds.isNotEmpty()) {
-                            startPollingIngestJobs(jobIds)
+                        // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling per job
+                        for (jobId in jobIds) {
+                            pollIngestJobForRepo(jobId, apiKey, baseUrl)
                         }
                         
                         finish()
@@ -630,76 +625,61 @@ class ResourceActivity : AppCompatActivity() {
     }
 
     /**
-     * Poll IngestJobs for a list of job IDs until all are terminal (success/failed).
-     * POLLING (NO NEW MECHANISM):
-     * - Interval: 2 seconds
-     * - Stop polling when: status in ("success", "failed")
-     * - Lifecycle-aware: stops when Activity is destroyed
+     * MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — ISOLATED POLLING FOR REPOS
+     * 
+     * Each repo job runs independently with NO shared state.
+     * UI is a passive mirror - displays backend response exactly.
+     * 
+     * UNIFICATION RULE: Identical to file polling, but updates repo adapter instead.
      */
-    private fun startPollingIngestJobs(jobIds: List<String>) {
-        val convId = conversationId ?: return
-        isPollingActive = true
+    private fun pollIngestJobForRepo(jobId: String, apiKey: String, baseUrl: String) {
         executor.execute {
-            val apiKey = apiKey()
-            val baseUrl = baseUrl()
-            val jobsToMonitor = jobIds.toMutableSet()
-            
-            while (jobsToMonitor.isNotEmpty() && isPollingActive) {
+            while (true) {
                 try {
-                    Thread.sleep(2000)  // Poll every 2 seconds
+                    // Fetch GET /v1/ingest/{job_id}
+                    val request = Request.Builder()
+                        .url("$baseUrl/v1/ingest/$jobId")
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .get()
+                        .build()
+                    
+                    val response = BackendClient.executeWithRetry(request)
+                    if (response.isSuccessful) {
+                        val body = response.body?.string() ?: "{}"
+                        val json = JSONObject(body)
+                        
+                        // Bind response directly to UI (no transformation)
+                        val status = json.optString("status", "unknown")
+                        val progress = json.optInt("progress", 0)
+                        val fileCount = json.optInt("file_count", 0)
+                        val chunkCount = json.optInt("chunk_count", 0)
+                        val error = if (json.isNull("error")) null else json.getString("error")
+                        val source = json.optString("source", "")  // "{repo_url}@{branch}"
+                        
+                        // RENDER RULE: Update repo status in adapter
+                        runOnUiThread {
+                            updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
+                        }
+                        
+                        // Stop when terminal
+                        if (status == "success" || status == "failed") {
+                            Log.d("ResourceActivity", "Repo job $jobId terminal: $status")
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("ResourceActivity", "Error polling repo job $jobId", e)
+                }
+                
+                // Sleep 2s
+                try {
+                    Thread.sleep(2000)
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
-                    Log.d("ResourceActivity", "Polling interrupted")
+                    Log.d("ResourceActivity", "Polling interrupted for repo $jobId")
                     break
                 }
-                
-                if (!isPollingActive) break  // Check again after sleep
-                
-                val completedJobs = mutableSetOf<String>()
-                for (jobId in jobsToMonitor) {
-                    if (!isPollingActive) break
-                    
-                    try {
-                        val request = Request.Builder()
-                            .url("$baseUrl/v1/ingest/$jobId")
-                            .addHeader("Authorization", "Bearer $apiKey")
-                            .get()
-                            .build()
-                        
-                        val response = BackendClient.executeWithRetry(request)
-                        if (response.isSuccessful) {
-                            val body = response.body?.string() ?: "{}"
-                            val json = JSONObject(body)
-                            val status = json.getString("status")
-                            val progress = json.getInt("progress")
-                            val fileCount = json.getInt("file_count")
-                            val chunkCount = json.getInt("chunk_count")
-                            val error = if (json.isNull("error")) null else json.getString("error")
-                            val source = json.getString("source")  // "{repo_url}@{branch}"
-                            
-                            // Update UI with current status
-                            runOnUiThread {
-                                if (isPollingActive) {
-                                    updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
-                                }
-                            }
-                            
-                            // Stop polling this job if it's terminal
-                            if (status == "success" || status == "failed") {
-                                completedJobs.add(jobId)
-                                Log.d("ResourceActivity", "Job $jobId completed with status=$status")
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("ResourceActivity", "Error polling job $jobId", e)
-                    }
-                }
-                
-                jobsToMonitor.removeAll(completedJobs)
             }
-            
-            isPollingActive = false
-            Log.d("ResourceActivity", "Polling stopped. Remaining jobs: ${jobsToMonitor.size}")
         }
     }
     
@@ -892,12 +872,13 @@ class ResourceActivity : AppCompatActivity() {
                         githubRepos.addAll(updatedRepos)
                         repoAdapter.submitList(updatedRepos)
                         
-                        // Start polling for any active jobs
-                        val activeJobIds = jobMap.values
-                            .filter { it.status == "queued" || it.status == "running" }
-                            .map { it.job_id }
-                        if (activeJobIds.isNotEmpty()) {
-                            startPollingIngestJobs(activeJobIds)
+                        // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling per active job
+                        val apiKey = apiKey()
+                        val baseUrl = baseUrl()
+                        for (job in jobMap.values) {
+                            if (job.status == "queued" || job.status == "running") {
+                                pollIngestJobForRepo(job.job_id, apiKey, baseUrl)
+                            }
                         }
                     }
                 }
