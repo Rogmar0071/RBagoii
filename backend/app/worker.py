@@ -2946,6 +2946,10 @@ def run_repo_ingestion(repo_id: str) -> None:
         )
         print("INGEST DONE:", repo_id, chunk_count)  # kept: relied upon by integration test assertions
 
+        # Trigger validation after successful ingestion.
+        # REPO_VALIDATION_LAYER_V1 — runs asynchronously (or inline if no Redis).
+        enqueue_job(repo_id, "run_repo_validation")
+
     except Exception as exc:
         _exc_str = str(exc)
         # Phase 5 — 404 from the contents endpoint is a terminal failure.
@@ -2976,9 +2980,79 @@ def run_repo_ingestion(repo_id: str) -> None:
             raise
 
 
+
 # ---------------------------------------------------------------------------
 # Job-function registry
 # ---------------------------------------------------------------------------
 # _JOB_FUNCTIONS has been removed.
 # All job resolution goes through backend.app.job_registry.JOB_REGISTRY.
 # CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §2
+
+
+def run_repo_validation(repo_id: str) -> None:
+    """
+    REPO_VALIDATION_LAYER_V1
+
+    Post-ingestion validation worker.  Classifies the ingested Repo as a
+    trust-class asset and persists the result.
+
+    Invariants
+    ----------
+    - NEVER calls the GitHub API.
+    - NEVER mutates ingestion data.
+    - Idempotent: re-running overwrites the previous validation result.
+    - Only meaningful when ingestion_status == "success".
+    """
+    from sqlmodel import Session, select
+
+    from backend.app.database import get_engine
+    from backend.app.models import Repo, RepoChunk
+    from backend.app.repo_validator import validate_repo
+
+    logger.info({"event": "validation_started", "repo_id": repo_id})
+
+    with Session(get_engine()) as session:
+        repo = session.get(Repo, uuid.UUID(repo_id))
+
+        if repo is None:
+            logger.error({"event": "validation_failed", "reason": "repo_not_found",
+                          "repo_id": repo_id})
+            return
+
+        try:
+            chunks = session.exec(
+                select(RepoChunk).where(RepoChunk.repo_id == uuid.UUID(repo_id))
+            ).all()
+
+            result = validate_repo(repo, chunks)
+
+            repo.validation_status = "validated"
+            repo.validation_score = result["score"]
+            repo.trust_class = result["trust_class"]
+            repo.validation_signals = result["signals"]
+            repo.validated_at = datetime.now(timezone.utc)
+
+            session.add(repo)
+            session.commit()
+
+            logger.info(
+                {
+                    "event": "validation_completed",
+                    "repo_id": repo_id,
+                    "score": result["score"],
+                    "trust_class": result["trust_class"],
+                }
+            )
+
+        except Exception as exc:
+            repo.validation_status = "failed"
+            session.add(repo)
+            session.commit()
+
+            logger.error(
+                {
+                    "event": "validation_failed",
+                    "repo_id": repo_id,
+                    "error": str(exc),
+                }
+            )

@@ -450,6 +450,21 @@ class Repo(SQLModel, table=True):
     # Counts populated by the ingestion worker
     total_files: int = Field(default=0)
     total_chunks: int = Field(default=0)
+    # --- REPO_VALIDATION_LAYER_V1 ---
+    # pending / validated / failed
+    validation_status: str = Field(default="pending")
+    validation_score: int = Field(default=0)
+    # TRUTH | REFERENCE | WIP | UNKNOWN
+    trust_class: str = Field(default="UNKNOWN")
+    # JSON blob produced by the validation engine
+    validation_signals: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
+    validated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
