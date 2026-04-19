@@ -2944,7 +2944,8 @@ def run_repo_ingestion(repo_id: str) -> None:
                 "total_chunks": chunk_count,
             }
         )
-        print("INGEST DONE:", repo_id, chunk_count)  # kept: relied upon by integration test assertions
+        # kept: relied upon by integration test assertions
+        print("INGEST DONE:", repo_id, chunk_count)
 
         # Trigger validation after successful ingestion.
         # REPO_VALIDATION_LAYER_V1 — see _trigger_validation for dispatch logic.
