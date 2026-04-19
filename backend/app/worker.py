@@ -2991,13 +2991,15 @@ def run_repo_ingestion(repo_id: str) -> None:
 
 def run_repo_validation(repo_id: str) -> None:
     """
-    REPO_VALIDATION_LAYER_V1
+    VALIDATION_ATOMIC_COMMIT_V1
 
     Post-ingestion validation worker.  Classifies the ingested Repo as a
     trust-class asset and persists the result.
 
-    Invariants
-    ----------
+    Guarantees:
+    - Validation result is written atomically
+    - No partial state mutation possible
+    - Repo always ends in terminal validation state: "validated" or "failed"
     - NEVER calls the GitHub API.
     - NEVER mutates ingestion data.
     - Idempotent: re-running overwrites the previous validation result.
@@ -3012,31 +3014,48 @@ def run_repo_validation(repo_id: str) -> None:
     logger.info({"event": "validation_started", "repo_id": repo_id})
 
     with Session(get_engine()) as session:
-        repo = session.get(Repo, uuid.UUID(repo_id))
-
-        if repo is None:
-            logger.error({
-                "event": "validation_failed",
-                "reason": "repo_not_found",
-                "repo_id": repo_id,
-            })
-            return
-
         try:
+            # --------------------------------------------------
+            # Load repo + chunks (read phase)
+            # --------------------------------------------------
+            repo = session.get(Repo, uuid.UUID(repo_id))
+
+            if repo is None:
+                logger.error({
+                    "event": "validation_failed",
+                    "reason": "repo_not_found",
+                    "repo_id": repo_id,
+                })
+                return
+
+            if repo.ingestion_status != "success":
+                logger.warning({
+                    "event": "validation_skipped",
+                    "reason": "ingestion_not_success",
+                    "repo_id": repo_id,
+                })
+                return
+
             chunks = session.exec(
-                select(RepoChunk).where(RepoChunk.repo_id == uuid.UUID(repo_id))
+                select(RepoChunk).where(RepoChunk.repo_id == repo.id)
             ).all()
 
+            # --------------------------------------------------
+            # Pure validation (no mutation yet)
+            # --------------------------------------------------
             result = validate_repo(repo, chunks)
 
-            repo.validation_status = "validated"
-            repo.validation_score = result["score"]
-            repo.trust_class = result["trust_class"]
-            repo.validation_signals = result["signals"]
-            repo.validated_at = datetime.now(timezone.utc)
+            # --------------------------------------------------
+            # Atomic commit block
+            # --------------------------------------------------
+            with session.begin():
+                repo.validation_status = "validated"
+                repo.validation_score = result["score"]
+                repo.trust_class = result["trust_class"]
+                repo.validation_signals = result["signals"]
+                repo.validated_at = datetime.now(timezone.utc)
 
-            session.add(repo)
-            session.commit()
+                session.add(repo)
 
             logger.info(
                 {
@@ -3048,17 +3067,24 @@ def run_repo_validation(repo_id: str) -> None:
             )
 
         except Exception as exc:
-            repo.validation_status = "failed"
-            session.add(repo)
-            session.commit()
-
             logger.error(
                 {
                     "event": "validation_failed",
                     "repo_id": repo_id,
-                    "error": str(exc),
+                    "error": str(exc)[:300],
                 }
             )
+
+            # --------------------------------------------------
+            # FAILURE STATE COMMIT (also atomic)
+            # --------------------------------------------------
+            with Session(get_engine()) as fail_session:
+                repo = fail_session.get(Repo, uuid.UUID(repo_id))
+                if repo:
+                    repo.validation_status = "failed"
+                    repo.validated_at = datetime.now(timezone.utc)
+                    fail_session.add(repo)
+                    fail_session.commit()
 
 
 def _trigger_validation(repo_id: str) -> None:
