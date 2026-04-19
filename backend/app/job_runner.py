@@ -40,14 +40,22 @@ def execute_job(job_name: str, *args) -> object:
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
     """
+    print(f"WORKER:execute_job:start job_name={job_name} args={args}")
     # Lazy import avoids circular-import issues at module load time.
     from backend.app.job_registry import JOB_REGISTRY
 
-    print(f"[JOB_RUNNER] executing: {job_name}")
     fn = JOB_REGISTRY.get(job_name)
-    if fn is None:
-        raise RuntimeError(
-            f"INVALID_JOB_NAME: {job_name!r} is not registered in JOB_REGISTRY. "
-            "Add the function to backend.app.job_registry before enqueueing."
-        )
-    return fn(*args)
+    print(f"WORKER:resolved fn={fn}")
+    if not fn:
+        print(f"WORKER:invalid_job_name={job_name}")
+        raise RuntimeError("INVALID_JOB_NAME")
+    print(f"WORKER:executing {job_name}")
+    try:
+        result = fn(*args)
+    except Exception as e:
+        import traceback
+        print(f"WORKER:error job_name={job_name} err={repr(e)}")
+        traceback.print_exc()
+        raise
+    print(f"WORKER:completed {job_name}")
+    return result
