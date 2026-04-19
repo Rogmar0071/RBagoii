@@ -666,7 +666,11 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 job.chunk_count = chunk_count
                 job.file_count = file_count
                 # Calculate progress: 0-95% based on files processed
-                job.progress = min(95, int((file_count / total_files) * 95))
+                job.progress = (
+                    min(95, int((file_count / total_files) * 95))
+                    if total_files > 0
+                    else 95
+                )
                 session.add(job)
                 session.commit()
                 logger.info(
