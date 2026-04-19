@@ -3015,8 +3015,11 @@ def run_repo_validation(repo_id: str) -> None:
         repo = session.get(Repo, uuid.UUID(repo_id))
 
         if repo is None:
-            logger.error({"event": "validation_failed", "reason": "repo_not_found",
-                          "repo_id": repo_id})
+            logger.error({
+                "event": "validation_failed",
+                "reason": "repo_not_found",
+                "repo_id": repo_id,
+            })
             return
 
         try:
