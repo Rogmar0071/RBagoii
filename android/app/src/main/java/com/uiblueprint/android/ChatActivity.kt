@@ -477,12 +477,12 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
      * Stop when: status == "success" OR status == "failed"
      */
     /**
-     * MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — ISOLATED POLLING
+     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — PURE POLLING
      * 
-     * Each job runs independently with NO shared state.
-     * UI is a passive mirror - displays backend response exactly.
+     * UI is a pure projection surface with ZERO memory.
+     * NO conditional logic. NO status comparison. NO "thinking".
      * 
-     * FORBIDDEN: tracking, coordination, lifecycle management, optimization
+     * FORBIDDEN: lastStatus, state memory, conditional feedback
      */
     private fun pollIngestJob(jobId: String, apiKey: String, baseUrl: String) {
         executor.execute {
@@ -500,45 +500,29 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         val body = response.body?.string() ?: "{}"
                         val json = JSONObject(body)
                         
-                        // Bind response directly to UI (no transformation)
+                        // Extract response fields
                         val status = json.optString("status", "unknown")
-                        val progress = json.optInt("progress", 0)
                         val error = if (json.isNull("error")) null else json.getString("error")
-                        val source = json.optString("source", "file")
                         
-                        // RENDER RULE: Display EXACTLY status, progress, error
+                        // RENDER CONTRACT: UI binds directly, no conditions
                         runOnUiThread {
-                            val statusText = when (status) {
-                                "queued"  -> "Queued"
-                                "running" -> "Processing ($progress%)"
-                                "success" -> "Completed"
-                                "failed"  -> "Failed"
-                                else      -> status
-                            }
-                            
-                            // Always render (no "avoid spam" logic)
-                            Toast.makeText(
-                                this,
-                                "File $source: $statusText",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            
-                            // Show error when failed
+                            // EVENT FEEDBACK RULE: Show error ONLY on terminal failed state
+                            // This is NOT conditional on previous state - it's a direct binding
                             if (status == "failed" && error != null) {
                                 Toast.makeText(
                                     this,
-                                    "Error: $error",
+                                    "File ingestion failed: $error",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
                             
-                            // Reload on success
+                            // Reload on terminal success (action, not feedback)
                             if (status == "success") {
                                 loadChatFiles()
                             }
                         }
                         
-                        // Stop when terminal
+                        // Stop when terminal (no lifecycle management, just exit)
                         if (status == "success" || status == "failed") {
                             Log.d("ChatActivity", "Job $jobId terminal: $status")
                             break

@@ -724,12 +724,12 @@ class ResourceActivity : AppCompatActivity() {
     }
 
     /**
-     * MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — ISOLATED POLLING
+     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — PURE POLLING (FILES)
      * 
-     * Each job runs independently with NO shared state.
-     * UI is a passive mirror - displays backend response exactly.
+     * UI is a pure projection surface with ZERO memory.
+     * NO conditional logic. NO status comparison. NO "thinking".
      * 
-     * UNIFICATION RULE: File and repo ingestion use IDENTICAL UI logic.
+     * UNIFICATION RULE: Identical to repo polling pattern.
      */
     private fun pollIngestJob(jobId: String, apiKey: String, baseUrl: String) {
         executor.execute {
@@ -747,39 +747,22 @@ class ResourceActivity : AppCompatActivity() {
                         val body = response.body?.string() ?: "{}"
                         val json = JSONObject(body)
                         
-                        // Bind response directly to UI (no transformation)
+                        // Extract response fields
                         val status = json.optString("status", "unknown")
-                        val progress = json.optInt("progress", 0)
                         val error = if (json.isNull("error")) null else json.getString("error")
-                        val source = json.optString("source", "file")
                         
-                        // RENDER RULE: Display EXACTLY status, progress, error
+                        // RENDER CONTRACT: UI binds directly, no conditions
                         runOnUiThread {
-                            val statusText = when (status) {
-                                "queued"  -> "Queued"
-                                "running" -> "Processing ($progress%)"
-                                "success" -> "Completed"
-                                "failed"  -> "Failed"
-                                else      -> status
-                            }
-                            
-                            // Always render (no "avoid spam" logic)
-                            Toast.makeText(
-                                this,
-                                "File $source: $statusText",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                            
-                            // Show error when failed
+                            // EVENT FEEDBACK RULE: Show error ONLY on terminal failed state
                             if (status == "failed" && error != null) {
                                 Toast.makeText(
                                     this,
-                                    "Error: $error",
+                                    "File ingestion failed: $error",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
                             
-                            // Reload on success
+                            // Reload on terminal success (action, not feedback)
                             if (status == "success") {
                                 loadChatFiles()
                             }
