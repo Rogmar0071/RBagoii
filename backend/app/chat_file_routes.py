@@ -49,6 +49,8 @@ CATEGORY_MAP = {
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": "document",
     "text/plain": "document",
     "text/markdown": "document",
+    "text/html": "document",
+    "application/xhtml+xml": "document",
     "text/csv": "data",
     "application/json": "data",
     "application/xml": "data",
@@ -136,22 +138,141 @@ def categorize_file(filename: str, mime_type: str) -> str:
 
 
 def extract_text_content(file_content: bytes, mime_type: str, filename: str) -> Optional[str]:
-    """Extract text content from file for AI-friendly storage."""
+    """Extract text content from file for AI-friendly storage.
+
+    Supports: plain text, code, JSON, XML, PDF, DOCX, HTML, CSV.
+    Returns None for binary files that cannot be decoded to text.
+    """
     try:
-        # Text files
-        if mime_type.startswith("text/") or mime_type in ["application/json", "application/xml"]:
+        # Plain text and code files (fast path)
+        if mime_type.startswith("text/") or mime_type in {"application/json", "application/xml"}:
             return file_content.decode("utf-8", errors="ignore")
 
-        # Check if it's a code file
         _, ext = os.path.splitext(filename.lower())
         if ext in CODE_EXTENSIONS:
             return file_content.decode("utf-8", errors="ignore")
 
-        # For other file types, we could add PDF, DOCX extraction here
-        # For now, just return None for binary files
+        # PDF extraction via pypdf
+        if mime_type == "application/pdf" or ext == ".pdf":
+            return _extract_pdf_text(file_content, filename)
+
+        # DOCX extraction via python-docx
+        if mime_type in {
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+        } or ext in {".docx", ".doc"}:
+            return _extract_docx_text(file_content, filename)
+
+        # HTML extraction via stdlib html.parser
+        if mime_type in {"text/html", "application/xhtml+xml"} or ext in {".html", ".htm"}:
+            return _extract_html_text(file_content, filename)
+
+        # CSV extraction via stdlib csv
+        if mime_type == "text/csv" or ext == ".csv":
+            return _extract_csv_text(file_content, filename)
+
         return None
     except Exception as e:
         logger.warning(f"Failed to extract text from {filename}: {e}")
+        return None
+
+
+def _extract_pdf_text(file_content: bytes, filename: str) -> Optional[str]:
+    """Extract text from a PDF using pypdf (soft dependency)."""
+    try:
+        import io
+
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(file_content))
+        parts: list[str] = []
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text.strip():
+                parts.append(text)
+        return "\n".join(parts) if parts else None
+    except ImportError:
+        logger.warning("pypdf not installed; cannot extract text from %s", filename)
+        return None
+    except Exception as exc:
+        logger.warning("PDF extraction failed for %s: %s", filename, exc)
+        return None
+
+
+def _extract_docx_text(file_content: bytes, filename: str) -> Optional[str]:
+    """Extract text from a DOCX file using python-docx (soft dependency)."""
+    try:
+        import io
+
+        from docx import Document
+
+        doc = Document(io.BytesIO(file_content))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(paragraphs) if paragraphs else None
+    except ImportError:
+        logger.warning("python-docx not installed; cannot extract text from %s", filename)
+        return None
+    except Exception as exc:
+        logger.warning("DOCX extraction failed for %s: %s", filename, exc)
+        return None
+
+
+def _extract_html_text(file_content: bytes, filename: str) -> Optional[str]:
+    """Strip HTML tags and return plain text using stdlib html.parser."""
+    import html
+    from html.parser import HTMLParser
+
+    class _TextCollector(HTMLParser):
+        _SKIP_TAGS = {"script", "style", "head", "meta", "link"}
+
+        def __init__(self):
+            super().__init__()
+            self._parts: list[str] = []
+            self._skip_depth = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag.lower() in self._SKIP_TAGS:
+                self._skip_depth += 1
+
+        def handle_endtag(self, tag):
+            if tag.lower() in self._SKIP_TAGS and self._skip_depth > 0:
+                self._skip_depth -= 1
+
+        def handle_data(self, data):
+            if self._skip_depth == 0:
+                stripped = data.strip()
+                if stripped:
+                    self._parts.append(html.unescape(stripped))
+
+        def text(self) -> str:
+            return " ".join(self._parts)
+
+    try:
+        raw = file_content.decode("utf-8", errors="ignore")
+        collector = _TextCollector()
+        collector.feed(raw)
+        result = collector.text()
+        return result if result.strip() else None
+    except Exception as exc:
+        logger.warning("HTML extraction failed for %s: %s", filename, exc)
+        return None
+
+
+def _extract_csv_text(file_content: bytes, filename: str) -> Optional[str]:
+    """Convert CSV rows to a readable text representation."""
+    import csv
+    import io
+
+    try:
+        text = file_content.decode("utf-8", errors="ignore")
+        reader = csv.reader(io.StringIO(text))
+        rows = list(reader)
+        if not rows:
+            return None
+        lines = [",".join(row) for row in rows]
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.warning("CSV extraction failed for %s: %s", filename, exc)
         return None
 
 

@@ -60,7 +60,17 @@ DISABLE_JOBS: bool = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
 MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 50 * 1024 * 1024))  # 50 MB
 
 # Allowed MIME types for upload
-_ALLOWED_CONTENT_TYPES = {"video/mp4", "application/zip", "application/x-zip-compressed"}
+_ALLOWED_CONTENT_TYPES = {
+    "video/mp4",
+    "application/zip",
+    "application/x-zip-compressed",
+    "text/plain",
+    "text/markdown",
+    "text/html",
+    "text/csv",
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+}
 
 # Upload directory for streamed files
 _UPLOADS_DIR = Path("/tmp/uploads")
