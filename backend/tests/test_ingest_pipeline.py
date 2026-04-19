@@ -225,10 +225,10 @@ class TestSplitWithOverlap:
         text = "".join(lines)
         chunks = split_with_overlap(text, chunk_size=150, overlap=0)
         assert len(chunks) >= 2
-        # No overlap means no repeated content between consecutive chunks
-        for i in range(len(chunks) - 1):
-            # Chunks should not share exact suffix/prefix
-            assert chunks[i][-10:] not in chunks[i + 1][:10] or True  # best effort
+        # With zero overlap, the combined length of all chunks should not
+        # significantly exceed the original text length (no repeated content)
+        combined_len = sum(len(c) for c in chunks)
+        assert combined_len <= len(text) + 10  # small tolerance for boundary splits
 
 
 # ---------------------------------------------------------------------------

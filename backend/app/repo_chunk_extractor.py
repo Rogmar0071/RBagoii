@@ -209,7 +209,7 @@ def _extract_dependencies(lines: list[str]) -> list[str]:
 
 
 def _looks_like_data(lines: list[str]) -> bool:
-    """Heuristic: chunk looks like JSON/YAML data if it starts with [ or { ."""
+    """Heuristic: chunk looks like JSON/YAML data if it starts with [ or {."""
     for line in lines:
         stripped = line.strip()
         if stripped:
