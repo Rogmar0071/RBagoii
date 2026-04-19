@@ -548,10 +548,3 @@ async def stream_ingest_progress(
             "X-Accel-Buffering": "no",
         },
     )
-
-        except Exception as exc:
-            logger.warning("Could not delete staged file %s: %s", job.source_path, exc)
-
-    session.delete(job)
-    session.commit()
-    return None
