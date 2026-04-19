@@ -471,16 +471,13 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     }
 
     /**
-     * MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §2 — POLLING LOOP
-     * Poll GET /v1/ingest/{job_id} until terminal status.
-     * Interval: 2 seconds
-     * Stop when: status == "success" OR status == "failed"
-     */
     /**
      * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — PURE POLLING
      * 
      * UI is a pure projection surface with ZERO memory.
      * NO conditional logic. NO status comparison. NO "thinking".
+     * 
+     * Polls GET /v1/ingest/{job_id} every 2 seconds until terminal.
      * 
      * FORBIDDEN: lastStatus, state memory, conditional feedback
      */
