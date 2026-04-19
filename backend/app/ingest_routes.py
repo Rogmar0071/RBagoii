@@ -155,10 +155,6 @@ class IngestJobResponse(BaseModel):
     workspace_id: Optional[str] = None
     created_at: str
     updated_at: str
-    # Progress tracking (MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1)
-    progress: int = 0
-    stage: str = "queued"
-    message: Optional[str] = None
 
 
 def _to_response(job: object) -> IngestJobResponse:
@@ -174,9 +170,6 @@ def _to_response(job: object) -> IngestJobResponse:
         workspace_id=job.workspace_id,  # type: ignore[attr-defined]
         created_at=job.created_at.isoformat() if job.created_at else "",  # type: ignore[attr-defined]
         updated_at=job.updated_at.isoformat() if job.updated_at else "",  # type: ignore[attr-defined]
-        progress=job.progress,  # type: ignore[attr-defined]
-        stage=job.stage,  # type: ignore[attr-defined]
-        message=job.message,  # type: ignore[attr-defined]
     )
 
 
@@ -466,85 +459,3 @@ def delete_ingest_job(
     session.delete(job)
     session.commit()
     return None
-
-
-# ---------------------------------------------------------------------------
-# GET /v1/ingest/{job_id}/stream — SSE real-time progress
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{job_id}/stream", dependencies=[Depends(require_auth)])
-async def stream_ingest_progress(
-    job_id: str,
-    session=Depends(_db_session),
-):
-    """
-    Server-Sent Events endpoint for real-time ingestion progress.
-
-    Returns SSE stream with progress updates every 500ms until job completes.
-
-    MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §E
-    """
-    import asyncio
-
-    from fastapi.responses import StreamingResponse
-    from sqlmodel import select
-
-    from backend.app.models import IngestJob
-
-    try:
-        job_uuid = uuid.UUID(job_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid job_id: must be a UUID")
-
-    async def event_generator():
-        """Poll DB every 500ms and emit progress updates."""
-        from backend.app.database import get_session
-
-        last_progress = None
-        last_stage = None
-
-        while True:
-            # Get fresh DB session for each poll
-            session_gen = get_session()
-            db_session = next(session_gen)
-
-            try:
-                job = db_session.get(IngestJob, job_uuid)
-                if job is None:
-                    yield f"event: error\ndata: {{\"error\": \"Job not found\"}}\n\n"
-                    break
-
-                # Only emit if progress changed
-                if job.progress != last_progress or job.stage != last_stage:
-                    import json
-
-                    data = {
-                        "stage": job.stage,
-                        "progress": job.progress,
-                        "message": job.message,
-                    }
-                    yield f"event: progress\ndata: {json.dumps(data)}\n\n"
-                    last_progress = job.progress
-                    last_stage = job.stage
-
-                # Stop streaming when job reaches terminal state
-                if job.stage in ("completed", "failed"):
-                    break
-
-            finally:
-                try:
-                    next(session_gen, None)  # Close session
-                except StopIteration:
-                    pass
-
-            await asyncio.sleep(0.5)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )

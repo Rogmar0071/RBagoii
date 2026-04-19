@@ -677,12 +677,9 @@ def process_ingest_job(job_id: str) -> None:
         A terminal status (``success`` or ``failed``) is written
         unconditionally — even when an unexpected exception is raised.
         Callers never need to handle partial or stuck state.
-
-    MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §B,C
-        Implements explicit progress tracking with deterministic stage transitions.
     """
     logger.info("IngestJob %s: starting", job_id)
-    _update_ingest_job(job_id, status="running", stage="queued", progress=0)
+    _update_ingest_job(job_id, status="running")
 
     try:
         from sqlmodel import Session
@@ -696,18 +693,6 @@ def process_ingest_job(job_id: str) -> None:
                 logger.error("IngestJob %s not found in DB — aborting", job_id)
                 return
 
-            # Helper to update progress within the session
-            def _update_progress(stage: str, progress: int, message: str = None) -> None:
-                job.stage = stage
-                job.progress = progress
-                if message is not None:
-                    job.message = message
-                session.add(job)
-                session.commit()
-
-            # Stage: fetching (10%)
-            _update_progress("fetching", 10)
-
             if job.kind == "file":
                 file_count, chunk_count = _ingest_file(session, job)
             elif job.kind == "url":
@@ -717,19 +702,7 @@ def process_ingest_job(job_id: str) -> None:
             else:
                 raise ValueError(f"Unknown IngestJob kind: {job.kind!r}")
 
-            # Stage: parsing (30%) - already done by extract_text in ingest functions
-            _update_progress("parsing", 30)
-
-            # Stage: chunking (60%) - already done by split_with_overlap
-            _update_progress("chunking", 60)
-
-            # Stage: storing (90%) - chunks already committed
-            _update_progress("storing", 90)
-
-            # Stage: completed (100%)
             job.status = "success"
-            job.stage = "completed"
-            job.progress = 100
             job.file_count = file_count
             job.chunk_count = chunk_count
             job.updated_at = datetime.now(timezone.utc)
@@ -745,10 +718,4 @@ def process_ingest_job(job_id: str) -> None:
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
-        _update_ingest_job(
-            job_id,
-            status="failed",
-            stage="failed",
-            error=str(exc)[:1000],
-            message=str(exc)[:300],
-        )
+        _update_ingest_job(job_id, status="failed", error=str(exc)[:1000])
