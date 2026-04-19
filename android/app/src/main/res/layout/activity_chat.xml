@@ -219,11 +219,14 @@
 
     </LinearLayout>
 
-    <!-- File management panel (right side drawer, 40% width) -->
+    <!-- File management panel (right side drawer, 40% width).
+         Initial width must be non-zero so DrawerLayout can locate the drawer
+         by gravity in openDrawer/closeDrawer calls.  The exact width is
+         overridden programmatically in ChatActivity.setupFilePanel(). -->
     <include
         android:id="@+id/filesPanel"
         layout="@layout/fragment_chat_files"
-        android:layout_width="0dp"
+        android:layout_width="280dp"
         android:layout_height="match_parent"
         android:layout_gravity="end" />
 

@@ -54,7 +54,10 @@ class ResourceActivity : AppCompatActivity() {
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetContent(),
     ) { uri: Uri? ->
-        uri?.let { uploadFile(it) }
+        // Guard: never start an upload if the activity is already closing.
+        if (!isFinishing && uri != null) {
+            uploadFile(uri)
+        }
     }
 
     companion object {
@@ -111,6 +114,10 @@ class ResourceActivity : AppCompatActivity() {
         }
 
         binding.btnUploadFile.setOnClickListener {
+            // Guard: never open the file picker while the activity is closing,
+            // preventing an accidental upload if the close (X) tap's event
+            // leaks into the upload button's touch area.
+            if (isFinishing) return@setOnClickListener
             if (conversationId != null) {
                 filePickerLauncher.launch("*/*")
             } else {
