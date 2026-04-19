@@ -736,12 +736,8 @@ def retry_repo_ingestion(
 # ===========================================================================
 
 
-@router.post(
-    "/api/repos/add",
-    status_code=200,
-    dependencies=[Depends(require_auth)],
-)
-def add_repo(print("TRACE:ADD_REPO_V2_ACTIVE")
+@router.post("/api/repos/add", response_model=RepoAddResponse)
+def add_repo(
     req: RepoAddRequest,
     session: Session = Depends(get_session),
 ) -> RepoAddResponse:
@@ -757,6 +753,7 @@ def add_repo(print("TRACE:ADD_REPO_V2_ACTIVE")
     - Ingestion is only triggered for newly created Repos.
     - The binding is idempotent (UNIQUE constraint on conversation_repos).
     """
+    print("TRACE:ADD_REPO_V2_ACTIVE")
     try:
         print("TRACE:add_repo:entered")
 
