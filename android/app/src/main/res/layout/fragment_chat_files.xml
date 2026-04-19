@@ -40,6 +40,13 @@
         android:layout_height="1dp"
         android:background="@color/divider" />
 
+    <!-- Spacer keeps btnUploadFile visually and touch-target-separated from
+         btnClosePanel above, preventing accidental upload triggers when the
+         user taps the close (X) button. -->
+    <Space
+        android:layout_width="match_parent"
+        android:layout_height="8dp" />
+
     <!-- Upload button -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/btnUploadFile"

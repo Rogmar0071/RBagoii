@@ -247,9 +247,14 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             }
         }
 
-        // Close panel button
+        // Close panel button — use closeDrawers() so the call succeeds even if
+        // the DrawerLayout hasn't finished a layout pass with the final width.
         btnClosePanel.setOnClickListener {
-            binding.drawerLayout.closeDrawer(GravityCompat.END)
+            if (binding.drawerLayout.isDrawerOpen(GravityCompat.END)) {
+                binding.drawerLayout.closeDrawer(GravityCompat.END)
+            } else {
+                binding.drawerLayout.closeDrawers()
+            }
         }
 
         // Upload file button
