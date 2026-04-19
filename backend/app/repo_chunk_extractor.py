@@ -57,7 +57,10 @@ _FUNC_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\bfun\s+(\w+)"),                          # Kotlin
     re.compile(r"\bfunction\s+(\w+)"),                     # JS/TS/PHP
     re.compile(r"\bfn\s+(\w+)"),                           # Rust
-    re.compile(r"(?:public|private|protected|static|async|override)\s+\w[\w<>\[\]]*\s+(\w+)\s*\("),  # Java/C#
+    re.compile(  # Java/C#
+        r"(?:public|private|protected|static|async|override)"
+        r"\s+\w[\w<>\[\]]*\s+(\w+)\s*\("
+    ),
     re.compile(r"(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\("),  # JS arrow fn
 ]
 
@@ -131,7 +134,6 @@ def _detect_type_and_symbol(lines: list[str], path: str) -> tuple[str, str | Non
     Precedence: CLASS > FUNCTION > IMPORT > CONFIG > DATA > DOC
     Returns ``(chunk_type, symbol_or_None)``.
     """
-    symbol: str | None = None
     found_class: str | None = None
     found_func: str | None = None
     has_imports = False

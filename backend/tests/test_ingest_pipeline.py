@@ -255,7 +255,10 @@ class TestIngestFileEndpoint:
         assert data["chunk_count"] >= 1
 
     def test_upload_python_file(self, client):
-        code = b"def hello():\n    print('Hello, world!')\n\nif __name__ == '__main__':\n    hello()\n"
+        code = (
+            b"def hello():\n    print('Hello, world!')\n"
+            b"\nif __name__ == '__main__':\n    hello()\n"
+        )
         resp = client.post(
             "/v1/ingest/file",
             headers=_AUTH,

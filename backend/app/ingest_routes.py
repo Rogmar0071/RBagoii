@@ -27,7 +27,6 @@ behaviour is identical regardless of execution context.
 from __future__ import annotations
 
 import logging
-import mimetypes
 import os
 import threading
 import uuid

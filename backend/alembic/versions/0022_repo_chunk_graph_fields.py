@@ -76,6 +76,9 @@ def downgrade() -> None:
         if index_name in existing_indexes:
             op.drop_index(index_name, table_name="repo_chunks")
 
-    for col_name in ("end_line", "start_line", "dependencies", "symbol", "graph_group", "chunk_type"):
+    for col_name in (
+        "end_line", "start_line", "dependencies",
+        "symbol", "graph_group", "chunk_type",
+    ):
         if col_name in existing_cols:
             op.drop_column("repo_chunks", col_name)
