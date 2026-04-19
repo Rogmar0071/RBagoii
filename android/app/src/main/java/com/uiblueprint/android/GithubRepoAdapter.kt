@@ -15,28 +15,33 @@ data class GithubRepo(
     val stars: Int,
     val isPrivate: Boolean,
     var selected: Boolean = false,
-    // REPO_CONTEXT_FINALIZATION_V1 — Phase 7: backend ingestion metadata
-    val ingestionStatus: String = "",   // pending / running / success / failed
+    // Ingestion status from IngestJob (queued / running / success / failed)
+    val ingestionStatus: String = "",
+    val progress: Int = 0,  // 0-100
     val totalFiles: Int = 0,
     val totalChunks: Int = 0,
-    // Set when this repo has been committed to the backend (has a server-side ID)
-    val backendId: String? = null,
+    val errorMessage: String? = null,  // Set when status == failed
+    // IngestJob ID for polling
+    val ingestJobId: String? = null,
 )
 
 /**
- * REPO_CONTEXT_FINALIZATION_V1 — Phase 1.
- * First-class Repo entity returned by POST/GET /api/chat/{cid}/repos.
+ * IngestJob response from GET /v1/ingest/{job_id}.
+ * Source of truth for ingestion progress and status.
  */
-data class RepoStatus(
-    val id: String,
-    val conversationId: String,
-    val repoUrl: String,
-    val owner: String,
-    val name: String,
-    val branch: String,
-    val status: String,  // pending / running / success / failed
-    val totalFiles: Int,
-    val chunkCount: Int,
+data class IngestJobResponse(
+    val job_id: String,
+    val kind: String,  // "file" | "url" | "repo"
+    val source: String,
+    val status: String,  // "queued" | "running" | "success" | "failed"
+    val progress: Int,  // 0-100
+    val file_count: Int,
+    val chunk_count: Int,
+    val error: String?,
+    val conversation_id: String?,
+    val workspace_id: String?,
+    val created_at: String,
+    val updated_at: String
 )
 
 class GithubRepoAdapter(
@@ -44,6 +49,10 @@ class GithubRepoAdapter(
 ) : RecyclerView.Adapter<GithubRepoAdapter.RepoViewHolder>() {
 
     private val repos = mutableListOf<GithubRepo>()
+    
+    companion object {
+        private const val MAX_ERROR_MESSAGE_LENGTH = 100
+    }
 
     fun submitList(newRepos: List<GithubRepo>) {
         repos.clear()
@@ -76,27 +85,42 @@ class GithubRepoAdapter(
             binding.tvRepoLanguage.text = repo.language.ifEmpty { "Unknown" }
             binding.tvRepoStars.text = "⭐ ${repo.stars}"
 
-            // REPO_CONTEXT_FINALIZATION_V1 — Phase 7:
-            // Show ingestion status and file count when backend metadata is available.
+            // UI STATE MAPPING (MANDATORY) — map backend status directly to UI display
             if (repo.ingestionStatus.isNotEmpty()) {
+                val statusText = when (repo.ingestionStatus) {
+                    "queued"  -> "Queued"
+                    "running" -> "Processing"
+                    "success" -> "Completed"
+                    "failed"  -> "Failed"
+                    else      -> repo.ingestionStatus
+                }
+                
                 val statusEmoji = when (repo.ingestionStatus) {
                     "success" -> "✅"
                     "failed"  -> "❌"
                     "running" -> "⏳"
-                    "pending" -> "🕐"
+                    "queued"  -> "🕐"
                     else      -> "?"
                 }
+                
+                // Build status label with progress and counts
                 val statusLabel = when (repo.ingestionStatus) {
-                    "success" -> "${statusEmoji} Ready — ${repo.totalFiles} files, ${repo.totalChunks} chunks"
-                    "failed"  -> "${statusEmoji} Ingestion failed"
-                    "running" -> "${statusEmoji} Ingesting…"
-                    "pending" -> "${statusEmoji} Pending ingestion"
-                    else      -> "${statusEmoji} ${repo.ingestionStatus}"
+                    "success" -> "${statusEmoji} $statusText — ${repo.totalFiles} files, ${repo.totalChunks} chunks"
+                    "failed"  -> {
+                        // FAILURE VISIBILITY (CRITICAL) — display error message
+                        val errorMsg = repo.errorMessage?.take(MAX_ERROR_MESSAGE_LENGTH) ?: "Unknown error"
+                        "${statusEmoji} $statusText: $errorMsg"
+                    }
+                    "running" -> {
+                        // Show live progress (0-100)
+                        "${statusEmoji} $statusText (${repo.progress}%) — ${repo.totalFiles} files, ${repo.totalChunks} chunks"
+                    }
+                    "queued"  -> "${statusEmoji} $statusText"
+                    else      -> "${statusEmoji} $statusText"
                 }
-                val runtimeLabel = repo.backendId?.let { " | repo_id=$it" }.orEmpty()
-                // Reuse tvRepoLanguage-adjacent space if available; fallback to description
+                
                 binding.tvRepoDescription.text =
-                    "${binding.tvRepoDescription.text}  |  $statusLabel$runtimeLabel"
+                    "${binding.tvRepoDescription.text}  |  $statusLabel"
             }
 
             // Remove listener before setting checked state to avoid triggering callback
