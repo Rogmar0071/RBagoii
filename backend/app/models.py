@@ -450,6 +450,21 @@ class Repo(SQLModel, table=True):
     # Counts populated by the ingestion worker
     total_files: int = Field(default=0)
     total_chunks: int = Field(default=0)
+    # --- REPO_VALIDATION_LAYER_V1 ---
+    # pending / validated / failed
+    validation_status: str = Field(default="pending")
+    validation_score: int = Field(default=0)
+    # TRUTH | REFERENCE | WIP | UNKNOWN
+    trust_class: str = Field(default="UNKNOWN")
+    # JSON blob produced by the validation engine
+    validation_signals: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
+    validated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
@@ -503,3 +518,39 @@ class ConversationRepo(SQLModel, table=True):
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# repo_validation_snapshots
+# ---------------------------------------------------------------------------
+
+
+class RepoValidationSnapshot(SQLModel, table=True):
+    """
+    REPO_VALIDATION_SNAPSHOT_V1.
+
+    Immutable audit record written each time a Repo is validated.
+    Captures the score, trust class, and raw signals at the moment of
+    validation so the full history is preserved even when the Repo row
+    is overwritten by a later validation run.
+    """
+
+    __tablename__ = "repo_validation_snapshots"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    repo_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), nullable=False, index=True)
+    )
+
+    validation_score: int
+    trust_class: str
+    validation_signals: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
+
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=False),
+    )

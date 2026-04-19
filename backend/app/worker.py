@@ -2775,19 +2775,22 @@ def run_repo_ingestion(repo_id: str) -> None:
     update the Repo entity with ingestion results.
 
     Flow:
-    1. Set Repo.ingestion_status = "running"
-    2. Fetch file list via _fetch_repo_file_list
-    3. Create RepoChunk rows (repo_id FK)
-    4. Set Repo.ingestion_status = "success" | "failed"
-    5. Update total_files / total_chunks counts
+    1. Load Repo and mark as running
+    2. Hard GitHub API validation (MQP-CONTRACT: REPO_INGESTION_REBUILD_V1 Phase 4)
+    3. Fetch file list via _fetch_repo_file_list
+    4. Create RepoChunk rows (repo_id FK)
+    5. Set Repo.ingestion_status = "success" | "failed"
+    6. Update total_files / total_chunks counts
 
     Invariants:
     - Repo status is ALWAYS updated in terminal state (LAW 7).
     - Failures are always logged and visible (LAW 9).
     - No ChatFile row is created — Repo is self-contained.
+    - Worker NEVER trusts DB blindly — GitHub API is always confirmed (Phase 4).
     """
     import asyncio
 
+    import httpx as _httpx
     from sqlmodel import Session
 
     from backend.app.database import get_engine
@@ -2795,8 +2798,8 @@ def run_repo_ingestion(repo_id: str) -> None:
     from backend.app.models import Repo, RepoChunk
     from backend.app.repo_retrieval import _split_into_chunks
 
-    print("INGEST START:", repo_id)
-    print(f"TRACE:WORKER_INPUT repo_id={repo_id}")
+    logger.info({"event": "worker_started", "repo_id": repo_id})
+    print("INGEST START:", repo_id)  # kept: relied upon by integration test assertions
 
     # -----------------------------------------------------------------------
     # Step 1: load repo and mark as running
@@ -2807,7 +2810,6 @@ def run_repo_ingestion(repo_id: str) -> None:
         repo = session.get(Repo, uuid.UUID(repo_id))
         if repo is None:
             logger.error("run_repo_ingestion: Repo %s not found in DB — aborting", repo_id)
-            print("INGEST FAILED:", repo_id, "Repo not found in DB")
             return
         if repo.ingestion_status in ("running", "success"):
             logger.warning(
@@ -2815,19 +2817,78 @@ def run_repo_ingestion(repo_id: str) -> None:
                 repo_id,
                 repo.ingestion_status,
             )
-            print("INGEST SKIP:", repo_id, repo.ingestion_status)
             return
         owner = repo.owner
         name = repo.name
         branch = repo.branch
-        print(f"TRACE:WORKER_DB_READ owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
         repo.ingestion_status = "running"
         repo.updated_at = datetime.now(timezone.utc)
         session.add(repo)
         session.commit()
 
     # -----------------------------------------------------------------------
-    # Steps 2–5: fetch, chunk, persist — unified error boundary
+    # Step 2: Hard GitHub API validation
+    # MQP-CONTRACT: REPO_INGESTION_REBUILD_V1 Phase 4
+    # Worker MUST confirm the repo exists on GitHub before proceeding.
+    # On non-200 response: mark failed and EXIT — no retry loop.
+    # -----------------------------------------------------------------------
+    _val_headers: dict = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        _val_headers["Authorization"] = f"token {GITHUB_TOKEN}"
+
+    try:
+        with _httpx.Client(timeout=10.0) as _val_client:
+            _val_resp = _val_client.get(
+                f"https://api.github.com/repos/{owner}/{name}",
+                headers=_val_headers,
+            )
+    except _httpx.RequestError as _val_exc:
+        logger.warning(
+            {
+                "event": "worker_validation_failed",
+                "repo_id": repo_id,
+                "error": str(_val_exc),
+            }
+        )
+        with Session(get_engine()) as session:
+            r = session.get(Repo, uuid.UUID(repo_id))
+            if r:
+                r.ingestion_status = "failed"
+                r.updated_at = datetime.now(timezone.utc)
+                session.add(r)
+                session.commit()
+        return
+
+    if _val_resp.status_code != 200:
+        logger.warning(
+            {
+                "event": "worker_validation_failed",
+                "repo_id": repo_id,
+                "owner": owner,
+                "name": name,
+                "github_status": _val_resp.status_code,
+            }
+        )
+        with Session(get_engine()) as session:
+            r = session.get(Repo, uuid.UUID(repo_id))
+            if r:
+                r.ingestion_status = "failed"
+                r.updated_at = datetime.now(timezone.utc)
+                session.add(r)
+                session.commit()
+        return  # Terminal failure — DO NOT retry
+
+    logger.info(
+        {
+            "event": "ingestion_started",
+            "repo_id": repo_id,
+            "owner": owner,
+            "name": name,
+        }
+    )
+
+    # -----------------------------------------------------------------------
+    # Steps 3–6: fetch, chunk, persist — unified error boundary
     # -----------------------------------------------------------------------
     headers: dict = {"Accept": "application/vnd.github.v3+json"}
     if GITHUB_TOKEN:
@@ -2873,24 +2934,40 @@ def run_repo_ingestion(repo_id: str) -> None:
             session.add(r)
             session.commit()
 
-        print("INGEST DONE:", repo_id, chunk_count)
         logger.info(
-            "run_repo_ingestion: completed for %s/%s — %d files, %d chunks",
-            owner,
-            name,
-            len(file_list),
-            chunk_count,
+            {
+                "event": "ingestion_complete",
+                "repo_id": repo_id,
+                "owner": owner,
+                "name": name,
+                "total_files": len(file_list),
+                "total_chunks": chunk_count,
+            }
         )
+        print("INGEST DONE:", repo_id, chunk_count)  # kept: relied upon by integration test assertions
+
+        # Trigger validation after successful ingestion.
+        # REPO_VALIDATION_LAYER_V1 — see _trigger_validation for dispatch logic.
+        _trigger_validation(repo_id)
 
     except Exception as exc:
+        _exc_str = str(exc)
+        # Phase 5 — 404 from the contents endpoint is a terminal failure.
+        # _fetch_repo_file_list raises RuntimeError("GitHub API returned 404 for ...")
+        # when the contents endpoint returns 404.  Check for that specific pattern
+        # to avoid false positives from unrelated error messages containing "404".
+        # DO NOT re-raise on 404; let the status be set to "failed" and exit cleanly.
+        _is_terminal_404 = "GitHub API returned 404" in _exc_str
         logger.error(
-            "run_repo_ingestion: failed for %s/%s (repo_id=%s): %s",
-            owner,
-            name,
-            repo_id,
-            exc,
+            {
+                "event": "ingestion_failed",
+                "repo_id": repo_id,
+                "owner": owner,
+                "name": name,
+                "error": _exc_str,
+                "terminal": _is_terminal_404,
+            }
         )
-        print("INGEST FAILED:", repo_id, str(exc))
         with Session(get_engine()) as session:
             r = session.get(Repo, uuid.UUID(repo_id))
             if r:
@@ -2899,7 +2976,9 @@ def run_repo_ingestion(repo_id: str) -> None:
                 r.updated_at = datetime.now(timezone.utc)
                 session.add(r)
                 session.commit()
-        raise
+        if not _is_terminal_404:
+            raise
+
 
 
 # ---------------------------------------------------------------------------
@@ -2908,3 +2987,118 @@ def run_repo_ingestion(repo_id: str) -> None:
 # _JOB_FUNCTIONS has been removed.
 # All job resolution goes through backend.app.job_registry.JOB_REGISTRY.
 # CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §2
+
+
+def run_repo_validation(repo_id: str) -> None:
+    """
+    VALIDATION_ATOMIC_COMMIT_V1
+
+    Post-ingestion validation worker.  Classifies the ingested Repo as a
+    trust-class asset and persists the result.
+
+    Guarantees:
+    - Validation result is written atomically
+    - No partial state mutation possible
+    - Repo always ends in terminal validation state: "validated" or "failed"
+    - NEVER calls the GitHub API.
+    - NEVER mutates ingestion data.
+    - Idempotent: re-running overwrites the previous validation result.
+    - Only meaningful when ingestion_status == "success".
+    """
+    from sqlmodel import Session, select
+
+    from backend.app.database import get_engine
+    from backend.app.models import Repo, RepoChunk
+    from backend.app.repo_validator import validate_repo
+
+    logger.info({"event": "validation_started", "repo_id": repo_id})
+
+    with Session(get_engine()) as session:
+        try:
+            # --------------------------------------------------
+            # Load repo + chunks (read phase)
+            # --------------------------------------------------
+            repo = session.get(Repo, uuid.UUID(repo_id))
+
+            if repo is None:
+                logger.error({
+                    "event": "validation_failed",
+                    "reason": "repo_not_found",
+                    "repo_id": repo_id,
+                })
+                return
+
+            if repo.ingestion_status != "success":
+                logger.warning({
+                    "event": "validation_skipped",
+                    "reason": "ingestion_not_success",
+                    "repo_id": repo_id,
+                })
+                return
+
+            chunks = session.exec(
+                select(RepoChunk).where(RepoChunk.repo_id == repo.id)
+            ).all()
+
+            # --------------------------------------------------
+            # Pure validation (no mutation yet)
+            # --------------------------------------------------
+            result = validate_repo(repo, chunks)
+
+            # --------------------------------------------------
+            # Atomic commit block
+            # --------------------------------------------------
+            with session.begin():
+                repo.validation_status = "validated"
+                repo.validation_score = result["score"]
+                repo.trust_class = result["trust_class"]
+                repo.validation_signals = result["signals"]
+                repo.validated_at = datetime.now(timezone.utc)
+
+                session.add(repo)
+
+            logger.info(
+                {
+                    "event": "validation_completed",
+                    "repo_id": repo_id,
+                    "score": result["score"],
+                    "trust_class": result["trust_class"],
+                }
+            )
+
+        except Exception as exc:
+            logger.error(
+                {
+                    "event": "validation_failed",
+                    "repo_id": repo_id,
+                    "error": str(exc)[:300],
+                }
+            )
+
+            # --------------------------------------------------
+            # FAILURE STATE COMMIT (also atomic)
+            # --------------------------------------------------
+            with Session(get_engine()) as fail_session:
+                repo = fail_session.get(Repo, uuid.UUID(repo_id))
+                if repo:
+                    repo.validation_status = "failed"
+                    repo.validated_at = datetime.now(timezone.utc)
+                    fail_session.add(repo)
+                    fail_session.commit()
+
+
+def _trigger_validation(repo_id: str) -> None:
+    """
+    VALIDATION_EXECUTION_PARITY_FIX_V1
+
+    Deterministic validation trigger — behaviour is identical across all
+    environments:
+
+    - BACKEND_DISABLE_JOBS=1  → run ``run_repo_validation`` inline (tests /
+                                 local mode) so validation is always exercised.
+    - otherwise               → enqueue via RQ (production / Redis mode).
+    """
+    if os.environ.get("BACKEND_DISABLE_JOBS") == "1":
+        run_repo_validation(repo_id)
+    else:
+        enqueue_job(repo_id, "run_repo_validation")

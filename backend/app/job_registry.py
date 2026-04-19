@@ -28,6 +28,7 @@ from backend.app.worker import (
     run_analyze_step,
     run_blueprint,
     run_repo_ingestion,
+    run_repo_validation,
 )
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,7 @@ JOB_REGISTRY: dict[str, object] = {
     "repo_ingestion": run_repo_ingestion,
     # Canonical function-name keys (used by execute_job dispatcher)
     "run_repo_ingestion": run_repo_ingestion,
+    "run_repo_validation": run_repo_validation,
     "run_extraction_job": run_extraction_job,
     "process_analysis_job": process_analysis_job,
 }
