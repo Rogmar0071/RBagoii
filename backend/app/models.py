@@ -660,6 +660,11 @@ class IngestJob(SQLModel, table=True):
     file_count: int = Field(default=0)
     chunk_count: int = Field(default=0)
 
+    # Progress tracking (MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1)
+    progress: int = Field(default=0)  # 0–100
+    stage: str = Field(default="queued")  # queued | fetching | parsing | chunking | storing | completed | failed
+    message: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),

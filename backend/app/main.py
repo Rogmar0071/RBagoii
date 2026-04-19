@@ -175,6 +175,29 @@ def _startup_init_db() -> None:
         except Exception as exc:
             logger.warning("DB init failed (non-fatal): %s", exc)
 
+    # MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §F — Queue validation
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if redis_url:
+        try:
+            from redis import Redis
+
+            conn = Redis.from_url(redis_url)
+            keys = conn.keys("rq:queue:*:intermediate")
+            if keys:
+                logger.error(
+                    "SYSTEM_INTEGRITY_ERROR: Intermediate queue detected: %s",
+                    keys,
+                )
+                raise RuntimeError(
+                    f"SYSTEM_INTEGRITY_ERROR: Intermediate queue violation detected. "
+                    f"Found prohibited keys: {keys}. "
+                    f"Only 'rq:queue:default' is allowed per MQP-CONTRACT:INGESTION_EXECUTION_ALIGNMENT_V1"
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning("Redis queue validation skipped: %s", exc)
+
     # Start the background cleanup daemon thread (non-blocking).
     _cleanup_thread = threading.Thread(
         target=_cleanup_old_uploads, daemon=True, name="upload-cleanup"
