@@ -69,6 +69,11 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     // GLOBAL_CONVERSATION_ACTIVATION_V1: single active conversation per session.
     private var conversationId: String? = null
     private val chatFiles = mutableListOf<ChatFile>()
+    
+    // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 — Track active file ingestion jobs
+    @Volatile
+    private var isPollingFileJobs = false
+    private val activeFileJobIds = mutableSetOf<String>()
 
     private val speechInputLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -287,6 +292,8 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
     override fun onDestroy() {
         super.onDestroy()
+        // Stop polling before shutdown
+        isPollingFileJobs = false
         executor.shutdownNow()
     }
 
@@ -383,32 +390,27 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
-                // Use the chunked upload helper
-                val success = ChatFileUploadHelper.uploadFile(
+                // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §1 — Store job_id
+                val jobId = ChatFileUploadHelper.uploadFile(
                     uri = uri,
                     conversationId = convId,
                     apiKey = apiKey,
                     baseUrl = baseUrl,
                     contentResolver = contentResolver,
                     cacheDir = cacheDir,
-                    onProgress = { current, total ->
-                        runOnUiThread {
-                            if (total > 1) {
-                                Toast.makeText(
-                                    this,
-                                    "Uploading… chunk $current/$total",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
+                    onProgress = null  // Progress now tracked via polling
                 )
 
-                if (success) {
+                if (jobId != null) {
                     runOnUiThread {
-                        Toast.makeText(this, getString(R.string.status_file_uploaded), Toast.LENGTH_SHORT).show()
-                        loadChatFiles()
+                        Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
                     }
+                    
+                    // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §2 — Start polling
+                    synchronized(activeFileJobIds) {
+                        activeFileJobIds.add(jobId)
+                    }
+                    startPollingFileJob(jobId)
                 } else {
                     runOnUiThread {
                         Toast.makeText(
@@ -474,6 +476,105 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error updating file context", e)
+            }
+        }
+    }
+
+    /**
+     * MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §2 — POLLING LOOP
+     * Poll GET /v1/ingest/{job_id} until terminal status.
+     * Interval: 2 seconds
+     * Stop when: status == "success" OR status == "failed"
+     */
+    private fun startPollingFileJob(jobId: String) {
+        isPollingFileJobs = true
+        executor.execute {
+            val apiKey = prefs.getString("api_key", "") ?: ""
+            val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
+            
+            while (isPollingFileJobs) {
+                try {
+                    Thread.sleep(2000)  // Poll every 2 seconds
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    Log.d("ChatActivity", "File job polling interrupted")
+                    break
+                }
+                
+                if (!isPollingFileJobs) break
+                
+                try {
+                    val request = Request.Builder()
+                        .url("$baseUrl/v1/ingest/$jobId")
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .get()
+                        .build()
+                    
+                    val response = BackendClient.executeWithRetry(request)
+                    if (response.isSuccessful) {
+                        val body = response.body?.string() ?: "{}"
+                        val json = JSONObject(body)
+                        val status = json.getString("status")
+                        val progress = json.getInt("progress")
+                        val error = if (json.isNull("error")) null else json.getString("error")
+                        val source = json.getString("source")  // filename
+                        
+                        // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §3 — DIRECT STATE MAPPING
+                        val statusText = when (status) {
+                            "queued"  -> "Queued"
+                            "running" -> "Processing ($progress%)"
+                            "success" -> "Completed"
+                            "failed"  -> "Failed"
+                            else      -> status
+                        }
+                        
+                        runOnUiThread {
+                            if (isPollingFileJobs) {
+                                // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §5 — FAILURE VISIBILITY
+                                if (status == "failed" && error != null) {
+                                    Toast.makeText(
+                                        this,
+                                        "File ingestion failed: $error",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                } else if (status == "success") {
+                                    Toast.makeText(
+                                        this,
+                                        "File ingestion completed: $source",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    // Reload files to show the newly ingested file
+                                    loadChatFiles()
+                                } else {
+                                    // Show progress update
+                                    Toast.makeText(
+                                        this,
+                                        "File $source: $statusText",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        }
+                        
+                        // Stop polling if terminal status
+                        if (status == "success" || status == "failed") {
+                            synchronized(activeFileJobIds) {
+                                activeFileJobIds.remove(jobId)
+                            }
+                            Log.d("ChatActivity", "File job $jobId completed with status=$status")
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("ChatActivity", "Error polling file job $jobId", e)
+                }
+            }
+            
+            // If no more active jobs, stop polling
+            synchronized(activeFileJobIds) {
+                if (activeFileJobIds.isEmpty()) {
+                    isPollingFileJobs = false
+                }
             }
         }
     }

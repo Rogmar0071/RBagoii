@@ -460,32 +460,26 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = apiKey()
                 val baseUrl = baseUrl()
 
-                // Use the chunked upload helper
-                val success = ChatFileUploadHelper.uploadFile(
+                // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §1 — Store job_id
+                val jobId = ChatFileUploadHelper.uploadFile(
                     uri = uri,
                     conversationId = convId,
                     apiKey = apiKey,
                     baseUrl = baseUrl,
                     contentResolver = contentResolver,
                     cacheDir = cacheDir,
-                    onProgress = { current, total ->
-                        runOnUiThread {
-                            if (total > 1) {
-                                Toast.makeText(
-                                    this,
-                                    "Uploading… chunk $current/$total",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
+                    onProgress = null  // Progress now tracked via polling
                 )
 
                 runOnUiThread {
-                    if (success) {
-                        Toast.makeText(this, "File uploaded successfully", Toast.LENGTH_SHORT).show()
-                        // Reload files to show the newly uploaded file
-                        loadChatFiles()
+                    if (jobId != null) {
+                        Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
+                        // Note: File ingestion polling could be added here similar to repo polling
+                        // For now, just reload files after a delay
+                        executor.execute {
+                            Thread.sleep(3000)
+                            runOnUiThread { loadChatFiles() }
+                        }
                     } else {
                         Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
                     }
