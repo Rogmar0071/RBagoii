@@ -756,18 +756,24 @@ def add_repo(
     print("TRACE:ADD_REPO_V2_ACTIVE")
     try:
         print("TRACE:add_repo:entered")
+        print(f"TRACE:INPUT repo_url={req.repo_url}")
 
         match = re.search(r"github\.com/([^/]+)/([^/]+)", req.repo_url)
         if not match:
             raise HTTPException(status_code=400, detail="Invalid GitHub URL")
 
         owner, repo_name = match.groups()
+        print(f"TRACE:PARSED owner={owner} repo_name={repo_name} len={len(repo_name)}")
         repo_name = repo_name.rstrip(".git")
+        print(f"TRACE:NORMALIZED owner={owner} repo_name={repo_name} len={len(repo_name)}")
+        print(f"TRACE:CANONICAL owner={owner} repo_name={repo_name} len={len(repo_name)}")
 
         # ------------------------------------------------------------------
         # Step 1: global upsert on (repo_url, branch)
         # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
         # ------------------------------------------------------------------
+        print(f"TRACE:PRE_UPSERT owner={owner} repo_name={repo_name} len={len(repo_name)}")
+
         def _find_repo() -> Repo | None:
             return session.exec(
                 select(Repo).where(
@@ -792,7 +798,9 @@ def add_repo(
                     total_chunks=0,
                 )
                 session.add(repo)
+                print(f"TRACE:PRE_COMMIT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
                 session.commit()
+                print(f"TRACE:POST_COMMIT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
                 session.refresh(repo)
                 newly_created = True
             except IntegrityError:
@@ -810,6 +818,7 @@ def add_repo(
                     )
 
         print(f"TRACE:repo_loaded id={repo.id} status={repo.ingestion_status}")
+        print(f"TRACE:DB_OBJECT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
 
         # ------------------------------------------------------------------
         # Step 2: bind to conversation (idempotent)
