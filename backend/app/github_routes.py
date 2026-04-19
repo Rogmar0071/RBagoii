@@ -236,55 +236,71 @@ async def _fetch_repo_file_list(
 
     Returns a list of ``(file_path, content)`` tuples, one per fetched file.
     Depth is limited to _MAX_DEPTH levels and at most _MAX_FILES files are
-    collected.  Exceptions (including ``RuntimeError`` on GitHub API errors)
-    are propagated to the caller.
+    collected.  Tries ``branch`` first, then falls back to ``main`` and
+    ``master`` on 404.  Exceptions are propagated to the caller.
     """
-    files: list[tuple[str, str]] = []
-    file_count = 0
+    branches_to_try = list(dict.fromkeys([branch, "main", "master"]))
 
-    async def _traverse(path: str, depth: int, client: httpx.AsyncClient) -> None:
-        nonlocal file_count
-        if depth > _MAX_DEPTH or file_count >= _MAX_FILES:
-            return
+    async def _attempt(b: str) -> list[tuple[str, str]]:
+        files: list[tuple[str, str]] = []
+        file_count = 0
 
-        base = f"https://api.github.com/repos/{owner}/{repo_name}/contents"
-        url = f"{base}/{path}" if path else base
-        response = await client.get(url, headers=headers, params={"ref": branch}, timeout=15.0)
-        if response.status_code != 200:
-            raise RuntimeError(
-                f"GitHub API returned {response.status_code} for {url}: {response.text[:200]}"
-            )
+        async def _traverse(path: str, depth: int, client: httpx.AsyncClient) -> None:
+            nonlocal file_count
+            if depth > _MAX_DEPTH or file_count >= _MAX_FILES:
+                return
 
-        items = response.json()
-        if isinstance(items, dict):
-            items = [items]
+            base = f"https://api.github.com/repos/{owner}/{repo_name}/contents"
+            url = f"{base}/{path}" if path else base
+            response = await client.get(url, headers=headers, params={"ref": b}, timeout=15.0)
+            if response.status_code != 200:
+                raise RuntimeError(
+                    f"GITHUB_{response.status_code} repo={owner}/{repo_name} branch={b} url={url}"
+                )
 
-        for item in items:
-            if file_count >= _MAX_FILES:
-                break
-            if item["type"] == "file":
-                ext = os.path.splitext(item["name"])[1].lower()
-                if ext not in _ALLOWED_EXTENSIONS:
-                    continue
-                download_url = item.get("download_url")
-                if not download_url:
-                    continue
-                raw_resp = await client.get(download_url, timeout=15.0)
-                if raw_resp.status_code != 200:
-                    logger.warning(
-                        "Failed to fetch %s: HTTP %s", item["path"], raw_resp.status_code
-                    )
-                    continue
-                content = raw_resp.text[:_MAX_FILE_CHARS]
-                files.append((item["path"], content))
-                file_count += 1
-            elif item["type"] == "dir":
-                await _traverse(item["path"], depth + 1, client)
+            items = response.json()
+            if isinstance(items, dict):
+                items = [items]
 
-    async with httpx.AsyncClient() as client:
-        await _traverse("", 1, client)
+            for item in items:
+                if file_count >= _MAX_FILES:
+                    break
+                if item["type"] == "file":
+                    ext = os.path.splitext(item["name"])[1].lower()
+                    if ext not in _ALLOWED_EXTENSIONS:
+                        continue
+                    download_url = item.get("download_url")
+                    if not download_url:
+                        continue
+                    raw_resp = await client.get(download_url, timeout=15.0)
+                    if raw_resp.status_code != 200:
+                        logger.warning(
+                            "Failed to fetch %s: HTTP %s", item["path"], raw_resp.status_code
+                        )
+                        continue
+                    content = raw_resp.text[:_MAX_FILE_CHARS]
+                    files.append((item["path"], content))
+                    file_count += 1
+                elif item["type"] == "dir":
+                    await _traverse(item["path"], depth + 1, client)
 
-    return files
+        async with httpx.AsyncClient() as client:
+            await _traverse("", 1, client)
+
+        return files
+
+    for b in branches_to_try:
+        try:
+            return await _attempt(b)
+        except Exception as e:
+            if "GITHUB_404" in str(e):
+                continue
+            raise
+
+    raise RuntimeError(
+        f"ALL_BRANCHES_FAILED repo={owner}/{repo_name} "
+        f"branches_tried={branches_to_try}"
+    )
 
 
 async def _fetch_repo_contents(
@@ -765,6 +781,21 @@ def add_repo(
         repo_name = repo_name.rstrip(".git")
 
         # ------------------------------------------------------------------
+        # Resolve canonical identity via GitHub API (source-of-truth enforcement).
+        # ------------------------------------------------------------------
+        repo_api_url = f"https://api.github.com/repos/{owner}/{repo_name}"
+        _gh_headers: dict = {"Accept": "application/vnd.github.v3+json"}
+        if GITHUB_TOKEN:
+            _gh_headers["Authorization"] = f"token {GITHUB_TOKEN}"
+        resp = httpx.get(repo_api_url, headers=_gh_headers)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=400, detail="INVALID_REPO")
+        repo_data = resp.json()
+        canonical_owner = repo_data["owner"]["login"]
+        canonical_name = repo_data["name"]
+        canonical_branch = repo_data.get("default_branch", "main")
+
+        # ------------------------------------------------------------------
         # Step 1: global upsert on (repo_url, branch)
         # LAW 2 — SINGLE INGESTION: find-or-create with race-condition safety.
         # ------------------------------------------------------------------
@@ -772,7 +803,7 @@ def add_repo(
             return session.exec(
                 select(Repo).where(
                     Repo.repo_url == req.repo_url,
-                    Repo.branch == req.branch,
+                    Repo.branch == canonical_branch,
                 )
             ).first()
 
@@ -784,9 +815,9 @@ def add_repo(
                 repo = Repo(
                     id=uuid.uuid4(),
                     repo_url=req.repo_url,
-                    owner=owner,
-                    name=repo_name,
-                    branch=req.branch,
+                    owner=canonical_owner,
+                    name=canonical_name,
+                    branch=canonical_branch,
                     ingestion_status="pending",
                     total_files=0,
                     total_chunks=0,

@@ -2831,6 +2831,8 @@ def run_repo_ingestion(repo_id: str) -> None:
     if GITHUB_TOKEN:
         headers["Authorization"] = f"token {GITHUB_TOKEN}"
 
+    print(f"TRACE:ingestion repo_id={repo_id} owner={owner} name={name} branch={branch}")
+
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
