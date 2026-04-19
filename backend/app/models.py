@@ -518,3 +518,39 @@ class ConversationRepo(SQLModel, table=True):
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# repo_validation_snapshots
+# ---------------------------------------------------------------------------
+
+
+class RepoValidationSnapshot(SQLModel, table=True):
+    """
+    REPO_VALIDATION_SNAPSHOT_V1.
+
+    Immutable audit record written each time a Repo is validated.
+    Captures the score, trust class, and raw signals at the moment of
+    validation so the full history is preserved even when the Repo row
+    is overwritten by a later validation run.
+    """
+
+    __tablename__ = "repo_validation_snapshots"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    repo_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), nullable=False, index=True)
+    )
+
+    validation_score: int
+    trust_class: str
+    validation_signals: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(sa.JSON, nullable=True),
+    )
+
+    created_at: datetime = Field(
+        default_factory=_utcnow,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=False),
+    )
