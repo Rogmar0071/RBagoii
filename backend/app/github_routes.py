@@ -802,8 +802,14 @@ def add_repo(
         raise HTTPException(status_code=400, detail="INVALID_REPO")
 
     _gh_data = _gh_resp.json()
-    owner: str = _gh_data["owner"]["login"]
-    repo_name: str = _gh_data["name"]
+    try:
+        owner: str = _gh_data["owner"]["login"]
+        repo_name: str = _gh_data["name"]
+    except (KeyError, TypeError):
+        logger.error(
+            {"event": "canonical_resolution_invalid", "body": str(_gh_data)[:200]}
+        )
+        raise HTTPException(status_code=400, detail="INVALID_REPO")
 
     logger.info({"event": "canonical_resolved", "owner": owner, "name": repo_name})
 
@@ -816,7 +822,7 @@ def add_repo(
     # -----------------------------------------------------------------------
     # Phase 2 — Atomic upsert (single transaction, single commit on block exit)
     # -----------------------------------------------------------------------
-    branch = req.branch or "main"
+    branch = ((req.branch or "main").strip()) or "main"
     newly_created = False
     repo_id_str: str
     current_status: str

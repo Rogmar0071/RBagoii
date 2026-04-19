@@ -2799,7 +2799,7 @@ def run_repo_ingestion(repo_id: str) -> None:
     from backend.app.repo_retrieval import _split_into_chunks
 
     logger.info({"event": "worker_started", "repo_id": repo_id})
-    print("INGEST START:", repo_id)
+    print("INGEST START:", repo_id)  # kept: relied upon by integration test assertions
 
     # -----------------------------------------------------------------------
     # Step 1: load repo and mark as running
@@ -2944,13 +2944,16 @@ def run_repo_ingestion(repo_id: str) -> None:
                 "total_chunks": chunk_count,
             }
         )
-        print("INGEST DONE:", repo_id, chunk_count)
+        print("INGEST DONE:", repo_id, chunk_count)  # kept: relied upon by integration test assertions
 
     except Exception as exc:
         _exc_str = str(exc)
         # Phase 5 — 404 from the contents endpoint is a terminal failure.
-        # DO NOT re-raise; let the status be set to "failed" and exit cleanly.
-        _is_terminal_404 = "404" in _exc_str
+        # _fetch_repo_file_list raises RuntimeError("GitHub API returned 404 for ...")
+        # when the contents endpoint returns 404.  Check for that specific pattern
+        # to avoid false positives from unrelated error messages containing "404".
+        # DO NOT re-raise on 404; let the status be set to "failed" and exit cleanly.
+        _is_terminal_404 = "GitHub API returned 404" in _exc_str
         logger.error(
             {
                 "event": "ingestion_failed",
