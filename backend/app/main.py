@@ -87,6 +87,7 @@ from backend.app.chat_routes import router as _chat_router  # noqa: E402
 from backend.app.domain_routes import router as _domain_router  # noqa: E402
 from backend.app.folder_routes import router as _folder_router  # noqa: E402
 from backend.app.github_routes import router as _github_router  # noqa: E402
+from backend.app.ingest_routes import router as _ingest_router  # noqa: E402
 from backend.app.mutation_routes import router as _mutation_router  # noqa: E402
 from backend.app.ops_routes import router as _ops_router  # noqa: E402
 from backend.app.simulation_routes import router as _simulation_router  # noqa: E402
@@ -103,6 +104,7 @@ app.include_router(_analysis_router)
 app.include_router(_mutation_router)
 app.include_router(_simulation_router)
 app.include_router(_bridge_router)
+app.include_router(_ingest_router)
 
 
 # ---------------------------------------------------------------------------
@@ -149,20 +151,24 @@ def _maybe_slack_alert(message: str) -> None:
 
 
 def _cleanup_old_uploads() -> None:
-    """Delete files in /tmp/uploads/ older than 24 hours. Runs in a background thread."""
+    """Delete stale files in upload and staging directories every hour."""
     max_age_seconds = 24 * 3600
+    staging_dir = Path(os.environ.get("INGEST_STAGING_DIR", "/tmp/ingest_staging"))
     while True:
         time.sleep(3600)  # run every hour
-        try:
-            if _UPLOADS_DIR.exists():
-                cutoff = time.time() - max_age_seconds
-                for f in _UPLOADS_DIR.iterdir():
-                    try:
-                        if f.is_file() and f.stat().st_mtime < cutoff:
-                            f.unlink(missing_ok=True)
-                            logger.info("Cleaned up old upload: %s", f.name)
-                    except Exception:
-                        pass
+        for directory in (_UPLOADS_DIR, staging_dir):
+            try:
+                if directory.exists():
+                    cutoff = time.time() - max_age_seconds
+                    for f in directory.iterdir():
+                        try:
+                            if f.is_file() and f.stat().st_mtime < cutoff:
+                                f.unlink(missing_ok=True)
+                                logger.info("Cleaned up old upload: %s", f.name)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("Upload cleanup error: %s", exc)
 

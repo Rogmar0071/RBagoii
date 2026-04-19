@@ -291,6 +291,8 @@ def retrieve_relevant_chunks(
     db: Session,
     chat_file_ids: list[uuid.UUID] | None = None,
     repo_ids: list[uuid.UUID] | None = None,
+    ingest_job_ids: list[uuid.UUID] | None = None,
+    conversation_id: str | None = None,
     max_chunks: int = _MAX_CHUNKS_TOTAL,
     max_tokens: int = _MAX_CONTEXT_TOKENS_REPO,
 ) -> List[RepoChunk]:
@@ -298,34 +300,58 @@ def retrieve_relevant_chunks(
     Return at most *max_chunks* RepoChunk rows relevant to *user_query*,
     subject to the token budget *max_tokens*.
 
-    REPO_CONTEXT_FINALIZATION_V1 — Phase 3: accepts explicit *repo_ids* for
-    scoped retrieval via the first-class Repo model.  Falls back to the
-    *chat_file_ids* path for backward compatibility with the V1 ingestion route.
+    Source priority (first non-empty wins):
+      1. repo_ids          — first-class Repo entities
+      2. ingest_job_ids    — new unified IngestJob entities
+      3. conversation_id   — all IngestJob chunks for a conversation
+      4. chat_file_ids     — legacy V1 ingestion path
 
-    Priority: repo_ids > chat_file_ids.  At least one must be non-empty.
-
-    Pipeline (FINALIZATION V1):
-    1. Normalize query / extract keywords
-    2. Query RepoChunk by repo_id or chat_file_id membership
-    3. Score each chunk (Phase 3+5 boost rules including recency weight)
+    Pipeline:
+    1. Normalise query / extract keywords
+    2. Query RepoChunk by the appropriate FK
+    3. Score each chunk (keyword + path boosts + recency weight)
     4. Sort descending by score
-    5. Apply diversity enforcement (Phase 4)
-    6. Apply token budget (Phase 4 FINALIZATION)
+    5. Apply diversity enforcement
+    6. Apply token budget
     7. Return bounded result
     """
     has_repo_ids = bool(repo_ids)
+    has_ingest_ids = bool(ingest_job_ids)
+    has_conversation = bool(conversation_id)
     has_file_ids = bool(chat_file_ids)
 
-    if not has_repo_ids and not has_file_ids:
+    if not has_repo_ids and not has_ingest_ids and not has_conversation and not has_file_ids:
         return []
 
     lower_query = user_query.lower()
     keywords = _extract_keywords(user_query)
 
-    # Phase 3 (FINALIZATION): scope strictly to provided IDs
+    # Build the chunk query based on source priority
     if has_repo_ids:
         chunk_stmt = select(RepoChunk).where(
             RepoChunk.repo_id.in_(repo_ids)  # type: ignore[attr-defined]
+        )
+    elif has_ingest_ids:
+        chunk_stmt = select(RepoChunk).where(
+            RepoChunk.ingest_job_id.in_(ingest_job_ids)  # type: ignore[attr-defined]
+        )
+    elif has_conversation:
+        # Resolve all IngestJob IDs for this conversation, then fetch chunks
+        from backend.app.models import IngestJob
+
+        job_ids_for_conv = [
+            row.id
+            for row in db.exec(
+                select(IngestJob).where(
+                    IngestJob.conversation_id == conversation_id,
+                    IngestJob.status == "success",
+                )
+            ).all()
+        ]
+        if not job_ids_for_conv:
+            return []
+        chunk_stmt = select(RepoChunk).where(
+            RepoChunk.ingest_job_id.in_(job_ids_for_conv)  # type: ignore[attr-defined]
         )
     else:
         # Backward-compat path: query by chat_file_id
@@ -339,27 +365,22 @@ def retrieve_relevant_chunks(
         return []
 
     if not keywords:
-        # No keywords — fall back to first N from Phase 4 diversity pass
         fallback_scored = [(0, c) for c in all_chunks]
         selected = _apply_diversity(fallback_scored, max_total=max_chunks)
         return _apply_token_budget(selected, max_tokens=max_tokens)
 
-    # Phase 3+5: score every chunk
     scored: list[tuple[int, RepoChunk]] = []
     for chunk in all_chunks:
         score = _score_chunk(chunk, keywords, lower_query)
         if score > 0:
             scored.append((score, chunk))
 
-    # Sort descending
     scored.sort(key=lambda x: x[0], reverse=True)
 
     if scored:
-        # Phase 4: diversity enforcement then token budget
         selected = _apply_diversity(scored, max_total=max_chunks)
         return _apply_token_budget(selected, max_tokens=max_tokens)
 
-    # No hits at all — return diversity-filtered + budgeted fallback
     fallback_scored = [(0, c) for c in all_chunks]
     selected = _apply_diversity(fallback_scored, max_total=max_chunks)
     return _apply_token_budget(selected, max_tokens=max_tokens)

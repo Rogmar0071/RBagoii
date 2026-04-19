@@ -336,6 +336,10 @@ class ChatFile(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     # Conversation this file belongs to
     conversation_id: str = Field(index=True)
+    # Optional workspace for multi-workspace isolation
+    workspace_id: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True, index=True)
+    )
     # Original filename
     filename: str = Field(sa_column=Column(sa.Text))
     # MIME type
@@ -375,7 +379,7 @@ class ChatFile(SQLModel, table=True):
 
 
 class RepoChunk(SQLModel, table=True):
-    """A content chunk from an ingested GitHub repository file."""
+    """A content chunk from an ingested file, URL, or GitHub repository."""
 
     __tablename__ = "repo_chunks"
 
@@ -391,14 +395,24 @@ class RepoChunk(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.Uuid, sa.ForeignKey("chat_files.id"), nullable=True, index=True),
     )
-    # Path of the source file within the repository
+    # New unified ingestion pipeline FK (ingest_jobs.id).
+    # NULL for chunks created by the legacy ingestion paths.
+    ingest_job_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("ingest_jobs.id"), nullable=True, index=True),
+    )
+    # Path of the source file within the repository (or filename for uploads)
     file_path: str = Field(sa_column=Column(sa.Text))
-    # Chunk text content (max ~1500 chars)
+    # Chunk text content
     content: str = Field(sa_column=Column(sa.Text))
     # Zero-based ordinal of this chunk within its source file (lower = earlier)
     chunk_index: int = Field(default=0)
     # Approximate token count (characters / 4)
     token_estimate: int = Field(default=0)
+    # Source URL for URL-ingested chunks (used for citations)
+    source_url: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
@@ -554,3 +568,81 @@ class RepoValidationSnapshot(SQLModel, table=True):
         default_factory=_utcnow,
         sa_column=Column(sa.DateTime(timezone=True), nullable=False),
     )
+
+
+# ---------------------------------------------------------------------------
+# ingest_jobs   (unified ingestion pipeline)
+# ---------------------------------------------------------------------------
+
+
+class IngestJob(SQLModel, table=True):
+    """
+    Tracks a single ingestion request: file upload, URL scrape, or GitHub repo.
+
+    This is the central record for the new unified ingestion pipeline
+    (backend.app.ingest_pipeline).  Legacy ingestion paths (Repo / ChatFile)
+    remain for backward compatibility but all new ingestion goes through here.
+
+    kind values
+    -----------
+    "file"  — a local file uploaded via POST /v1/ingest/file
+    "url"   — a web page fetched via POST /v1/ingest/url
+    "repo"  — a GitHub repository ingested via POST /v1/ingest/repo
+
+    status values
+    -------------
+    queued  → running → success | failed
+    """
+
+    __tablename__ = "ingest_jobs"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    # "file" | "url" | "repo"
+    kind: str = Field(sa_column=Column(sa.Text, index=True))
+
+    # Human-readable source identifier:
+    #   file → original filename
+    #   url  → the URL
+    #   repo → "{repo_url}@{branch}"
+    source: str = Field(sa_column=Column(sa.Text))
+
+    # For kind="repo": target branch (also embedded in source for uniqueness)
+    branch: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+    # Absolute path on disk for kind="file" (staging area)
+    source_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+    # queued / running / success / failed
+    status: str = Field(default="queued", sa_column=Column(sa.Text, index=True))
+
+    # Human-readable error message (set on failure)
+    error: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+    # Conversation / workspace scoping (nullable — global ingestion is allowed)
+    conversation_id: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True, index=True)
+    )
+    workspace_id: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True, index=True)
+    )
+
+    # Counts populated as the pipeline runs
+    file_count: int = Field(default=0)
+    chunk_count: int = Field(default=0)
+
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
+        super().__init__(**data)

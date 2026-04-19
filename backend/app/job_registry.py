@@ -18,6 +18,9 @@ from __future__ import annotations
 # Analysis job (defined in backend.app.analysis_job_processor)
 from backend.app.analysis_job_processor import process_analysis_job
 
+# New unified ingestion pipeline (replaces run_repo_ingestion)
+from backend.app.ingest_pipeline import process_ingest_job
+
 # Session extraction job (defined in backend.app.jobs)
 from backend.app.jobs import run_extraction_job
 
@@ -49,4 +52,6 @@ JOB_REGISTRY: dict[str, object] = {
     "run_repo_validation": run_repo_validation,
     "run_extraction_job": run_extraction_job,
     "process_analysis_job": process_analysis_job,
+    # New unified ingestion pipeline
+    "process_ingest_job": process_ingest_job,
 }
