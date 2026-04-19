@@ -222,7 +222,7 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
         return None
 
     # --------------------------------------------------
-    # Validate job_id for run_repo_validation jobs
+    # Validate repo_id (passed as job_id) for run_repo_validation jobs
     # --------------------------------------------------
     if job_type == "run_repo_validation":
         try:
