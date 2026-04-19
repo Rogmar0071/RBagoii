@@ -460,7 +460,7 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = apiKey()
                 val baseUrl = baseUrl()
 
-                // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §1 — Store job_id
+                // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Receive job_id
                 val jobId = ChatFileUploadHelper.uploadFile(
                     uri = uri,
                     conversationId = convId,
@@ -468,19 +468,17 @@ class ResourceActivity : AppCompatActivity() {
                     baseUrl = baseUrl,
                     contentResolver = contentResolver,
                     cacheDir = cacheDir,
-                    onProgress = null  // Progress now tracked via polling
+                    onProgress = null
                 )
 
-                runOnUiThread {
-                    if (jobId != null) {
+                if (jobId != null) {
+                    runOnUiThread {
                         Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
-                        // TODO: Implement proper polling mechanism like ChatActivity.startPollingFileJob()
-                        // For now, just reload files after a delay
-                        executor.execute {
-                            Thread.sleep(3000)
-                            runOnUiThread { loadChatFiles() }
-                        }
-                    } else {
+                    }
+                    // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling
+                    pollIngestJob(jobId, apiKey, baseUrl)
+                } else {
+                    runOnUiThread {
                         Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
                     }
                 }
@@ -743,6 +741,90 @@ class ResourceActivity : AppCompatActivity() {
         githubRepos.clear()
         githubRepos.addAll(updatedRepos)
         repoAdapter.submitList(updatedRepos)
+    }
+
+    /**
+     * MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — ISOLATED POLLING
+     * 
+     * Each job runs independently with NO shared state.
+     * UI is a passive mirror - displays backend response exactly.
+     * 
+     * UNIFICATION RULE: File and repo ingestion use IDENTICAL UI logic.
+     */
+    private fun pollIngestJob(jobId: String, apiKey: String, baseUrl: String) {
+        executor.execute {
+            while (true) {
+                try {
+                    // Fetch GET /v1/ingest/{job_id}
+                    val request = Request.Builder()
+                        .url("$baseUrl/v1/ingest/$jobId")
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .get()
+                        .build()
+                    
+                    val response = BackendClient.executeWithRetry(request)
+                    if (response.isSuccessful) {
+                        val body = response.body?.string() ?: "{}"
+                        val json = JSONObject(body)
+                        
+                        // Bind response directly to UI (no transformation)
+                        val status = json.optString("status", "unknown")
+                        val progress = json.optInt("progress", 0)
+                        val error = if (json.isNull("error")) null else json.getString("error")
+                        val source = json.optString("source", "file")
+                        
+                        // RENDER RULE: Display EXACTLY status, progress, error
+                        runOnUiThread {
+                            val statusText = when (status) {
+                                "queued"  -> "Queued"
+                                "running" -> "Processing ($progress%)"
+                                "success" -> "Completed"
+                                "failed"  -> "Failed"
+                                else      -> status
+                            }
+                            
+                            // Always render (no "avoid spam" logic)
+                            Toast.makeText(
+                                this,
+                                "File $source: $statusText",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            
+                            // Show error when failed
+                            if (status == "failed" && error != null) {
+                                Toast.makeText(
+                                    this,
+                                    "Error: $error",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                            
+                            // Reload on success
+                            if (status == "success") {
+                                loadChatFiles()
+                            }
+                        }
+                        
+                        // Stop when terminal
+                        if (status == "success" || status == "failed") {
+                            Log.d("ResourceActivity", "Job $jobId terminal: $status")
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("ResourceActivity", "Error polling job $jobId", e)
+                }
+                
+                // Sleep 2s
+                try {
+                    Thread.sleep(2000)
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    Log.d("ResourceActivity", "Polling interrupted for $jobId")
+                    break
+                }
+            }
+        }
     }
 
     /**
