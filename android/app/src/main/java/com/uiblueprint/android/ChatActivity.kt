@@ -490,7 +490,6 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
     }
 
     /**
-    /**
      * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — UNIFIED POLLING
      * 
      * Single polling function used by ALL ingestion types.
@@ -508,6 +507,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
         onRender: (JSONObject) -> Unit
     ) {
         executor.execute {
+            // Loop terminates via: (1) terminal status detection, or (2) exception
             while (true) {
                 try {
                     val request = Request.Builder()
@@ -526,6 +526,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         }
 
                         val status = json.optString("status")
+                        // Terminates here on terminal status
                         if (status == "success" || status == "failed") {
                             break
                         }
@@ -534,6 +535,7 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     Thread.sleep(2000)
 
                 } catch (_: Exception) {
+                    // Terminates here on exception
                     break
                 }
             }

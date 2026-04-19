@@ -673,6 +673,7 @@ class ResourceActivity : AppCompatActivity() {
         onRender: (JSONObject) -> Unit
     ) {
         executor.execute {
+            // Loop terminates via: (1) terminal status detection, or (2) exception
             while (true) {
                 try {
                     val request = Request.Builder()
@@ -691,6 +692,7 @@ class ResourceActivity : AppCompatActivity() {
                         }
 
                         val status = json.optString("status")
+                        // Terminates here on terminal status
                         if (status == "success" || status == "failed") {
                             break
                         }
@@ -699,6 +701,7 @@ class ResourceActivity : AppCompatActivity() {
                     Thread.sleep(2000)
 
                 } catch (_: Exception) {
+                    // Terminates here on exception
                     break
                 }
             }
