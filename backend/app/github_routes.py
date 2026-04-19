@@ -794,7 +794,6 @@ def add_repo(
             try:
                 repo = Repo(
                     id=uuid.uuid4(),
-                    conversation_id=req.conversation_id,
                     repo_url=req.repo_url,
                     owner=owner,
                     name=repo_name,
@@ -804,13 +803,6 @@ def add_repo(
                     total_chunks=0,
                 )
                 session.add(repo)
-                # Atomically bind conversation at insert (PATCH 3)
-                binding = ConversationRepo(
-                    id=uuid.uuid4(),
-                    conversation_id=req.conversation_id,
-                    repo_id=repo.id,
-                )
-                session.add(binding)
                 print(
                     f"TRACE:PRE_COMMIT owner={repo.owner} "
                     f"repo_name={repo.name} len={len(repo.name)}"
@@ -840,24 +832,24 @@ def add_repo(
         print(f"TRACE:DB_OBJECT owner={repo.owner} repo_name={repo.name} len={len(repo.name)}")
 
         # ------------------------------------------------------------------
-        # Step 2: bind to conversation (idempotent — for pre-existing repos)
+        # Step 2: bind to conversation (idempotent — ConversationRepo is the
+        # sole source of truth for conversation↔repo relationships).
         # ------------------------------------------------------------------
-        if not newly_created:
-            existing_binding = session.exec(
-                select(ConversationRepo).where(
-                    ConversationRepo.conversation_id == req.conversation_id,
-                    ConversationRepo.repo_id == repo.id,
-                )
-            ).first()
+        existing_binding = session.exec(
+            select(ConversationRepo).where(
+                ConversationRepo.conversation_id == req.conversation_id,
+                ConversationRepo.repo_id == repo.id,
+            )
+        ).first()
 
-            if existing_binding is None:
-                binding = ConversationRepo(
-                    id=uuid.uuid4(),
-                    conversation_id=req.conversation_id,
-                    repo_id=repo.id,
-                )
-                session.add(binding)
-                session.commit()
+        if existing_binding is None:
+            binding = ConversationRepo(
+                id=uuid.uuid4(),
+                conversation_id=req.conversation_id,
+                repo_id=repo.id,
+            )
+            session.add(binding)
+            session.commit()
 
         print("TRACE:binding_created")
 
