@@ -2947,8 +2947,8 @@ def run_repo_ingestion(repo_id: str) -> None:
         print("INGEST DONE:", repo_id, chunk_count)  # kept: relied upon by integration test assertions
 
         # Trigger validation after successful ingestion.
-        # REPO_VALIDATION_LAYER_V1 — runs asynchronously (or inline if no Redis).
-        enqueue_job(repo_id, "run_repo_validation")
+        # REPO_VALIDATION_LAYER_V1 — see _trigger_validation for dispatch logic.
+        _trigger_validation(repo_id)
 
     except Exception as exc:
         _exc_str = str(exc)
@@ -3059,3 +3059,20 @@ def run_repo_validation(repo_id: str) -> None:
                     "error": str(exc),
                 }
             )
+
+
+def _trigger_validation(repo_id: str) -> None:
+    """
+    VALIDATION_EXECUTION_PARITY_FIX_V1
+
+    Deterministic validation trigger — behaviour is identical across all
+    environments:
+
+    - BACKEND_DISABLE_JOBS=1  → run ``run_repo_validation`` inline (tests /
+                                 local mode) so validation is always exercised.
+    - otherwise               → enqueue via RQ (production / Redis mode).
+    """
+    if os.environ.get("BACKEND_DISABLE_JOBS") == "1":
+        run_repo_validation(repo_id)
+    else:
+        enqueue_job(repo_id, "run_repo_validation")
