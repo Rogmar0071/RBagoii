@@ -474,7 +474,7 @@ class ResourceActivity : AppCompatActivity() {
                 runOnUiThread {
                     if (jobId != null) {
                         Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
-                        // Note: File ingestion polling could be added here similar to repo polling
+                        // TODO: Implement proper polling mechanism like ChatActivity.startPollingFileJob()
                         // For now, just reload files after a delay
                         executor.execute {
                             Thread.sleep(3000)

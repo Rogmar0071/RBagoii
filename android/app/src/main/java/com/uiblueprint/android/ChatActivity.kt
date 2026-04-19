@@ -409,6 +409,10 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                     // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §2 — Start polling
                     synchronized(activeFileJobIds) {
                         activeFileJobIds.add(jobId)
+                        // Start polling flag only if not already polling
+                        if (!isPollingFileJobs) {
+                            isPollingFileJobs = true
+                        }
                     }
                     startPollingFileJob(jobId)
                 } else {
@@ -487,21 +491,20 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
      * Stop when: status == "success" OR status == "failed"
      */
     private fun startPollingFileJob(jobId: String) {
-        isPollingFileJobs = true
         executor.execute {
             val apiKey = prefs.getString("api_key", "") ?: ""
             val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
             
-            while (isPollingFileJobs) {
-                try {
-                    Thread.sleep(2000)  // Poll every 2 seconds
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    Log.d("ChatActivity", "File job polling interrupted")
-                    break
+            // Track last known status to avoid spamming toasts
+            var lastStatus: String? = null
+            
+            // Poll immediately, then wait before next poll
+            while (true) {
+                synchronized(activeFileJobIds) {
+                    if (!activeFileJobIds.contains(jobId) || !isPollingFileJobs) {
+                        break
+                    }
                 }
-                
-                if (!isPollingFileJobs) break
                 
                 try {
                     val request = Request.Builder()
@@ -528,32 +531,29 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                             else      -> status
                         }
                         
-                        runOnUiThread {
-                            if (isPollingFileJobs) {
-                                // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §5 — FAILURE VISIBILITY
-                                if (status == "failed" && error != null) {
-                                    Toast.makeText(
-                                        this,
-                                        "File ingestion failed: $error",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                } else if (status == "success") {
-                                    Toast.makeText(
-                                        this,
-                                        "File ingestion completed: $source",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    // Reload files to show the newly ingested file
-                                    loadChatFiles()
-                                } else {
-                                    // Show progress update
-                                    Toast.makeText(
-                                        this,
-                                        "File $source: $statusText",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                        // Only show toast if status changed or terminal
+                        if (status != lastStatus) {
+                            runOnUiThread {
+                                if (isPollingFileJobs) {
+                                    // MQP-CONTRACT: INGESTION_UI_STATE_ALIGNMENT_V1 §5 — FAILURE VISIBILITY
+                                    if (status == "failed" && error != null) {
+                                        Toast.makeText(
+                                            this,
+                                            "File ingestion failed: $error",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    } else if (status == "success") {
+                                        Toast.makeText(
+                                            this,
+                                            "File ingestion completed: $source",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        // Reload files to show the newly ingested file
+                                        loadChatFiles()
+                                    }
                                 }
                             }
+                            lastStatus = status
                         }
                         
                         // Stop polling if terminal status
@@ -568,12 +568,14 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 } catch (e: Exception) {
                     Log.e("ChatActivity", "Error polling file job $jobId", e)
                 }
-            }
-            
-            // If no more active jobs, stop polling
-            synchronized(activeFileJobIds) {
-                if (activeFileJobIds.isEmpty()) {
-                    isPollingFileJobs = false
+                
+                // Wait before next poll
+                try {
+                    Thread.sleep(2000)  // Poll every 2 seconds
+                } catch (e: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    Log.d("ChatActivity", "File job polling interrupted")
+                    break
                 }
             }
         }
