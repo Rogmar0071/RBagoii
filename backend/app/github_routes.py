@@ -741,7 +741,7 @@ def retry_repo_ingestion(
     status_code=200,
     dependencies=[Depends(require_auth)],
 )
-def add_repo(
+def add_repo(print("TRACE:ADD_REPO_V2_ACTIVE")
     req: RepoAddRequest,
     session: Session = Depends(get_session),
 ) -> RepoAddResponse:
