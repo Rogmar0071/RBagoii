@@ -396,11 +396,30 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
                 if (jobId != null) {
                     runOnUiThread {
+                        // STEP 4: EVENT FEEDBACK — After POST
                         Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
                     }
                     
-                    // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling
-                    pollIngestJob(jobId, apiKey, baseUrl)
+                    // STEP 5: CALL SITE RULE — Each job = one independent loop
+                    pollIngestJob(jobId, apiKey, baseUrl) { json ->
+                        // STEP 3: RENDER = PURE BINDING
+                        val status = json.optString("status")
+                        val error = json.optString("error")
+                        
+                        // STEP 4: EVENT FEEDBACK — On final failure ONLY
+                        if (status == "failed") {
+                            Toast.makeText(
+                                this,
+                                "File ingestion failed: $error",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        
+                        // Reload on terminal success (action, not feedback)
+                        if (status == "success") {
+                            loadChatFiles()
+                        }
+                    }
                 } else {
                     runOnUiThread {
                         Toast.makeText(
@@ -472,69 +491,49 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
     /**
     /**
-     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — PURE POLLING
+     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — UNIFIED POLLING
      * 
+     * Single polling function used by ALL ingestion types.
      * UI is a pure projection surface with ZERO memory.
-     * NO conditional logic. NO status comparison. NO "thinking".
      * 
-     * Polls GET /v1/ingest/{job_id} every 2 seconds until terminal.
+     * STEP 2: SINGLE POLLING FUNCTION (SHARED PATTERN)
+     * Each job = one independent loop. NO aggregation.
      * 
-     * FORBIDDEN: lastStatus, state memory, conditional feedback
+     * FORBIDDEN: lastStatus, state memory, conditional feedback, multi-job tracking
      */
-    private fun pollIngestJob(jobId: String, apiKey: String, baseUrl: String) {
+    private fun pollIngestJob(
+        jobId: String,
+        apiKey: String,
+        baseUrl: String,
+        onRender: (JSONObject) -> Unit
+    ) {
         executor.execute {
             while (true) {
                 try {
-                    // Fetch GET /v1/ingest/{job_id}
                     val request = Request.Builder()
                         .url("$baseUrl/v1/ingest/$jobId")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .get()
                         .build()
-                    
-                    val response = BackendClient.executeWithRetry(request)
-                    if (response.isSuccessful) {
-                        val body = response.body?.string() ?: "{}"
+
+                    BackendClient.executeWithRetry(request).use { response ->
+                        if (!response.isSuccessful) return@use
+                        val body = response.body?.string() ?: return@use
                         val json = JSONObject(body)
-                        
-                        // Extract response fields
-                        val status = json.optString("status", "unknown")
-                        val error = if (json.isNull("error")) null else json.getString("error")
-                        
-                        // RENDER CONTRACT: UI binds directly, no conditions
+
                         runOnUiThread {
-                            // EVENT FEEDBACK RULE: Show error ONLY on terminal failed state
-                            // This is NOT conditional on previous state - it's a direct binding
-                            if (status == "failed" && error != null) {
-                                Toast.makeText(
-                                    this,
-                                    "File ingestion failed: $error",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                            
-                            // Reload on terminal success (action, not feedback)
-                            if (status == "success") {
-                                loadChatFiles()
-                            }
+                            onRender(json)
                         }
-                        
-                        // Stop when terminal (no lifecycle management, just exit)
+
+                        val status = json.optString("status")
                         if (status == "success" || status == "failed") {
-                            Log.d("ChatActivity", "Job $jobId terminal: $status")
                             break
                         }
                     }
-                } catch (e: Exception) {
-                    Log.e("ChatActivity", "Error polling job $jobId", e)
-                }
-                
-                // Sleep 2s
-                try {
+
                     Thread.sleep(2000)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    Log.d("ChatActivity", "Polling interrupted for $jobId")
+
+                } catch (_: Exception) {
                     break
                 }
             }

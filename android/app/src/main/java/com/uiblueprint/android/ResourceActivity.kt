@@ -468,10 +468,30 @@ class ResourceActivity : AppCompatActivity() {
 
                 if (jobId != null) {
                     runOnUiThread {
+                        // STEP 4: EVENT FEEDBACK — After POST
                         Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
                     }
-                    // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling
-                    pollIngestJob(jobId, apiKey, baseUrl)
+                    
+                    // STEP 5: CALL SITE RULE — Each job = one independent loop
+                    pollIngestJob(jobId, apiKey, baseUrl) { json ->
+                        // STEP 3: RENDER = PURE BINDING
+                        val status = json.optString("status")
+                        val error = json.optString("error")
+                        
+                        // STEP 4: EVENT FEEDBACK — On final failure ONLY
+                        if (status == "failed") {
+                            Toast.makeText(
+                                this,
+                                "File ingestion failed: $error",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        
+                        // Reload on terminal success (action, not feedback)
+                        if (status == "success") {
+                            loadChatFiles()
+                        }
+                    }
                 } else {
                     runOnUiThread {
                         Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
@@ -600,9 +620,20 @@ class ResourceActivity : AppCompatActivity() {
                         selectionsCommitted = true
                         Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
                         
-                        // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling per job
+                        // STEP 5: CALL SITE RULE — Each job = one independent loop
                         for (jobId in jobIds) {
-                            pollIngestJobForRepo(jobId, apiKey, baseUrl)
+                            pollIngestJob(jobId, apiKey, baseUrl) { json ->
+                                // STEP 3: RENDER = PURE BINDING
+                                val status = json.optString("status")
+                                val progress = json.optInt("progress")
+                                val fileCount = json.optInt("file_count")
+                                val chunkCount = json.optInt("chunk_count")
+                                val error = json.optString("error")
+                                val source = json.optString("source")  // "{repo_url}@{branch}"
+                                
+                                // STEP 3: Bind directly to UI (adapter update)
+                                updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
+                            }
                         }
                         
                         finish()
@@ -625,58 +656,49 @@ class ResourceActivity : AppCompatActivity() {
     }
 
     /**
-     * MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — ISOLATED POLLING FOR REPOS
+     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — UNIFIED POLLING
      * 
-     * Each repo job runs independently with NO shared state.
-     * UI is a passive mirror - displays backend response exactly.
+     * Single polling function used by ALL ingestion types.
+     * UI is a pure projection surface with ZERO memory.
      * 
-     * UNIFICATION RULE: Identical to file polling, but updates repo adapter instead.
+     * STEP 2: SINGLE POLLING FUNCTION (SHARED PATTERN)
+     * STEP 7: UNIFICATION — Same function for file and repo ingestion.
+     * 
+     * FORBIDDEN: lastStatus, state memory, conditional feedback, multi-job tracking
      */
-    private fun pollIngestJobForRepo(jobId: String, apiKey: String, baseUrl: String) {
+    private fun pollIngestJob(
+        jobId: String,
+        apiKey: String,
+        baseUrl: String,
+        onRender: (JSONObject) -> Unit
+    ) {
         executor.execute {
             while (true) {
                 try {
-                    // Fetch GET /v1/ingest/{job_id}
                     val request = Request.Builder()
                         .url("$baseUrl/v1/ingest/$jobId")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .get()
                         .build()
-                    
-                    val response = BackendClient.executeWithRetry(request)
-                    if (response.isSuccessful) {
-                        val body = response.body?.string() ?: "{}"
+
+                    BackendClient.executeWithRetry(request).use { response ->
+                        if (!response.isSuccessful) return@use
+                        val body = response.body?.string() ?: return@use
                         val json = JSONObject(body)
-                        
-                        // Bind response directly to UI (no transformation)
-                        val status = json.optString("status", "unknown")
-                        val progress = json.optInt("progress", 0)
-                        val fileCount = json.optInt("file_count", 0)
-                        val chunkCount = json.optInt("chunk_count", 0)
-                        val error = if (json.isNull("error")) null else json.getString("error")
-                        val source = json.optString("source", "")  // "{repo_url}@{branch}"
-                        
-                        // RENDER RULE: Update repo status in adapter
+
                         runOnUiThread {
-                            updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
+                            onRender(json)
                         }
-                        
-                        // Stop when terminal
+
+                        val status = json.optString("status")
                         if (status == "success" || status == "failed") {
-                            Log.d("ResourceActivity", "Repo job $jobId terminal: $status")
                             break
                         }
                     }
-                } catch (e: Exception) {
-                    Log.e("ResourceActivity", "Error polling repo job $jobId", e)
-                }
-                
-                // Sleep 2s
-                try {
+
                     Thread.sleep(2000)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    Log.d("ResourceActivity", "Polling interrupted for repo $jobId")
+
+                } catch (_: Exception) {
                     break
                 }
             }
@@ -721,74 +743,6 @@ class ResourceActivity : AppCompatActivity() {
         githubRepos.clear()
         githubRepos.addAll(updatedRepos)
         repoAdapter.submitList(updatedRepos)
-    }
-
-    /**
-     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — PURE POLLING (FILES)
-     * 
-     * UI is a pure projection surface with ZERO memory.
-     * NO conditional logic. NO status comparison. NO "thinking".
-     * 
-     * UNIFICATION RULE: Identical to repo polling pattern.
-     */
-    private fun pollIngestJob(jobId: String, apiKey: String, baseUrl: String) {
-        executor.execute {
-            while (true) {
-                try {
-                    // Fetch GET /v1/ingest/{job_id}
-                    val request = Request.Builder()
-                        .url("$baseUrl/v1/ingest/$jobId")
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .get()
-                        .build()
-                    
-                    val response = BackendClient.executeWithRetry(request)
-                    if (response.isSuccessful) {
-                        val body = response.body?.string() ?: "{}"
-                        val json = JSONObject(body)
-                        
-                        // Extract response fields
-                        val status = json.optString("status", "unknown")
-                        val error = if (json.isNull("error")) null else json.getString("error")
-                        
-                        // RENDER CONTRACT: UI binds directly, no conditions
-                        runOnUiThread {
-                            // EVENT FEEDBACK RULE: Show error ONLY on terminal failed state
-                            if (status == "failed" && error != null) {
-                                Toast.makeText(
-                                    this,
-                                    "File ingestion failed: $error",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                            
-                            // Reload on terminal success (action, not feedback)
-                            if (status == "success") {
-                                loadChatFiles()
-                            }
-                        }
-                        
-                        // Stop when terminal
-                        if (status == "success" || status == "failed") {
-                            Log.d("ResourceActivity", "Job $jobId terminal: $status")
-                            break
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e("ResourceActivity", "Error polling job $jobId", e)
-                }
-                
-                // Sleep 2s
-                try {
-                    Thread.sleep(2000)
-                } catch (e: InterruptedException) {
-                    Thread.currentThread().interrupt()
-                    Log.d("ResourceActivity", "Polling interrupted for $jobId")
-                    break
-                }
-            }
-        }
-    }
 
     /**
      * Load ingestion jobs for this conversation and overlay their status.
@@ -855,12 +809,23 @@ class ResourceActivity : AppCompatActivity() {
                         githubRepos.addAll(updatedRepos)
                         repoAdapter.submitList(updatedRepos)
                         
-                        // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Start isolated polling per active job
+                        // STEP 5: CALL SITE RULE — Each job = one independent loop
                         val apiKey = apiKey()
                         val baseUrl = baseUrl()
                         for (job in jobMap.values) {
                             if (job.status == "queued" || job.status == "running") {
-                                pollIngestJobForRepo(job.job_id, apiKey, baseUrl)
+                                pollIngestJob(job.job_id, apiKey, baseUrl) { json ->
+                                    // STEP 3: RENDER = PURE BINDING
+                                    val status = json.optString("status")
+                                    val progress = json.optInt("progress")
+                                    val fileCount = json.optInt("file_count")
+                                    val chunkCount = json.optInt("chunk_count")
+                                    val error = json.optString("error")
+                                    val source = json.optString("source")
+                                    
+                                    // Bind directly to UI (adapter update)
+                                    updateRepoStatus(source, status, progress, fileCount, chunkCount, error, job.job_id)
+                                }
                             }
                         }
                     }
