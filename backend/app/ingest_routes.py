@@ -214,13 +214,20 @@ async def ingest_file(
     _STAGING_DIR.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4()
     staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
-    staging_path.write_bytes(data)
     
     # MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §1
-    # Ensure file is physically present and readable before proceeding
+    # Write file and force flush to disk atomically for guaranteed handoff
     try:
+        # Open, write, and fsync in one operation to avoid reopening
+        with open(staging_path, "wb") as f:
+            f.write(data)
+            f.flush()  # Flush Python buffer
+            os.fsync(f.fileno())  # Force OS to write to disk
+        
+        # Verify file was written correctly
         file_stat = staging_path.stat()
         if file_stat.st_size != len(data):
+            staging_path.unlink(missing_ok=True)
             raise RuntimeError(
                 f"STAGING_INVARIANT_VIOLATION: File size mismatch. "
                 f"Expected {len(data)}, got {file_stat.st_size}"
@@ -228,15 +235,8 @@ async def ingest_file(
     except FileNotFoundError:
         raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: File write failed: {staging_path}")
     except Exception as exc:
-        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: Cannot verify file: {exc}") from exc
-    
-    # Force flush to disk to ensure atomic handoff
-    try:
-        with open(staging_path, "rb") as f:
-            os.fsync(f.fileno())
-    except Exception as exc:
         staging_path.unlink(missing_ok=True)
-        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: fsync failed: {exc}") from exc
+        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: Cannot write file: {exc}") from exc
 
     job = IngestJob(
         id=job_id,

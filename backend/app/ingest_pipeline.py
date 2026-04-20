@@ -495,10 +495,17 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     try:
         file_size = path.stat().st_size
         if file_size == 0:
-            logger.warning("Staged file is empty: %s (job %s)", path, job.id)
-            return 0, 0
+            # Empty file reaching this point suggests data corruption or staging issue
+            # since upload handler validates len(data) before writing
+            raise RuntimeError(
+                f"STAGING_INVARIANT_VIOLATION: Staged file is empty: {path} (job {job.id}). "
+                f"This indicates potential data corruption during staging. "
+                f"Upload handler validated non-empty data before writing."
+            )
         logger.debug("Processing staged file: %s (%d bytes, job %s)", path, file_size, job.id)
     except Exception as exc:
+        if "STAGING_INVARIANT_VIOLATION" in str(exc):
+            raise  # Re-raise our own violations
         raise RuntimeError(
             f"STAGING_INVARIANT_VIOLATION: Cannot access staged file {path}: {exc}"
         ) from exc
@@ -508,7 +515,12 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     text = extract_text(data, mime_type, path.name)
 
     if not text or not text.strip():
-        logger.warning("No extractable text in uploaded file: %s", path.name)
+        # Binary file with content but no extractable text (e.g., images, videos)
+        # This is valid - return success with 0 chunks
+        logger.info(
+            "No extractable text in uploaded file: %s (%d bytes, job %s)",
+            path.name, file_size, job.id
+        )
         return 0, 0
 
     _update_ingest_job(str(job.id), progress=50)
