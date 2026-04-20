@@ -141,24 +141,22 @@ def _maybe_slack_alert(message: str) -> None:
 
 
 def _cleanup_old_uploads() -> None:
-    """Delete stale files in upload and staging directories every hour."""
+    """Delete stale files in upload directory every hour."""
     max_age_seconds = 24 * 3600
-    staging_dir = Path(os.environ.get("INGEST_STAGING_DIR", "/tmp/ingest_staging"))
     while True:
         time.sleep(3600)  # run every hour
-        for directory in (_UPLOADS_DIR, staging_dir):
-            try:
-                if directory.exists():
-                    cutoff = time.time() - max_age_seconds
-                    for f in directory.iterdir():
-                        try:
-                            if f.is_file() and f.stat().st_mtime < cutoff:
-                                f.unlink(missing_ok=True)
-                                logger.info("Cleaned up old upload: %s", f.name)
-                        except Exception:
-                            pass
-            except Exception as exc:
-                logger.warning("Upload cleanup error for %s: %s", directory, exc)
+        try:
+            if _UPLOADS_DIR.exists():
+                cutoff = time.time() - max_age_seconds
+                for f in _UPLOADS_DIR.iterdir():
+                    try:
+                        if f.is_file() and f.stat().st_mtime < cutoff:
+                            f.unlink(missing_ok=True)
+                            logger.info("Cleaned up old upload: %s", f.name)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.warning("Upload cleanup error for %s: %s", _UPLOADS_DIR, exc)
 
 
 @app.on_event("startup")
