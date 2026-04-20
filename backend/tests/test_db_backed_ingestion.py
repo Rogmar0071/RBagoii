@@ -865,10 +865,9 @@ class TestPipelinePurity:
         WHEN   process_ingest_job runs
         THEN   exactly ONE transition to failed occurs (no STATE_MACHINE_VIOLATION)
         """
-        from backend.app.ingest_pipeline import _transition, process_ingest_job
+        from backend.app.ingest_pipeline import process_ingest_job
 
         transitions: list[tuple[str, str]] = []
-        original_transition = _transition.__wrapped__ if hasattr(_transition, "__wrapped__") else None
 
         import backend.app.ingest_pipeline as pipeline_mod
 
