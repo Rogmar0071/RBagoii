@@ -76,7 +76,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+# MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
 # ---------------------------------------------------------------------------
 # State Machine Definition
 #
@@ -84,8 +84,13 @@ logger = logging.getLogger(__name__)
 # Transitions are explicit, deterministic, and irreversible (except to FAILED).
 #
 # STATE FLOW:
-#   created → staged → ready → queued → running → processing → finalizing → success
+#   created → stored → queued → running → processing → indexing → finalizing → success
 #   Any state → failed
+#
+# STORAGE INVARIANT:
+#   - ALL data stored in database (blob_data field)
+#   - NO filesystem usage allowed
+#   - Workers read ONLY from database
 #
 # ---------------------------------------------------------------------------
 
@@ -94,17 +99,19 @@ class IngestJobState:
     """Canonical states for the ingestion state machine."""
 
     # Initial creation
-    CREATED = "created"          # Job record exists, no file yet
+    CREATED = "created"          # Job record exists, no data yet
 
-    # File staging
-    STAGED = "staged"            # File written to disk, not yet safe
-    READY = "ready"              # .ready flag exists, file is stable
+    # Blob storage
+    STORED = "stored"            # Blob data stored in DB (≤ 500MB validated)
 
     # Execution states
     QUEUED = "queued"            # In RQ queue, awaiting worker
-    RUNNING = "running"          # Worker started, pre-flight checks
-    PROCESSING = "processing"    # Actively reading/parsing/chunking
-    FINALIZING = "finalizing"    # Final writes, cleanup prep
+    RUNNING = "running"          # Worker started, blob loaded from DB
+    PROCESSING = "processing"    # Content parsed, extraction in progress
+    INDEXING = "indexing"        # Chunks created and being indexed
+
+    # Finalization
+    FINALIZING = "finalizing"    # Final persistence, metadata updates
 
     # Terminal states
     SUCCESS = "success"          # Completed successfully
@@ -114,8 +121,8 @@ class IngestJobState:
     def all_states(cls) -> set[str]:
         """Return all valid states."""
         return {
-            cls.CREATED, cls.STAGED, cls.READY, cls.QUEUED,
-            cls.RUNNING, cls.PROCESSING, cls.FINALIZING,
+            cls.CREATED, cls.STORED, cls.QUEUED,
+            cls.RUNNING, cls.PROCESSING, cls.INDEXING, cls.FINALIZING,
             cls.SUCCESS, cls.FAILED
         }
 
@@ -132,21 +139,16 @@ class IngestJobState:
 
 # Allowed state transitions (deterministic, linear)
 #
-# TWO PATHS:
-# 1. File uploads: created → staged → ready → queued → running → processing → finalizing → success
-# 2. URL/Repo:     created → queued → running → processing → finalizing → success
+# SINGLE PATH (no filesystem staging):
+#   created → stored → queued → running → processing → indexing → finalizing → success
 #
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    IngestJobState.CREATED: {
-        IngestJobState.STAGED,   # File uploads: write file to disk
-        IngestJobState.QUEUED,   # URL/Repo: skip staging, go directly to queue
-        IngestJobState.FAILED
-    },
-    IngestJobState.STAGED: {IngestJobState.READY, IngestJobState.FAILED},
-    IngestJobState.READY: {IngestJobState.QUEUED, IngestJobState.FAILED},
+    IngestJobState.CREATED: {IngestJobState.STORED, IngestJobState.FAILED},
+    IngestJobState.STORED: {IngestJobState.QUEUED, IngestJobState.FAILED},
     IngestJobState.QUEUED: {IngestJobState.RUNNING, IngestJobState.FAILED},
     IngestJobState.RUNNING: {IngestJobState.PROCESSING, IngestJobState.FAILED},
-    IngestJobState.PROCESSING: {IngestJobState.FINALIZING, IngestJobState.FAILED},
+    IngestJobState.PROCESSING: {IngestJobState.INDEXING, IngestJobState.FAILED},
+    IngestJobState.INDEXING: {IngestJobState.FINALIZING, IngestJobState.FAILED},
     IngestJobState.FINALIZING: {IngestJobState.SUCCESS, IngestJobState.FAILED},
     IngestJobState.SUCCESS: set(),  # Terminal - no transitions
     IngestJobState.FAILED: set(),   # Terminal - no transitions
@@ -195,6 +197,74 @@ def validate_state_transition(from_state: str | None, to_state: str) -> None:
         )
 
     logger.info("STATE_TRANSITION: %s → %s", from_state, to_state)
+
+
+# ---------------------------------------------------------------------------
+# TRANSITION AUTHORITY ENFORCEMENT
+# ---------------------------------------------------------------------------
+
+
+def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | None = None) -> None:
+    """
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — TRANSITION AUTHORITY
+    
+    Single source of truth for ALL state changes.
+    
+    ENFORCED:
+    - Atomic DB transaction
+    - Strict validation of allowed transitions
+    - Timestamp + logging
+    - Payload updates (progress, counts, error) in same transaction
+    
+    FORBIDDEN:
+    - Direct mutation (job.status = X)
+    - Partial updates
+    - Multi-step mutations
+    - Silent state changes
+    
+    Violation → HARD FAIL
+    
+    Args:
+        job_id: IngestJob primary key
+        next_state: Target state (must be valid transition)
+        payload: Optional dict with updates to apply atomically:
+            - progress: int (0-100)
+            - error: str
+            - file_count: int
+            - chunk_count: int
+    """
+    from backend.app.database import get_session
+    from backend.app.models import IngestJob
+    
+    with get_session() as session:
+        job = session.get(IngestJob, job_id)
+        if not job:
+            raise RuntimeError(f"TRANSITION_ERROR: Job {job_id} not found")
+        
+        # Validate transition
+        validate_state_transition(job.status, next_state)
+        
+        # Atomic state + payload update
+        job.status = next_state
+        job.updated_at = datetime.now(timezone.utc)
+        
+        if payload:
+            if "progress" in payload:
+                job.progress = payload["progress"]
+            if "error" in payload:
+                job.error = payload["error"]
+            if "file_count" in payload:
+                job.file_count = payload["file_count"]
+            if "chunk_count" in payload:
+                job.chunk_count = payload["chunk_count"]
+        
+        session.add(job)
+        session.commit()
+        
+        logger.info(
+            "TRANSITION_COMPLETE: job=%s %s → %s payload=%s",
+            job_id, job.status, next_state, payload
+        )
 
 
 # ---------------------------------------------------------------------------
