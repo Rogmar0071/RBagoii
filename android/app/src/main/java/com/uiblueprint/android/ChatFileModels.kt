@@ -27,7 +27,10 @@ enum class IngestStatus {
             "running", "processing", "indexing", "finalizing" -> ANALYZING
             "success" -> AVAILABLE
             "failed" -> FAILED
-            else -> UPLOADING
+            else -> {
+                android.util.Log.w("IngestStatus", "Unknown backend status: '$status' — defaulting to UPLOADING")
+                UPLOADING
+            }
         }
     }
 }
@@ -72,7 +75,7 @@ fun android.widget.TextView.bindIngestStatus(status: IngestStatus?) {
             )
         }
         IngestStatus.FAILED -> {
-            setBackgroundResource(R.drawable.bg_status_pill_uploading)
+            setBackgroundResource(R.drawable.bg_status_pill_failed)
             setTextColor(ContextCompat.getColor(ctx, android.R.color.white))
             setText(R.string.status_ingest_failed)
             setCompoundDrawablesWithIntrinsicBounds(null, null, null, null)
