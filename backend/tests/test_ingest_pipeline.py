@@ -856,6 +856,114 @@ class TestInvariantEnforcement:
                 "INVARIANT_VIOLATION: no IngestJob must be created when upload is rejected"
             )
 
+    def test_worker_does_not_raise_when_job_already_failed(self):
+        """
+        Regression test for the failed→failed STATE_MACHINE_VIOLATION loop.
+
+        If a job is ALREADY in 'failed' state when the worker picks it up
+        (e.g., the route handler raced to mark it failed after enqueue),
+        ``process_ingest_job`` must return cleanly WITHOUT raising an exception.
+
+        Previously the exception handler called ``_transition(FAILED)``
+        unconditionally, which raised RuntimeError for ``failed → failed``
+        transitions. That propagated to RQ, triggering infinite retries.
+        """
+        import uuid as _uuid
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import process_ingest_job
+        from backend.app.models import IngestJob
+
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="already_failed.txt",
+                status="failed",
+                blob_data=b"some data",
+                blob_size_bytes=9,
+                error="pre-existing failure",
+            )
+            s.add(job)
+            s.commit()
+
+        # Must NOT raise — previously this raised RuntimeError and caused RQ retries
+        process_ingest_job(str(job_id))
+
+        # Job must still be in 'failed' state with the original error preserved
+        with Session(db_module.get_engine()) as s:
+            job = s.get(IngestJob, job_id)
+            assert job is not None
+            assert job.status == "failed", (
+                f"Worker must not change a pre-failed job's state, got {job.status!r}"
+            )
+            assert job.error == "pre-existing failure", (
+                "Worker must not overwrite the original error message"
+            )
+
+    def test_exception_handler_swallows_secondary_transition_error(self):
+        """
+        Regression test: if the pipeline exception handler itself cannot
+        transition to 'failed' (because the job is already terminal), it must
+        NOT propagate the secondary RuntimeError to RQ.
+
+        This simulates the race condition where a concurrent process already
+        marked the job failed before the exception handler runs.
+        """
+        import uuid as _uuid
+        from unittest.mock import patch
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import (
+            IngestJobState,
+            _transition,
+            process_ingest_job,
+        )
+        from backend.app.models import IngestJob
+
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="race_condition.txt",
+                status="queued",
+                blob_data=b"hello race",
+                blob_size_bytes=10,
+            )
+            s.add(job)
+            s.commit()
+
+        # Simulate a mid-pipeline failure where the job is concurrently marked
+        # failed, so the exception handler's _transition(FAILED) would hit
+        # 'failed → failed'.  We do this by making _ingest_file raise an error
+        # AND patching _transition to fail for the FAILED→FAILED call.
+        original_transition = _transition
+        calls: list[str] = []
+
+        def patched_transition(jid, state, **payload):
+            calls.append(state)
+            # Simulate the job already being in failed state when the exception
+            # handler tries to transition to FAILED a second time.
+            if state == IngestJobState.FAILED and calls.count(IngestJobState.FAILED) >= 2:
+                raise RuntimeError(
+                    "STATE_MACHINE_VIOLATION: Cannot transition from terminal state "
+                    "failed to failed"
+                )
+            return original_transition(jid, state, **payload)
+
+        import backend.app.ingest_pipeline as pipeline_mod
+
+        with patch.object(pipeline_mod, "_ingest_file", side_effect=RuntimeError("boom")):
+            with patch.object(pipeline_mod, "_transition", side_effect=patched_transition):
+                # Must NOT raise — secondary transition error must be swallowed
+                process_ingest_job(str(job_id))
+
 
 # ---------------------------------------------------------------------------
 # Static structural invariant scans

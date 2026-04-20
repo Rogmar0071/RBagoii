@@ -1170,5 +1170,17 @@ def process_ingest_job(job_id: str) -> None:
     except Exception as exc:
         logger.error("PIPELINE_EXECUTION_FAIL: job=%s error=%s", job_id, str(exc)[:200])
 
-        # TRANSITION: ANY → FAILED (terminal state, can transition from anywhere)
-        _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
+        # Attempt to mark the job as failed.  If the job is already in a terminal
+        # state (e.g., another process raced to fail it, or the exception itself
+        # was raised by an earlier _transition call), the state machine will
+        # reject a second failed → failed transition.  We swallow that secondary
+        # error so it does NOT propagate to RQ — propagation would trigger a retry
+        # and an infinite STATE_MACHINE_VIOLATION loop.
+        try:
+            _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
+        except Exception as fail_exc:
+            logger.error(
+                "PIPELINE_FAIL_TRANSITION_ERROR: job=%s already in terminal state "
+                "or transition error: %s",
+                job_id, fail_exc,
+            )
