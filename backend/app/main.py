@@ -459,23 +459,10 @@ def _enqueue_extraction(session_id: str, clip_path: str) -> None:
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if redis_url:
         try:
-            from redis import Redis
-            from rq import Queue as RQueue
-
-            from backend.app.jobs import run_extraction_job
-            from backend.app.worker import _assert_importable
-
-            _assert_importable(run_extraction_job)
-            conn = Redis.from_url(redis_url)
-            q = RQueue("default", connection=conn)
-            # CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §3
-            # Queue stores stable string path, never a function object.
-            q.enqueue(
-                "backend.app.job_runner.execute_job",
-                "run_extraction_job",
-                session_id,
-                job_timeout=1800,
-            )
+            # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
+            from backend.app.worker import enqueue_job
+            
+            enqueue_job(session_id, "run_extraction_job")
             return
         except Exception as exc:
             logger.warning("RQ unavailable (%s); falling back to thread pool.", exc)
