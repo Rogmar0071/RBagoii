@@ -16,9 +16,9 @@ All ingestion flows through one entry point::
 
     process_ingest_job(job_id: str)
            │
-           ├─ kind="file" → read staging file → extract_text → chunk → store
-           ├─ kind="url"  → httpx.get → html.parser strip → chunk → store
-           └─ kind="repo" → GitHub Trees API → per-file extract → chunk → store
+           ├─ kind="file" → read blob from DB → extract_text → chunk → store
+           ├─ kind="url"  → read blob from DB → html.parser strip → chunk → store
+           └─ kind="repo" → read blob manifest from DB → per-file extract → chunk → store
 
 LAW: ALWAYS_UPDATE_TERMINAL
     ``process_ingest_job`` unconditionally writes a terminal status
@@ -998,6 +998,32 @@ def process_ingest_job(job_id: str) -> None:
         ALL state changes via _transition() ONLY.
         NO direct job.status mutations.
     """
+    # MQP-CONTRACT: WORKER_ENTRY_VALIDATION — validate state and data before any transition.
+    # Raises: transitions job to FAILED if invariants violated; returns immediately.
+    job = _get_ingest_job(job_id)
+    if job is None:
+        logger.error("WORKER_ENTRY_VIOLATION: Job %s not found in DB", job_id)
+        return
+    if job.status != IngestJobState.QUEUED:
+        logger.error(
+            "WORKER_ENTRY_VIOLATION: Job %s in state %r, expected %r",
+            job_id, job.status, IngestJobState.QUEUED,
+        )
+        _transition(job_id, IngestJobState.FAILED,
+                    error=f"WORKER_ENTRY_VIOLATION: state={job.status!r}")
+        return
+    if job.kind in ("file", "url", "repo"):
+        if not job.blob_data:
+            logger.error("WORKER_ENTRY_VIOLATION: Job %s has no blob_data", job_id)
+            _transition(job_id, IngestJobState.FAILED,
+                        error="WORKER_ENTRY_VIOLATION: blob_data missing")
+            return
+        if job.blob_size_bytes == 0:
+            logger.error("WORKER_ENTRY_VIOLATION: Job %s has empty blob_data", job_id)
+            _transition(job_id, IngestJobState.FAILED,
+                        error="WORKER_ENTRY_VIOLATION: blob_data empty")
+            return
+
     # TRANSITION: QUEUED → RUNNING
     logger.info("IngestJob %s: starting", job_id)
     _transition(job_id, IngestJobState.RUNNING, progress=0)
