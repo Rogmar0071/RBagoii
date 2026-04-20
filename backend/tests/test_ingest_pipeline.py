@@ -936,16 +936,26 @@ class TestStaticInvariants:
 
     def test_no_staging_dir_references(self):
         """
-        The _STAGING_DIR and source_path patterns must not exist anywhere
-        in the ingestion codebase. The filesystem-staging architecture
-        has been eliminated.
+        _STAGING_DIR and source_path must be absent from every production
+        ingestion module.  The filesystem-staging architecture is eliminated.
+
+        MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE Section 11 — ZERO tolerance.
+        Covers: ingest_pipeline, ingest_routes, github_routes, models.
         """
         import inspect
 
+        import backend.app.github_routes as gr
         import backend.app.ingest_pipeline as ip
         import backend.app.ingest_routes as ir
+        import backend.app.models as mo
 
-        for mod_name, mod in (("ingest_routes", ir), ("ingest_pipeline", ip)):
+        modules = (
+            ("ingest_routes", ir),
+            ("ingest_pipeline", ip),
+            ("github_routes", gr),
+            ("models", mo),
+        )
+        for mod_name, mod in modules:
             source = inspect.getsource(mod)
             assert "_STAGING_DIR" not in source, (
                 f"INVARIANT_VIOLATION: _STAGING_DIR found in {mod_name} — "
@@ -955,6 +965,40 @@ class TestStaticInvariants:
                 f"INVARIANT_VIOLATION: source_path found in {mod_name} — "
                 f"filesystem staging has been eliminated"
             )
+
+    def test_source_path_construction_fails(self):
+        """
+        MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE Section 11 — ZERO tolerance.
+
+        The field is structurally absent from IngestJob.
+
+        • SQLModel silently drops unknown constructor kwargs, so source_path
+          cannot enter the object via construction — it is absent on the result.
+        • Post-construction assignment via __setattr__ raises ValueError.
+
+        Both proofs together show the illegal field cannot enter the system.
+        """
+        import uuid
+
+        from backend.app.models import IngestJob
+
+        # Construction with unknown field: SQLModel silently drops it.
+        # The resulting object must NOT carry source_path.
+        job = IngestJob(
+            id=uuid.uuid4(),
+            kind="file",
+            source="test.txt",
+            status="created",
+            **{"source_path": "/tmp/illegal"},
+        )
+        assert not hasattr(job, "source_path"), (
+            "INVARIANT_VIOLATION: IngestJob accepted source_path via constructor — "
+            "filesystem-staging field must be structurally absent from the model"
+        )
+
+        # Post-construction assignment is explicitly rejected by SQLModel.
+        with pytest.raises(ValueError):
+            job.__setattr__("source_path", "/tmp/illegal")
 
     def test_no_ready_flag_references_in_pipeline(self):
         """

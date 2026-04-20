@@ -661,9 +661,6 @@ class IngestJob(SQLModel, table=True):
     # For kind="repo": target branch (also embedded in source for uniqueness)
     branch: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
 
-    # Absolute path on disk for kind="file" (staging area) - DEPRECATED (legacy compatibility)
-    source_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
-
     # MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE
     # Binary blob storage for all ingestion data (replaces filesystem dependency)
     # All data (file uploads, fetched URLs, repo content) stored here
