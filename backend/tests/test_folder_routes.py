@@ -1820,6 +1820,7 @@ class TestWorkerTimeouts:
         mock_rq_job.id = "rq-test-id"
 
         mock_queue = mock.MagicMock()
+        mock_queue.name = "default"  # Required by QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §3
         mock_queue.enqueue.return_value = mock_rq_job
 
         with mock.patch.object(worker_module, "_redis_queue", return_value=mock_queue):
@@ -1845,6 +1846,7 @@ class TestWorkerTimeouts:
         mock_rq_job.id = "rq-default-id"
 
         mock_queue = mock.MagicMock()
+        mock_queue.name = "default"  # Required by QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §3
         mock_queue.enqueue.return_value = mock_rq_job
 
         with mock.patch.object(worker_module, "_redis_queue", return_value=mock_queue):
