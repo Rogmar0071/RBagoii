@@ -8,7 +8,6 @@ import android.widget.ImageButton
 import android.widget.PopupMenu
 import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
-import java.text.SimpleDateFormat
 import java.util.Locale
 
 /**
@@ -39,9 +38,8 @@ class ChatFileAdapter(
     class FileViewHolder(view: View) : RecyclerView.ViewHolder(view) {
         val cbInclude: CheckBox = view.findViewById(R.id.cbIncludeInContext)
         val tvFileName: TextView = view.findViewById(R.id.tvFileName)
-        val tvCategory: TextView = view.findViewById(R.id.tvFileCategory)
-        val tvFileSize: TextView = view.findViewById(R.id.tvFileSize)
-        val tvFileDate: TextView = view.findViewById(R.id.tvFileDate)
+        val tvFileSubtitle: TextView = view.findViewById(R.id.tvFileSubtitle)
+        val tvIngestStatus: TextView = view.findViewById(R.id.tvIngestStatus)
         val btnOptions: ImageButton = view.findViewById(R.id.btnFileOptions)
     }
 
@@ -79,11 +77,13 @@ class ChatFileAdapter(
 
                 vh.tvFileName.text = file.filename
                 vh.cbInclude.isChecked = file.includedInContext
-                vh.tvCategory.text = file.category.uppercase(Locale.ROOT)
-                vh.tvFileSize.text = formatFileSize(file.sizeBytes)
 
-                val dateFormat = SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault())
-                vh.tvFileDate.text = dateFormat.format(file.createdAt)
+                // "850 KB - CSV" style subtitle
+                val typeLabel = file.category.uppercase(Locale.ROOT)
+                vh.tvFileSubtitle.text = "${formatFileSize(file.sizeBytes)} · $typeLabel"
+
+                // Status pill
+                vh.tvIngestStatus.bindIngestStatus(file.ingestStatus)
 
                 vh.cbInclude.setOnCheckedChangeListener { _, isChecked ->
                     listener.onToggleIncludeInContext(file, isChecked)

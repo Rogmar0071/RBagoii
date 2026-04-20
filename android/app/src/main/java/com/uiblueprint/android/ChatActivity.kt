@@ -349,6 +349,8 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                                 createdAt = dateFormat.parse(obj.getString("created_at").split(".")[0]) ?: Date(),
                                 updatedAt = dateFormat.parse(obj.getString("updated_at").split(".")[0]) ?: Date(),
                                 downloadUrl = obj.optString("download_url", null),
+                                // Files returned from the server are fully ingested
+                                ingestStatus = IngestStatus.AVAILABLE,
                             )
                         )
                     }
@@ -376,8 +378,13 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
 
         executor.execute {
             try {
+                // Resolve display name for the placeholder entry
+                val filename = resolveFilename(uri)
+
                 runOnUiThread {
                     Toast.makeText(this, getString(R.string.status_uploading_file), Toast.LENGTH_SHORT).show()
+                    // Add a placeholder entry immediately so the user sees the status pill
+                    addInFlightFile(filename, IngestStatus.UPLOADING)
                 }
 
                 val apiKey = prefs.getString("api_key", "") ?: ""
@@ -395,17 +402,16 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 )
 
                 if (jobId != null) {
-                    runOnUiThread {
-                        // STEP 4: EVENT FEEDBACK — After POST
-                        Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
-                    }
-                    
                     // STEP 5: CALL SITE RULE — Each job = one independent loop
                     pollIngestJob(jobId, apiKey, baseUrl) { json ->
                         // STEP 3: RENDER = PURE BINDING
                         val status = json.optString("status")
                         val error = json.optString("error")
-                        
+
+                        // Update the in-flight placeholder pill to reflect current status
+                        val ingestStatus = IngestStatus.fromBackendStatus(status)
+                        updateInFlightFile(filename, ingestStatus)
+
                         // STEP 4: EVENT FEEDBACK — On final failure ONLY
                         if (status == "failed") {
                             Toast.makeText(
@@ -414,14 +420,15 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                                 Toast.LENGTH_LONG
                             ).show()
                         }
-                        
-                        // Reload on terminal success (action, not feedback)
+
+                        // Reload on terminal success — replace placeholder with real entry
                         if (status == "success") {
                             loadChatFiles()
                         }
                     }
                 } else {
                     runOnUiThread {
+                        removeInFlightFile(filename)
                         Toast.makeText(
                             this,
                             getString(R.string.error_file_upload_failed),
@@ -486,6 +493,71 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error updating file context", e)
             }
+        }
+    }
+
+    /**
+     * Resolve the display filename from a content URI.
+     */
+    private fun resolveFilename(uri: Uri): String {
+        val cursor = contentResolver.query(uri, null, null, null, null)
+        return cursor?.use {
+            if (it.moveToFirst()) {
+                val idx = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) it.getString(idx) else "file"
+            } else "file"
+        } ?: uri.lastPathSegment ?: "file"
+    }
+
+    /**
+     * Add a placeholder ChatFile entry for an in-flight upload so the user
+     * sees the status pill immediately (before the server confirms completion).
+     * Must be called on the main thread.
+     */
+    private fun addInFlightFile(filename: String, status: IngestStatus) {
+        // Avoid duplicates (e.g. re-upload of same filename)
+        chatFiles.removeAll { it.id == "in_flight_$filename" }
+        chatFiles.add(
+            0,
+            ChatFile(
+                id = "in_flight_$filename",
+                conversationId = conversationId ?: "",
+                filename = filename,
+                mimeType = "",
+                sizeBytes = 0L,
+                category = "other",
+                includedInContext = false,
+                createdAt = Date(),
+                updatedAt = Date(),
+                downloadUrl = null,
+                ingestStatus = status,
+            )
+        )
+        fileAdapter.submitList(chatFiles.toList())
+        updateFileListUI()
+    }
+
+    /**
+     * Update the status pill of an in-flight placeholder entry.
+     * Must be called on the main thread.
+     */
+    private fun updateInFlightFile(filename: String, status: IngestStatus) {
+        val idx = chatFiles.indexOfFirst { it.id == "in_flight_$filename" }
+        if (idx >= 0) {
+            chatFiles[idx].ingestStatus = status
+            fileAdapter.submitList(chatFiles.toList())
+        }
+    }
+
+    /**
+     * Remove the in-flight placeholder entry (called when upload fails before
+     * the server returns a job_id, so there is nothing to poll).
+     * Must be called on the main thread.
+     */
+    private fun removeInFlightFile(filename: String) {
+        if (chatFiles.removeAll { it.id == "in_flight_$filename" }) {
+            fileAdapter.submitList(chatFiles.toList())
+            updateFileListUI()
         }
     }
 

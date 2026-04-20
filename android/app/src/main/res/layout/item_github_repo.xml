@@ -69,4 +69,22 @@
                 android:text="⭐ 123" />
         </LinearLayout>
     </LinearLayout>
+
+    <!-- Status pill badge -->
+    <TextView
+        android:id="@+id/tvIngestStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="5dp"
+        android:paddingBottom="5dp"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:maxLines="1"
+        android:drawablePadding="4dp"
+        android:gravity="center_vertical"
+        android:visibility="gone" />
+
 </LinearLayout>

@@ -387,6 +387,8 @@ class ResourceActivity : AppCompatActivity() {
                                 createdAt = dateFormat.parse(obj.getString("created_at").split(".")[0]) ?: Date(),
                                 updatedAt = dateFormat.parse(obj.getString("updated_at").split(".")[0]) ?: Date(),
                                 downloadUrl = obj.optString("download_url", null),
+                                // Files returned from the server are fully ingested
+                                ingestStatus = IngestStatus.AVAILABLE,
                             )
                         )
                     }
