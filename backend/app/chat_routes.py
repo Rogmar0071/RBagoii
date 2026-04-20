@@ -1264,6 +1264,39 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 repo_block += "---\n"
                                 base_system_prompt += repo_block
 
+                    # -------------------------------------------------------
+                    # INGEST_JOB_CONTEXT_INJECTION_V1:
+                    # Retrieve chunks from all successfully completed IngestJob
+                    # records for the current conversation and inject them into
+                    # the system prompt so the AI can answer questions about
+                    # ingested files, URLs, and repositories.
+                    # Non-blocking: silently skipped when no chunks are found.
+                    # -------------------------------------------------------
+                    if db is not None and active_conversation_id:
+                        try:
+                            # Keyword-based scoring: extracts non-stopword tokens from
+                            # user_query and scores stored RepoChunk rows by keyword
+                            # frequency + path boosts + recency weight (no embeddings).
+                            ingest_chunks = retrieve_relevant_chunks(
+                                user_query=message,
+                                db=db,
+                                conversation_id=active_conversation_id,
+                            )
+                            if ingest_chunks:
+                                ingest_block = "\n\n---\nINGESTED CONTENT:\n"
+                                for chunk in ingest_chunks:
+                                    ingest_block += (
+                                        f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                    )
+                                ingest_block += "---\n"
+                                base_system_prompt += ingest_block
+                        except Exception:
+                            logger.warning(
+                                "Failed to retrieve ingest job chunks for conversation %s",
+                                active_conversation_id,
+                                exc_info=True,
+                            )
+
                     print("CTX_FILES:", context.files)
 
                     # -------------------------------------------------------
