@@ -1,0 +1,45 @@
+{
+  "name": "RBagoii Development",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  
+  "features": {
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.11"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "18"
+    }
+  },
+  
+  "postCreateCommand": "bash scripts/init-session.sh",
+  
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "GitHub.copilot"
+      ],
+      "settings": {
+        "python.linting.enabled": true,
+        "python.linting.ruffEnabled": true,
+        "editor.formatOnSave": true,
+        "python.formatting.provider": "black",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff",
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": true,
+            "source.fixAll": true
+          }
+        }
+      }
+    }
+  },
+  
+  "forwardPorts": [8000, 3000],
+  
+  "remoteEnv": {
+    "BACKEND_DISABLE_JOBS": "1"
+  }
+}
