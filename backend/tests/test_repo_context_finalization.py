@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import uuid
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -59,6 +59,31 @@ def _set_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture()
 def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=True)
+
+
+def mock_github_fetch(files=None):
+    """
+    Create a context manager that mocks GitHub fetch functions for testing.
+    Usage: with mock_github_fetch([("file.py", "content")]):
+    """
+    if files is None:
+        files = [("README.md", "# Hello")]
+
+    def mock_fetch_tree(owner, repo, branch, token):
+        return [{"path": path} for path, _ in files]
+
+    def mock_fetch_file(owner, repo, branch, path, client):
+        for file_path, content in files:
+            if file_path == path:
+                return content.encode("utf-8")
+        return None
+
+    from unittest.mock import patch
+    return patch.multiple(
+        "backend.app.ingest_pipeline",
+        _fetch_github_tree=mock_fetch_tree,
+        _fetch_raw_file=mock_fetch_file,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +190,11 @@ class TestDeprecatedIngestionEndpoint:
         assert resp.status_code == 410
         assert "/api/repos/add" in resp.json().get("detail", "")
 
-    def test_repo_creation_via_add_endpoint_still_works(self, client: TestClient):
+    def test_repo_creation_via_add_endpoint_still_works(
+        self, client: TestClient, mock_github_fetch
+    ):
         """Repos can still be created — just via POST /api/repos/add."""
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("README.md", "# Hello world")],
-        ):
+        with mock_github_fetch([("README.md", "# Hello world")]):
             resp = client.post(
                 "/api/repos/add",
                 json={
@@ -186,7 +209,9 @@ class TestDeprecatedIngestionEndpoint:
         assert "repo_id" in body
         assert body["status"] in ("pending", "running", "success", "failed")
 
-    def test_ingestion_worker_creates_repo_chunks(self, client: TestClient, capsys):
+    def test_ingestion_worker_creates_repo_chunks(
+        self, client: TestClient, capsys, mock_github_fetch
+    ):
         """run_repo_ingestion creates RepoChunk rows and prints INGEST START/DONE (V3 §7)."""
         from sqlmodel import Session, select
 
@@ -199,11 +224,7 @@ class TestDeprecatedIngestionEndpoint:
             ("README.md", "# My Project\n"),
         ]
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=fake_files,
-        ):
+        with mock_github_fetch(fake_files):
             resp = client.post(
                 "/api/repos/add",
                 json={
@@ -242,11 +263,7 @@ class TestDeprecatedIngestionEndpoint:
 
         cid = str(uuid.uuid4())
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("main.py", "print('hi')")],
-        ):
+        with mock_github_fetch([("main.py", "print('hi')")]):
             resp = client.post(
                 "/api/repos/add",
                 json={
@@ -270,11 +287,7 @@ class TestDeprecatedIngestionEndpoint:
         """GET /api/chat/{cid}/repos lists Repo entities bound via ConversationRepo."""
         cid = str(uuid.uuid4())
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("app.py", "code")],
-        ):
+        with mock_github_fetch([("app.py", "code")]):
             client.post(
                 "/api/repos/add",
                 json={
@@ -312,11 +325,7 @@ class TestDeprecatedIngestionEndpoint:
             "branch": "main",
         }
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("README.md", "# Hello")],
-        ):
+        with mock_github_fetch([("README.md", "# Hello")]):
             resp1 = client.post("/api/repos/add", json=payload, headers=AUTH)
             resp2 = client.post("/api/repos/add", json=payload, headers=AUTH)
 
@@ -759,7 +768,9 @@ class TestTimeoutSafety:
 
 
 class TestRetryEndpoint:
-    def test_retry_resets_repo_to_pending(self, client: TestClient):
+    def test_retry_resets_repo_to_pending(
+        self, client: TestClient, mock_github_fetch
+    ):
         """POST /api/repos/{id}/retry resets status to pending and re-ingests."""
         from sqlmodel import Session
 
@@ -768,11 +779,13 @@ class TestRetryEndpoint:
 
         cid = str(uuid.uuid4())
 
-        # First ingest (fails) — use /api/repos/add
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("timeout"),
+        # First ingest (fails) — mock fetch to raise error
+        def mock_fetch_tree_fail(owner, repo, branch, token):
+            raise RuntimeError("timeout")
+
+        with patch.multiple(
+            "backend.app.ingest_pipeline",
+            _fetch_github_tree=mock_fetch_tree_fail,
         ):
             resp = client.post(
                 "/api/repos/add",
@@ -793,11 +806,7 @@ class TestRetryEndpoint:
             assert repo.ingestion_status == "failed"
 
         # Retry with good data
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("README.md", "# Fixed!")],
-        ):
+        with mock_github_fetch([("README.md", "# Fixed!")]):
             retry_resp = client.post(
                 f"/api/repos/{repo_id}/retry",
                 headers=AUTH,
@@ -823,11 +832,7 @@ class TestRetryEndpoint:
         from backend.app.models import Repo, RepoChunk
 
         cid = str(uuid.uuid4())
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("main.py", "code here")],
-        ):
+        with mock_github_fetch([("main.py", "code here")]):
             add_resp = client.post(
                 "/api/repos/add",
                 json={
@@ -867,17 +872,16 @@ class TestRetryEndpoint:
 
 
 class TestContextReposDrivesRetrieval:
-    def test_context_repos_injects_chunks_into_prompt(self, client: TestClient, monkeypatch):
+    def test_context_repos_injects_chunks_into_prompt(
+        self, client: TestClient, monkeypatch
+    ):
         """When context.repos is sent, repo chunks appear in the AI prompt."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         cid = str(uuid.uuid4())
         fake_files = [("app.py", "def greet():\n    return 'Hello from repo'")]
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=fake_files,
+        with mock_github_fetch(fake_files,
         ):
             add_resp = client.post(
                 "/api/repos/add",
@@ -929,10 +933,7 @@ class TestContextReposDrivesRetrieval:
         cid = str(uuid.uuid4())
         fake_files = [("legacy.py", "def legacy(): pass")]
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=fake_files,
+        with mock_github_fetch(fake_files,
         ):
             add_resp = client.post(
                 f"/api/chat/{cid}/github/repos",
@@ -989,11 +990,7 @@ class TestGlobalRepoAddEndpoint:
 
     def test_add_repo_returns_200(self, client: TestClient):
         """POST /api/repos/add returns 200 with repo_id and status."""
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("README.md", "# Hello")],
-        ):
+        with mock_github_fetch([("README.md", "# Hello")]):
             resp = client.post(
                 "/api/repos/add",
                 json={
@@ -1023,11 +1020,7 @@ class TestGlobalRepoAddEndpoint:
         conv_b = str(uuid.uuid4())
         payload_base = {"repo_url": "https://github.com/owner/shared-repo", "branch": "main"}
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("main.py", "print('hi')")],
-        ):
+        with mock_github_fetch([("main.py", "print('hi')")]):
             resp_a = client.post(
                 "/api/repos/add",
                 json={"conversation_id": conv_a, **payload_base},
@@ -1062,11 +1055,7 @@ class TestGlobalRepoAddEndpoint:
 
         cid = str(uuid.uuid4())
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("app.py", "code")],
-        ):
+        with mock_github_fetch([("app.py", "code")]):
             resp = client.post(
                 "/api/repos/add",
                 json={
@@ -1104,11 +1093,7 @@ class TestGlobalRepoAddEndpoint:
             "branch": "main",
         }
 
-        with patch(
-            "backend.app.github_routes._fetch_repo_file_list",
-            new_callable=AsyncMock,
-            return_value=[("README.md", "hello")],
-        ):
+        with mock_github_fetch([("README.md", "hello")]):
             resp1 = client.post("/api/repos/add", json=payload, headers=AUTH)
             client.post("/api/repos/add", json=payload, headers=AUTH)
 
