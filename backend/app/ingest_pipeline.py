@@ -734,85 +734,53 @@ def _update_ingest_job(job_id: str, **kwargs: Any) -> None:
 
 def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     """
-    Ingest a file that was previously saved to *job.source_path*.
+    Ingest a file from blob_data stored in the database.
 
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+    
     Returns ``(file_count, chunk_count)``.
-
-    MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §3
-    This function MUST NOT run unless BOTH the staged file AND the .ready flag exist.
-    The .ready flag is the deterministic signal that staging is complete.
+    
+    Worker MUST read from database ONLY. NO filesystem access.
     """
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §7 - Mandatory logging
-    logger.info("INGEST_START job_id=%s", job.id)
+    logger.info("INGEST_START job_id=%s kind=file", job.id)
 
     _update_ingest_job(str(job.id), progress=10)
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §3 - HARD GATE
-    # Check source_path is set
-    if not job.source_path:
-        logger.error("INGEST_FAIL job_id=%s reason=no_source_path", job.id)
+    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    if not job.blob_data:
+        logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
         raise RuntimeError(
-            f"INVARIANT_VIOLATION: IngestJob {job.id} has no source_path. "
-            f"This indicates a programming error in the upload handler."
+            f"BLOB_MISSING: IngestJob {job.id} has no blob_data. "
+            f"Blob must be stored in database before processing."
         )
 
-    path = Path(job.source_path)
-    ready_path = Path(str(path) + ".ready")
-
-    # HARD VERIFY: File must exist
-    if not path.exists():
-        logger.error("INGEST_FAIL job_id=%s reason=file_missing path=%s", job.id, path)
+    # Validate blob size
+    if job.blob_size_bytes == 0 or len(job.blob_data) == 0:
+        logger.error("INGEST_FAIL job_id=%s reason=empty_blob", job.id)
         raise RuntimeError(
-            f"INVARIANT_VIOLATION: file missing {path}. "
-            f"Job {job.id} was enqueued but the file does not exist."
+            f"BLOB_MISSING: Blob data is empty for job {job.id}"
         )
 
-    # HARD VERIFY: Ready flag must exist
-    if not ready_path.exists():
-        logger.error("INGEST_FAIL job_id=%s reason=not_finalized path=%s", job.id, ready_path)
-        raise RuntimeError(
-            f"INVARIANT_VIOLATION: file not finalized {ready_path}. "
-            f"Job {job.id} has data file but no ready flag. "
-            f"System is structurally invalid if ingestion runs without ready file."
-        )
+    logger.debug(
+        "Processing blob: job=%s size=%d mime=%s",
+        job.id, job.blob_size_bytes, job.blob_mime_type
+    )
 
-    # Verify file is readable and get size
-    file_size = 0
-    try:
-        file_size = path.stat().st_size
-        if file_size == 0:
-            # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §4 - HARD FAIL ONLY
-            logger.error("INGEST_FAIL job_id=%s reason=empty_file path=%s", job.id, path)
-            raise RuntimeError(
-                f"INVARIANT_VIOLATION: Staged file is empty: {path} (job {job.id}). "
-                f"This indicates data corruption during staging."
-            )
-        logger.debug("Processing staged file: %s (%d bytes, job %s)", path, file_size, job.id)
-    except Exception as exc:
-        if "INVARIANT_VIOLATION" in str(exc):
-            raise  # Re-raise our own violations
-        logger.error("INGEST_FAIL job_id=%s reason=cannot_access path=%s", job.id, path)
-        raise RuntimeError(
-            f"INVARIANT_VIOLATION: Cannot access staged file {path}: {exc}"
-        ) from exc
-
-    data = path.read_bytes()
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    text = extract_text(data, mime_type, path.name)
+    data = job.blob_data
+    mime_type = job.blob_mime_type or "application/octet-stream"
+    filename = job.source
+    
+    text = extract_text(data, mime_type, filename)
 
     if not text or not text.strip():
-        # Binary file with content but no extractable text (e.g., images, videos)
-        # This is valid - return success with 0 chunks
+        # Binary file with content but no extractable text
         logger.info(
-            "No extractable text in uploaded file: %s (%d bytes, job %s)",
-            path.name, file_size, job.id
+            "No extractable text in blob: job=%s size=%d",
+            job.id, job.blob_size_bytes
         )
-        # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §5 - Cleanup after success
-        path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
         logger.info("INGEST_SUCCESS job_id=%s chunks=0", job.id)
         return 0, 0
 
@@ -820,11 +788,11 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
-        structure = extract_structure(chunk_text, path.name)
+        structure = extract_structure(chunk_text, filename)
         session.add(
             RepoChunk(
                 ingest_job_id=job.id,
-                file_path=path.name,
+                file_path=filename,
                 content=chunk_text,
                 chunk_index=idx,
                 token_estimate=max(1, len(chunk_text) // 4),
@@ -839,11 +807,6 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
     _update_ingest_job(str(job.id), progress=95)
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §5 - Cleanup ONLY after success
-    path.unlink(missing_ok=True)
-    ready_path.unlink(missing_ok=True)
-
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §7 - Mandatory logging
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
 
     return 1, len(chunks)
@@ -851,43 +814,51 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
 def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     """
-    Fetch a URL and ingest its text content.
+    Ingest URL content from blob_data stored in the database.
+
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
 
     Returns ``(file_count, chunk_count)``.
+    
+    Worker reads from blob_data ONLY. URL was already fetched and stored.
     """
-    import httpx
-
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
+    url = job.source
+    logger.info("INGEST_START job_id=%s kind=url source=%s", job.id, url)
+
+    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    if not job.blob_data:
+        logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
+        raise RuntimeError(
+            f"BLOB_MISSING: IngestJob {job.id} has no blob_data. "
+            f"URL content must be fetched and stored before processing."
+        )
+
     _update_ingest_job(str(job.id), progress=10)
 
-    url = job.source
-    try:
-        with httpx.Client(timeout=_URL_FETCH_TIMEOUT, follow_redirects=True) as client:
-            resp = client.get(url)
-    except httpx.RequestError as exc:
-        raise RuntimeError(f"Failed to fetch URL {url!r}: {exc}") from exc
+    # Extract text from blob
+    content_bytes = job.blob_data
+    content_type = job.blob_mime_type or "text/html"
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"URL {url!r} returned HTTP {resp.status_code}")
+    # Use the <title> tag (or URL) as the document filename
+    try:
+        text_for_title = content_bytes[:4096].decode('utf-8', errors='ignore')
+        title_match = re.search(
+            r"<title[^>]*>(.*?)</title>", text_for_title, re.IGNORECASE | re.DOTALL
+        )
+        page_title = title_match.group(1).strip() if title_match else url
+        safe_title = re.sub(r"[^\w\-. ]", "_", page_title)[:80] or "webpage"
+        filename = f"{safe_title}.html"
+    except Exception:
+        filename = f"url_{job.id}.html"
 
     _update_ingest_job(str(job.id), progress=30)
 
-    content_bytes = resp.content[:_URL_FETCH_MAX_BYTES]
-    content_type = resp.headers.get("content-type", "text/html").split(";")[0].strip()
-
-    # Use the <title> tag (or URL) as the document filename
-    title_match = re.search(
-        r"<title[^>]*>(.*?)</title>", resp.text[:4096], re.IGNORECASE | re.DOTALL
-    )
-    page_title = title_match.group(1).strip() if title_match else url
-    safe_title = re.sub(r"[^\w\-. ]", "_", page_title)[:80] or "webpage"
-    filename = f"{safe_title}.html"
-
     text = extract_text(content_bytes, content_type, filename)
     if not text or not text.strip():
-        logger.warning("No extractable text from URL: %s", url)
+        logger.warning("No extractable text from URL blob: job=%s", job.id)
         return 0, 0
 
     _update_ingest_job(str(job.id), progress=50)
@@ -913,6 +884,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
         )
 
     _update_ingest_job(str(job.id), progress=95)
+    logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
     return 1, len(chunks)
 
 
@@ -1249,7 +1221,14 @@ def process_ingest_job(job_id: str) -> None:
             else:
                 raise ValueError(f"Unknown IngestJob kind: {job.kind!r}")
 
-            # TRANSITION: PROCESSING → FINALIZING
+            # TRANSITION: PROCESSING → INDEXING
+            _transition(job_id, IngestJobState.INDEXING, progress=90)
+            logger.info("STATE: INDEXING job_id=%s chunks=%d", job_id, chunk_count)
+            
+            # Indexing happens during chunk creation above
+            # This state represents the chunk persistence/indexing phase
+            
+            # TRANSITION: INDEXING → FINALIZING
             _transition(job_id, IngestJobState.FINALIZING, progress=98)
             logger.info("STATE: FINALIZING job_id=%s", job_id)
 
