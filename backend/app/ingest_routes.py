@@ -232,9 +232,11 @@ async def ingest_file(
                 f"STAGING_INVARIANT_VIOLATION: File size mismatch. "
                 f"Expected {len(data)}, got {file_stat.st_size}"
             )
-    except FileNotFoundError:
-        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: File write failed: {staging_path}")
+    except RuntimeError:
+        # Re-raise our own STAGING_INVARIANT_VIOLATION errors
+        raise
     except Exception as exc:
+        # Catch-all for I/O errors, permission issues, disk full, etc.
         staging_path.unlink(missing_ok=True)
         raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: Cannot write file: {exc}") from exc
 

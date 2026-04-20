@@ -491,7 +491,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             f"This should be impossible if the upload handler is correct."
         )
     
-    # Verify file is readable before proceeding
+    # Verify file is readable and get size before proceeding
+    file_size = 0  # Initialize to handle exception cases
     try:
         file_size = path.stat().st_size
         if file_size == 0:
