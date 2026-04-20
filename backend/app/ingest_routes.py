@@ -155,6 +155,36 @@ class IngestJobResponse(BaseModel):
     updated_at: str
 
 
+def _assert_enqueue_ready(job: object) -> None:
+    """
+    MQP-CONTRACT: ENQUEUE_GATE_LOCK
+
+    Enforce invariants immediately before dispatching to the queue.
+    The job MUST be in state 'queued' with valid blob_data.
+
+    Raises RuntimeError if any invariant is violated (HARD STOP).
+    """
+    status = getattr(job, "status", None)  # type: ignore[attr-defined]
+    if status != "queued":
+        raise RuntimeError(
+            f"ENQUEUE_GATE_VIOLATION: job {job.id} in state {status!r}, "  # type: ignore[attr-defined]
+            f"must be 'queued' before enqueue"
+        )
+    if not getattr(job, "blob_data", None):  # type: ignore[attr-defined]
+        raise RuntimeError(
+            f"ENQUEUE_GATE_VIOLATION: job {job.id} has no blob_data — "  # type: ignore[attr-defined]
+            f"data must be stored in DB before enqueue"
+        )
+    if getattr(job, "blob_size_bytes", 0) == 0:  # type: ignore[attr-defined]
+        raise RuntimeError(
+            f"ENQUEUE_GATE_VIOLATION: job {job.id} has empty blob_data"  # type: ignore[attr-defined]
+        )
+    logger.debug(
+        "ENQUEUE_GATE_PASSED: job=%s state=queued blob_size=%d",
+        job.id, job.blob_size_bytes,  # type: ignore[attr-defined]
+    )
+
+
 def _to_response(job: object) -> IngestJobResponse:
     return IngestJobResponse(
         job_id=str(job.id),  # type: ignore[attr-defined]
@@ -205,14 +235,13 @@ async def ingest_file(
     filename = file.filename or "upload"
     data = await file.read()
 
-    # Validate size ≤ 500MB
-    MAX_BLOB_SIZE = 500 * 1024 * 1024
-    if len(data) > MAX_BLOB_SIZE:
+    # MQP-CONTRACT: SIZE ENFORCEMENT — reject before creating any DB record
+    if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
             detail=(
                 f"File size {len(data):,} bytes exceeds the maximum allowed "
-                f"size of {MAX_BLOB_SIZE:,} bytes (500MB)."
+                f"size of {MAX_UPLOAD_BYTES:,} bytes."
             ),
         )
 
@@ -261,6 +290,8 @@ async def ingest_file(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # Enqueue the job (may run synchronously in test mode)
+    session.refresh(job)
+    _assert_enqueue_ready(job)
     _enqueue(str(job_id))
 
     # Refresh job to get latest status
@@ -364,30 +395,13 @@ def ingest_url(
         transition(job_id, "failed", {"error": str(exc)[:1000]})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    # MQP-CONTRACT: ENQUEUE_GATE_LOCK
+    session.refresh(job)
+    _assert_enqueue_ready(job)
     _enqueue(str(job_id))
 
     session.refresh(job)
     return _to_response(job)
-    session.commit()
-
-    logger.info("STATE: CREATED job_id=%s kind=url", job_id)
-
-    # URL jobs skip staging/ready states (no file to stage)
-    # TRANSITION: CREATED → QUEUED
-    from backend.app.ingest_pipeline import _transition
-    _transition(str(job_id), "queued")
-    logger.info("STATE: QUEUED job_id=%s", job_id)
-
-    _enqueue(str(job_id))
-
-    # Refresh to get latest status
-    session.refresh(job)
-    return _to_response(job)
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/ingest/repo
-# ---------------------------------------------------------------------------
 
 
 class IngestRepoRequest(BaseModel):
@@ -581,6 +595,9 @@ def ingest_repo(
         transition(job_id, "failed", {"error": str(exc)[:1000]})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    # MQP-CONTRACT: ENQUEUE_GATE_LOCK
+    session.refresh(job)
+    _assert_enqueue_ready(job)
     _enqueue(str(job_id))
 
     # Refresh to get latest status
@@ -662,7 +679,7 @@ def delete_ingest_job(
     """
     Delete an ingestion job and all chunks it produced.
 
-    Also removes the staged file from disk (for file uploads).
+    All data is stored in the database; no filesystem cleanup is needed.
     """
     from sqlmodel import select
 

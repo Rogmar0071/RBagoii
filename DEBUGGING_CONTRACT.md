@@ -384,6 +384,49 @@ curl -H "Authorization: $API_KEY" \
 - Using wrong domain_profile_id
 - Domain archived
 
+#### 5. File Blob Storage Failures
+
+**Symptoms**: `BLOB_MISSING`, `BLOB_STORAGE_VIOLATION`, or `WORKER_ENTRY_VIOLATION` in logs.
+Worker transitions job to `failed` immediately without processing.
+
+**Architecture note**: All ingestion data (file uploads, URL content, repo manifests) is stored
+as `blob_data` in the `IngestJob` database record. No filesystem staging is used.
+
+**Check**:
+```bash
+# Inspect job status and error field via API
+curl -H "Authorization: $API_KEY" \
+  http://localhost:8000/v1/ingest/{job_id}
+
+# Search logs for invariant violations
+grep "WORKER_ENTRY_VIOLATION\|BLOB_MISSING\|ENQUEUE_GATE_VIOLATION" logs/
+
+# Verify blob_data exists for jobs in stored/queued state (SQLite example)
+sqlite3 <db_path> \
+  "SELECT id, kind, status, blob_size_bytes, error FROM ingestjob WHERE status='queued' AND blob_size_bytes=0;"
+```
+
+**Common causes**:
+- Upload handler crashed between `session.commit()` and the `transition → stored` call
+  (job created but blob never persisted; job will be stuck in `created` state)
+- DB transaction rolled back silently during blob write
+  (check DB connection health and disk space)
+- Enqueue gate (`ENQUEUE_GATE_VIOLATION`) fired because state machine was bypassed
+  (indicates code change that skipped `transition()` calls)
+
+**Fix**:
+1. For stuck jobs: re-upload the file or re-submit the URL/repo request
+2. For systematic failures: check DB connection, storage capacity, and that no code
+   change has bypassed the `transition()` authority function
+3. If `WORKER_ENTRY_VIOLATION` fires repeatedly: verify the enqueue gate
+   (`_assert_enqueue_ready`) is called before every `_enqueue()` invocation
+
+**Invariant reference** (`MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2` → superseded by
+`MQP-CONTRACT:AIC-v1.1-ENFORCEMENT-COMPLETE`):
+- `blob_data` must be non-NULL before `status` reaches `stored`
+- `blob_size_bytes > 0` must hold before enqueue
+- Worker (`process_ingest_job`) reads ONLY from `blob_data` — no filesystem, no network
+
 ### Debugging Tools Location
 
 - **Backend validation scripts**: `backend/validate_*.py`
