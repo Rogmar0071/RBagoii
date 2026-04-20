@@ -2,28 +2,34 @@
 
 **Date**: 2026-04-20  
 **Requirement**: Confirm every process follows the same pipeline after 8009090  
-**Status**: ⚠️ **PARTIAL UNIFICATION** - Legacy path still exists
+**Status**: ✅ **MIGRATION COMPLETE** - All paths now unified
+
+**Update**: Migration completed on 2026-04-20. See `MIGRATION_COMPLETE.md` for full details.
 
 ---
 
 ## Summary
 
-After analyzing the codebase at commit 8009090 (merged PR #59), I found that **NOT all ingestion processes follow the unified pipeline**. There are TWO parallel repo ingestion paths still in production.
+**BEFORE Migration** (Initial Analysis): NOT all ingestion processes followed the unified pipeline. There were TWO parallel repo ingestion paths.
+
+**AFTER Migration** (Current Status): ✅ ALL ingestion processes now use the unified pipeline (`process_ingest_job`).
 
 ---
 
-## Unified Pipeline (✅ Correct)
+## Migration Results
 
-### Entry Point: `ingest_pipeline.process_ingest_job(job_id)`
+### All Endpoints Now Unified ✅
 
 **Endpoints using unified pipeline:**
 1. ✅ `POST /v1/ingest/file` → File upload
 2. ✅ `POST /v1/ingest/url` → URL ingestion  
-3. ✅ `POST /v1/ingest/repo` → Repo ingestion (NEW)
+3. ✅ `POST /v1/ingest/repo` → Repo ingestion
+4. ✅ `POST /api/repos/add` → Legacy repo ingestion (MIGRATED)
+5. ✅ `POST /api/repos/{repo_id}/retry` → Retry ingestion (MIGRATED)
 
-**Architecture:**
+**Architecture (Current)**:
 ```
-POST /v1/ingest/{kind}
+ALL endpoints
   ↓
 Create IngestJob (kind="file"|"url"|"repo")
   ↓
@@ -37,38 +43,51 @@ Switch on job.kind:
   └─ "repo" → _ingest_repo()
 ```
 
-**Model**: Uses `IngestJob` table  
-**Status tracking**: Unified state machine (CREATED→STAGED→READY→QUEUED→RUNNING→PROCESSING→FINALIZING→SUCCESS/FAILED)  
+**Model**: All use `IngestJob` table  
+**Status tracking**: All use unified state machine (CREATED→STAGED→READY→QUEUED→RUNNING→PROCESSING→FINALIZING→SUCCESS/FAILED)  
 **Location**: `backend/app/ingest_pipeline.py`
 
 ---
 
-## Legacy Pipeline (❌ Should be removed)
+## Legacy Path Status
 
-### Entry Point: `worker.run_repo_ingestion(repo_id)`
+### Deprecated (but still functional) ⚠️
 
-**Endpoints using legacy pipeline:**
-1. ❌ `POST /api/repos/add` → Legacy repo ingestion
-2. ❌ `POST /api/chat/{conversation_id}/repos/{repo_id}/retry` → Retry ingestion
+**Functions marked as deprecated:**
+1. ⚠️ `worker.run_repo_ingestion()` - Deprecated, will be removed
+2. ⚠️ `github_routes._enqueue_repo_ingestion()` - Deprecated, will be removed
 
-**Architecture:**
-```
-POST /api/repos/add
-  ↓
-add_repo() in github_routes.py
-  ↓
-_enqueue_repo_ingestion(repo_id)
-  ↓
-worker.run_repo_ingestion(repo_id)
-  ↓
-Direct GitHub API fetch + chunk creation
-```
-
-**Model**: Uses `Repo` table (separate from `IngestJob`)  
-**Status tracking**: Simple states (pending→running→success/failed)  
-**Location**: `backend/app/worker.py` lines 2805-3100
+**Status**: No longer called by any endpoints, but kept for backward compatibility. Will be removed in future release.
 
 ---
+
+## Migration Implementation
+
+### Changes Made
+
+**1. `add_repo()` endpoint** (github_routes.py):
+- Now creates `IngestJob` record
+- Stores `repo_id` in `IngestJob.source_path` for legacy coordination
+- Uses `_transition()` and `_enqueue()` from unified pipeline
+- Maintains `Repo` table for backward compatibility
+
+**2. `retry_repo_ingestion()` endpoint** (github_routes.py):
+- Now creates new `IngestJob` for each retry
+- Uses unified pipeline instead of legacy worker
+- Deletes old chunks, updates Repo table
+
+**3. `_ingest_repo()` function** (ingest_pipeline.py):
+- Detects legacy `repo_id` in `source_path`
+- Sets BOTH `repo_id` and `ingest_job_id` FKs on `RepoChunk`
+- Updates `Repo` table on success with final counts
+
+**4. `process_ingest_job()` function** (ingest_pipeline.py):
+- Updates legacy `Repo` table on failure
+- Sets `ingestion_status="failed"` for legacy endpoints
+
+---
+
+## Original Analysis (Pre-Migration)
 
 ## Key Differences
 
@@ -169,8 +188,8 @@ Both functions are registered and can be enqueued to workers!
 
 ## Conclusion
 
-**Answer to requirement**: ❌ NO, not every process follows the same pipeline after 8009090.
+**Answer to requirement**: ✅ YES, every process now follows the same pipeline after migration on 2026-04-20.
 
-The unified `process_ingest_job()` pipeline exists and works correctly, but the legacy `run_repo_ingestion()` path is still active and used by `/api/repos/add` endpoint.
+The unified `process_ingest_job()` pipeline is used by ALL endpoints. Legacy functions are deprecated but kept for one release cycle for safety.
 
-**To achieve full unification**: Legacy repo endpoints must be migrated to use `POST /v1/ingest/repo`.
+**See `MIGRATION_COMPLETE.md` for complete migration documentation.**
