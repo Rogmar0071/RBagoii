@@ -851,7 +851,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     Ingest a GitHub repository using the Trees API.
 
     Returns ``(file_count, chunk_count)``.
-    
+
     MIGRATION: Supports legacy Repo table coordination.
     If job.source_path contains a UUID, it's the repo_id from the legacy endpoint.
     In this case, we also set repo_id FK on RepoChunk records and update Repo table.
@@ -873,7 +873,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     branch = job.branch or "main"
 
     token = os.environ.get("GITHUB_TOKEN", "").strip() or None
-    
+
     # MIGRATION: Check if this is from legacy endpoint (repo_id in source_path)
     legacy_repo_id = None
     if job.source_path:
@@ -1068,13 +1068,14 @@ def process_ingest_job(job_id: str) -> None:
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
-        
+
         # MIGRATION: Update legacy Repo table on failure
         try:
             from sqlmodel import Session
+
             from backend.app.database import get_engine
             from backend.app.models import IngestJob, Repo
-            
+
             with Session(get_engine()) as session:
                 job = session.get(IngestJob, uuid.UUID(job_id))
                 if job and job.kind == "repo" and job.source_path:
@@ -1095,7 +1096,7 @@ def process_ingest_job(job_id: str) -> None:
                         pass  # Not a legacy repo
         except Exception as migration_exc:
             logger.warning("Failed to update legacy Repo on failure: %s", migration_exc)
-        
+
         # TRANSITION: ANY → FAILED (terminal state, can transition from anywhere)
         _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
         logger.error("STATE: FAILED job_id=%s error=%s", job_id, str(exc)[:200])

@@ -2806,17 +2806,17 @@ def run_repo_ingestion(repo_id: str) -> None:
     """
     DEPRECATED: This function is no longer used by any endpoints.
     All repo ingestion now goes through the unified pipeline (process_ingest_job).
-    
+
     This function is kept temporarily for backward compatibility but will be
     removed in a future release. Do not use for new code.
-    
+
     Endpoints now using unified pipeline:
     - POST /api/repos/add → Creates IngestJob, uses process_ingest_job()
     - POST /api/repos/{repo_id}/retry → Creates IngestJob, uses process_ingest_job()
     - POST /v1/ingest/repo → Uses process_ingest_job() directly
-    
+
     ---
-    
+
     Background worker: fetch a GitHub repository, chunk the files, and
     update the Repo entity with ingestion results.
 
@@ -2844,10 +2844,13 @@ def run_repo_ingestion(repo_id: str) -> None:
     from backend.app.github_routes import GITHUB_TOKEN, _fetch_repo_file_list
     from backend.app.models import Repo, RepoChunk
     from backend.app.repo_retrieval import _split_into_chunks
-    
+
     # DEPRECATION WARNING
     warnings.warn(
-        "run_repo_ingestion() is deprecated. Use the unified pipeline (process_ingest_job) instead.",
+        (
+            "run_repo_ingestion() is deprecated. "
+            "Use the unified pipeline (process_ingest_job) instead."
+        ),
         DeprecationWarning,
         stacklevel=2
     )
