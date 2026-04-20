@@ -4,6 +4,77 @@
 
 ---
 
+## System Architecture
+
+### Database-Backed Ingestion Pipeline
+
+The system uses a **pure database-backed ingestion architecture** with zero filesystem dependencies:
+
+```
+┌─────────────────┐
+│   API Routes    │  File/URL/Repo upload
+│                 │
+│  1. Receive     │
+│  2. Fetch*      │  (* Repo: fetch all files; URL: fetch content)
+│  3. Store Blob  │  → ingest_jobs.blob_data (≤500MB)
+│  4. Transition  │  → created → stored → queued
+│  5. Enqueue     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Pure Worker    │  NO network, NO filesystem
+│                 │
+│  1. Read Blob   │  ← blob_data from database
+│  2. Process     │
+│  3. Chunk       │  → chunks table
+│  4. Commit      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│   Database      │  Single source of truth
+│                 │
+│  • blob_data    │  All content
+│  • chunks       │  Processed output
+│  • metadata     │  Job state
+└─────────────────┘
+```
+
+**Key Properties:**
+- ✅ **Deterministic**: Same input → same output (no environment dependencies)
+- ✅ **Reliable**: All data persisted before processing
+- ✅ **Scalable**: Workers are stateless and parallelizable
+- ✅ **Testable**: No network/filesystem mocking required
+
+### State Machine
+
+All ingestion jobs follow a strict 9-state deterministic flow:
+
+```
+created → stored → queued → running → processing → indexing → finalizing → success
+                                                                              ↓
+                                                                           failed
+```
+
+**Enforcement:**
+- Single `transition()` function for ALL state changes
+- Atomic updates (state + metadata in one transaction)
+- Invalid transitions raise `RuntimeError`
+- Terminal states: `success`, `failed`
+
+### Blob Storage
+
+| Type | API Behavior | Worker Behavior |
+|------|--------------|-----------------|
+| **File** | Store upload as blob | Read blob, extract text, chunk |
+| **URL** | Fetch content, store as blob | Read blob, extract text, chunk |
+| **Repo** | Fetch ALL files from GitHub, store JSON manifest | Read manifest, process files, chunk |
+
+**Size Limit:** 500MB per blob (configurable via `MAX_BLOB_SIZE`)
+
+---
+
 ## What is a Blueprint?
 
 A **Blueprint** is a compact, machine-readable JSON document that captures everything a custom renderer needs to reproduce a UI interaction at ~99% human-perceived fidelity:
@@ -458,13 +529,24 @@ MIT
 | `video/mp4` | `.mp4` | Android screen recordings |
 | `application/zip` | `.zip` | Repository archives for structural analysis |
 
-### Size limit
+### Size limits
 
-Uploads are rejected with **HTTP 413** once they exceed `MAX_UPLOAD_BYTES`
-(default **50 MB**).  Override with the environment variable:
+| Limit | Value | Environment Variable |
+|-------|-------|---------------------|
+| Upload size (legacy) | 50 MB | `MAX_UPLOAD_BYTES` |
+| Blob storage | 500 MB | `MAX_BLOB_SIZE` (in code) |
+| Repo max files | 100 files | `REPO_MAX_FILES` |
+| Repo max file size | 100,000 chars | `REPO_MAX_FILE_CHARS` |
+
+**Note:** The ingestion system uses blob storage (500MB limit) for all new file/URL/repo ingests. The legacy `MAX_UPLOAD_BYTES` applies only to the old `/v1/sessions` endpoint.
+
+Uploads are rejected with **HTTP 413** when they exceed the applicable limit.
+
+Override limits with environment variables:
 
 ```bash
-export MAX_UPLOAD_BYTES=104857600   # 100 MB
+export MAX_UPLOAD_BYTES=104857600   # 100 MB (legacy sessions)
+export REPO_MAX_FILES=200           # 200 files max for repos
 ```
 
 ### Single-shot upload
@@ -504,6 +586,140 @@ Body: multipart/form-data  field "meta" (optional JSON string)
 ```
 
 Returns same shape as single-shot upload on success.
+
+---
+
+## Ingestion API
+
+The system supports three ingestion types: **file**, **URL**, and **repository**.
+
+### File Upload
+
+Upload a file for ingestion and chunking:
+
+```bash
+curl -X POST http://localhost:8000/v1/ingest/file \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -F "file=@document.pdf" \
+  -F "conversation_id=conv-123"
+```
+
+**Supported file types:**
+- Documents: `.pdf`, `.txt`, `.md`, `.rst`
+- Code: `.py`, `.js`, `.ts`, `.java`, `.go`, `.rs`, etc.
+- Data: `.json`, `.xml`, `.yaml`, `.csv`
+
+**Response:**
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "kind": "file",
+  "status": "queued",
+  "created_at": "2026-04-20T12:00:00Z"
+}
+```
+
+### URL Ingestion
+
+Fetch and ingest content from a URL:
+
+```bash
+curl -X POST http://localhost:8000/v1/ingest/url \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com/article",
+    "conversation_id": "conv-123"
+  }'
+```
+
+The API fetches the content, stores it as a blob, then processes it asynchronously.
+
+### Repository Ingestion
+
+Ingest an entire GitHub repository:
+
+```bash
+curl -X POST http://localhost:8000/v1/ingest/repo \
+  -H "Authorization: Bearer ${API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "repo_url": "https://github.com/owner/repo",
+    "branch": "main",
+    "conversation_id": "conv-123"
+  }'
+```
+
+**How it works:**
+1. API fetches repo tree from GitHub (up to `REPO_MAX_FILES`, default 100)
+2. Fetches content of all supported file types
+3. Stores complete manifest as JSON blob (up to 500MB)
+4. Worker processes manifest, chunks files, persists to database
+
+**Environment variables:**
+- `GITHUB_TOKEN`: Optional GitHub PAT for private repos / higher rate limits
+- `REPO_MAX_FILES`: Maximum files to ingest (default: 100)
+- `REPO_MAX_FILE_CHARS`: Max characters per file (default: 100,000)
+
+### Job Status
+
+Check ingestion job status:
+
+```bash
+curl http://localhost:8000/v1/ingest/jobs/${JOB_ID} \
+  -H "Authorization: Bearer ${API_KEY}"
+```
+
+**Response:**
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "kind": "repo",
+  "status": "success",
+  "progress": 100,
+  "file_count": 42,
+  "chunk_count": 387,
+  "created_at": "2026-04-20T12:00:00Z",
+  "updated_at": "2026-04-20T12:05:00Z"
+}
+```
+
+**Status values:**
+- `created`: Job initialized
+- `stored`: Data stored in database
+- `queued`: Waiting for worker
+- `running`: Worker picked up job
+- `processing`: Extracting text
+- `indexing`: Creating chunks
+- `finalizing`: Persisting chunks
+- `success`: Complete
+- `failed`: Error occurred (see `error` field)
+
+### Chunk Retrieval
+
+Retrieve processed chunks for a conversation:
+
+```bash
+curl "http://localhost:8000/v1/repo/chunks?conversation_id=conv-123&limit=10" \
+  -H "Authorization: Bearer ${API_KEY}"
+```
+
+**Response:**
+```json
+{
+  "chunks": [
+    {
+      "id": "chunk-uuid",
+      "file_path": "src/main.py",
+      "content": "def main():\n    ...",
+      "chunk_index": 0,
+      "chunk_type": "function",
+      "symbol": "main"
+    }
+  ],
+  "total": 387
+}
+```
 
 ---
 

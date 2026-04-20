@@ -48,9 +48,8 @@ router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
 
-# Staging directory: uploaded files are saved here before the background
-# worker picks them up.  Cleaned up by the main-process cleanup daemon.
-_STAGING_DIR = Path(os.environ.get("INGEST_STAGING_DIR", "/tmp/ingest_staging"))
+# MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+# Filesystem staging removed - all data stored in database blob
 
 
 # ---------------------------------------------------------------------------
@@ -189,117 +188,84 @@ async def ingest_file(
     """
     Upload a file and queue it for text extraction and chunking.
 
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+    
+    ALL data stored in database as BLOB. NO filesystem usage.
+
     Accepted formats: PDF, DOCX, HTML, CSV, JSON, XML, plain text,
     any source-code file with a recognised extension, ZIP archives.
 
-    The endpoint returns immediately with ``status: "queued"``.
+    The endpoint returns immediately with ``status: "stored"``.
     Poll ``GET /v1/ingest/{job_id}`` to track progress.
+    
+    Flow: created → stored → queued → (worker processes)
     """
+    from backend.app.ingest_pipeline import transition
     from backend.app.models import IngestJob
 
     filename = file.filename or "upload"
-    _, ext = os.path.splitext(filename.lower())
-
     data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
+    
+    # Validate size ≤ 500MB
+    MAX_BLOB_SIZE = 500 * 1024 * 1024
+    if len(data) > MAX_BLOB_SIZE:
         raise HTTPException(
             status_code=413,
             detail=(
                 f"File size {len(data):,} bytes exceeds the maximum allowed "
-                f"upload size of {MAX_UPLOAD_BYTES:,} bytes."
+                f"size of {MAX_BLOB_SIZE:,} bytes (500MB)."
             ),
         )
 
-    # Save to staging area; the worker reads it from here
-    _STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    # MQP-CONTRACT: AIC-v1.1 STATE MACHINE
+    # Flow: created → stored → queued
+
     job_id = uuid.uuid4()
-    staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
-    ready_path = Path(str(staging_path) + ".ready")
 
-    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
-    # State: CREATED → STAGED → READY → QUEUED
-
-    # STATE: CREATED - Create job record before file operations
+    # STATE: CREATED - Create job record
     job = IngestJob(
         id=job_id,
         kind="file",
         source=filename,
-        source_path=str(staging_path),
-        status="created",  # Initial state
+        status="created",
         conversation_id=conversation_id,
         workspace_id=workspace_id,
     )
     session.add(job)
     session.commit()
-
     logger.info("STATE: CREATED job_id=%s", job_id)
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §1
-    # Atomic write with explicit READY flag for deterministic handoff
     try:
-        # STEP 1: Write data file with fsync
-        with open(staging_path, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+        # STEP 1: Store blob in database
+        job.blob_data = data
+        job.blob_mime_type = file.content_type or "application/octet-stream"
+        job.blob_size_bytes = len(data)
+        session.add(job)
+        session.commit()
+        
+        # STEP 2: Validate blob persisted
+        session.refresh(job)
+        if not job.blob_data or len(job.blob_data) != len(data):
+            raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
+        
+        # TRANSITION: CREATED → STORED
+        transition(job_id, "stored", {"progress": 0})
+        logger.info("STATE: STORED job_id=%s size=%d", job_id, len(data))
 
-        # STEP 2: HARD VERIFY file existence
-        if not staging_path.exists():
-            raise RuntimeError(f"STAGING_VIOLATION: missing file {staging_path}")
+        # TRANSITION: STORED → QUEUED
+        transition(job_id, "queued")
+        logger.info("STATE: QUEUED job_id=%s", job_id)
 
-        # STEP 3: HARD VERIFY file size
-        if staging_path.stat().st_size != len(data):
-            staging_path.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"STAGING_VIOLATION: size mismatch {staging_path}. "
-                f"Expected {len(data)}, got {staging_path.stat().st_size}"
-            )
-
-        # TRANSITION: CREATED → STAGED
-        from backend.app.ingest_pipeline import _transition
-        _transition(str(job_id), "staged")
-        logger.info("STATE: STAGED job_id=%s path=%s size=%d", job_id, staging_path, len(data))
-
-        # STEP 4: CREATE READY FLAG (THIS IS THE TRUE SIGNAL)
-        # File existence alone is NOT sufficient - ready flag proves atomicity
-        with open(ready_path, "w") as f:
-            f.write("ok")
-            f.flush()
-            os.fsync(f.fileno())
-
-        # STEP 5: HARD VERIFY ready flag exists
-        if not ready_path.exists():
-            staging_path.unlink(missing_ok=True)
-            raise RuntimeError(f"STAGING_VIOLATION: ready flag missing {ready_path}")
-
-        # TRANSITION: STAGED → READY
-        _transition(str(job_id), "ready")
-        logger.info("STATE: READY job_id=%s", job_id)
-
-    except RuntimeError:
-        # Re-raise our own STAGING_VIOLATION errors
-        staging_path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
-        _transition(str(job_id), "failed", error="Staging failed")
-        raise
     except Exception as exc:
-        # Catch-all for I/O errors, permission issues, disk full, etc.
-        staging_path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
-        _transition(str(job_id), "failed", error=str(exc)[:1000])
-        raise RuntimeError(f"STAGING_VIOLATION: Cannot write file: {exc}") from exc
-
-    # TRANSITION: READY → QUEUED (must happen BEFORE enqueue for synchronous execution)
-    _transition(str(job_id), "queued")
-    logger.info("STATE: QUEUED job_id=%s", job_id)
+        logger.error("Failed to store blob for job %s: %s", job_id, exc)
+        transition(job_id, "failed", {"error": str(exc)[:1000]})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # Enqueue the job (may run synchronously in test mode)
     _enqueue(str(job_id))
 
     # Refresh job to get latest status
     session.refresh(job)
-    # After commit + synchronous enqueue, lazy-load on _to_response(job) reads
-    # the terminal status committed by process_ingest_job.
     return _to_response(job)
 
 
@@ -337,17 +303,72 @@ def ingest_url(
 
     job_id = uuid.uuid4()
 
-    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
-    # For URL/repo jobs: CREATED → QUEUED (no staging phase)
+    # MQP-CONTRACT: AIC-v1.1 STATE MACHINE
+    # Flow: created → stored → queued
     job = IngestJob(
         id=job_id,
         kind="url",
         source=url,
-        status="created",  # Initial state
+        status="created",
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
     )
     session.add(job)
+    session.commit()
+    logger.info("STATE: CREATED job_id=%s kind=url source=%s", job_id, url)
+
+    # Fetch URL content and store as blob
+    try:
+        import httpx
+        
+        response = httpx.get(url, timeout=30.0, follow_redirects=True)
+        response.raise_for_status()
+        
+        blob_data = response.content
+        MAX_BLOB_SIZE = 500 * 1024 * 1024
+        if len(blob_data) > MAX_BLOB_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"URL content size {len(blob_data):,} bytes exceeds 500MB limit"
+            )
+        
+        # Store blob in database
+        from backend.app.ingest_pipeline import transition
+        
+        job.blob_data = blob_data
+        job.blob_mime_type = response.headers.get("content-type", "text/html")
+        job.blob_size_bytes = len(blob_data)
+        session.add(job)
+        session.commit()
+        
+        # Validate blob persisted
+        session.refresh(job)
+        if not job.blob_data or len(job.blob_data) != len(blob_data):
+            raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
+        
+        # TRANSITION: CREATED → STORED
+        transition(job_id, "stored", {"progress": 0})
+        logger.info("STATE: STORED job_id=%s size=%d", job_id, len(blob_data))
+
+        # TRANSITION: STORED → QUEUED
+        transition(job_id, "queued")
+        logger.info("STATE: QUEUED job_id=%s", job_id)
+        
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch URL %s: %s", url, exc)
+        from backend.app.ingest_pipeline import transition
+        transition(job_id, "failed", {"error": f"HTTP error: {exc}"})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Failed to store blob for URL job %s: %s", job_id, exc)
+        from backend.app.ingest_pipeline import transition
+        transition(job_id, "failed", {"error": str(exc)[:1000]})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    _enqueue(str(job_id))
+
+    session.refresh(job)
+    return _to_response(job)
     session.commit()
 
     logger.info("STATE: CREATED job_id=%s kind=url", job_id)
@@ -418,37 +439,148 @@ def ingest_repo(
             .where(IngestJob.conversation_id == body.conversation_id)
             .order_by(IngestJob.created_at.desc())
         ).first()
-        # Check for active states (not just queued/running/success)
+        # Check for active states (updated for new state machine)
         active_states = {
-            "created", "staged", "ready", "queued", "running",
-            "processing", "finalizing", "success"
+            "created", "stored", "queued", "running",
+            "processing", "indexing", "finalizing", "success"
         }
         if existing and existing.status in active_states:
             return _to_response(existing)
 
     job_id = uuid.uuid4()
 
-    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
-    # For repo jobs: CREATED → QUEUED (no staging phase)
+    # MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+    # Fetch ENTIRE repo at API layer and store as blob
     job = IngestJob(
         id=job_id,
         kind="repo",
         source=source_key,
         branch=body.branch,
-        status="created",  # Initial state
+        status="created",
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
     )
     session.add(job)
     session.commit()
 
-    logger.info("STATE: CREATED job_id=%s kind=repo", job_id)
+    logger.info("STATE: CREATED job_id=%s kind=repo source=%s", job_id, source_key)
 
-    # Repo jobs skip staging/ready states (no file to stage)
-    # TRANSITION: CREATED → QUEUED
-    from backend.app.ingest_pipeline import _transition
-    _transition(str(job_id), "queued")
-    logger.info("STATE: QUEUED job_id=%s", job_id)
+    try:
+        import httpx
+        import json
+        
+        from backend.app.ingest_pipeline import (
+            INGESTIBLE_EXTENSIONS,
+            REPO_MAX_FILE_CHARS,
+            REPO_MAX_FILES,
+            _fetch_github_tree,
+            _fetch_raw_file,
+            transition,
+        )
+        
+        # Parse repo URL
+        match = re.search(r"github\.com/([^/]+)/([^/@]+)", body.repo_url)
+        if not match:
+            raise ValueError(f"Invalid GitHub URL: {body.repo_url}")
+        
+        owner, repo_name = match.groups()
+        if repo_name.endswith(".git"):
+            repo_name = repo_name[:-4]
+        
+        token = os.environ.get("GITHUB_TOKEN", "").strip() or None
+        
+        # Fetch repo tree
+        logger.info("Fetching repo tree: %s/%s@%s", owner, repo_name, body.branch)
+        blobs = _fetch_github_tree(owner, repo_name, body.branch, token)
+        
+        if not blobs:
+            raise RuntimeError(
+                f"No ingestible files found in {owner}/{repo_name}@{body.branch}. "
+                "Verify the repository URL, branch name, and that it contains supported file types."
+            )
+        
+        # Cap at max files
+        max_files = int(os.environ.get("REPO_MAX_FILES", str(REPO_MAX_FILES)))
+        if len(blobs) > max_files:
+            logger.warning(
+                "Repo %s/%s@%s has %d files; capping at %d",
+                owner, repo_name, body.branch, len(blobs), max_files
+            )
+            blobs = blobs[:max_files]
+        
+        # Fetch ALL file contents
+        logger.info("Fetching %d files from %s/%s@%s", len(blobs), owner, repo_name, body.branch)
+        max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
+        files = []
+        
+        with httpx.Client(timeout=60.0) as client:
+            for blob in blobs:
+                file_path = blob["path"]
+                raw_bytes = _fetch_raw_file(owner, repo_name, body.branch, file_path, client)
+                
+                if raw_bytes is None:
+                    logger.debug("Skipping file (fetch failed): %s", file_path)
+                    continue
+                
+                try:
+                    content = raw_bytes.decode("utf-8", errors="replace")[:max_file_chars]
+                except Exception:
+                    logger.debug("Skipping non-UTF-8 file: %s", file_path)
+                    continue
+                
+                files.append({
+                    "path": file_path,
+                    "content": content,
+                    "size": len(raw_bytes)
+                })
+        
+        if not files:
+            raise RuntimeError(f"No readable files fetched from {owner}/{repo_name}@{body.branch}")
+        
+        # Build repo manifest
+        repo_manifest = {
+            "repo_url": body.repo_url,
+            "owner": owner,
+            "name": repo_name,
+            "branch": body.branch,
+            "files": files
+        }
+        
+        # Serialize and store as blob
+        blob_bytes = json.dumps(repo_manifest).encode("utf-8")
+        
+        # Validate size (500MB limit)
+        MAX_BLOB_SIZE = 500 * 1024 * 1024
+        if len(blob_bytes) > MAX_BLOB_SIZE:
+            raise RuntimeError(
+                f"Repo manifest size {len(blob_bytes):,} bytes exceeds 500MB limit. "
+                f"Fetched {len(files)} files."
+            )
+        
+        job.blob_data = blob_bytes
+        job.blob_mime_type = "application/json"
+        job.blob_size_bytes = len(blob_bytes)
+        session.add(job)
+        session.commit()
+        
+        logger.info(
+            "Repo manifest stored: job=%s files=%d size=%d bytes",
+            job_id, len(files), len(blob_bytes)
+        )
+        
+        # TRANSITION: CREATED → STORED
+        transition(job_id, "stored", {"progress": 0})
+        logger.info("STATE: STORED job_id=%s", job_id)
+
+        # TRANSITION: STORED → QUEUED
+        transition(job_id, "queued")
+        logger.info("STATE: QUEUED job_id=%s", job_id)
+        
+    except Exception as exc:
+        logger.error("Failed to fetch/store repo for job %s: %s", job_id, exc)
+        from backend.app.ingest_pipeline import transition
+        transition(job_id, "failed", {"error": str(exc)[:1000]})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     _enqueue(str(job_id))
 
@@ -546,22 +678,14 @@ def delete_ingest_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Ingestion job not found")
 
+    # MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+    # No filesystem cleanup needed - all data in database
+
     # Remove associated chunks first
     for chunk in session.exec(
         select(RepoChunk).where(RepoChunk.ingest_job_id == job_uuid)
     ).all():
         session.delete(chunk)
-
-    # Clean up the staged file and ready flag from disk
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §6 - Cleanup both files
-    if job.source_path:
-        try:
-            staging_path = Path(job.source_path)
-            ready_path = Path(str(staging_path) + ".ready")
-            staging_path.unlink(missing_ok=True)
-            ready_path.unlink(missing_ok=True)
-        except Exception as exc:
-            logger.warning("Could not delete staged files %s: %s", job.source_path, exc)
 
     session.delete(job)
     session.commit()

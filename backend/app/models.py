@@ -612,30 +612,37 @@ class IngestJob(SQLModel, table=True):
     (backend.app.ingest_pipeline).  Legacy ingestion paths (Repo / ChatFile)
     remain for backward compatibility but all new ingestion goes through here.
 
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+
     kind values
     -----------
     "file"  — a local file uploaded via POST /v1/ingest/file
     "url"   — a web page fetched via POST /v1/ingest/url
     "repo"  — a GitHub repository ingested via POST /v1/ingest/repo
 
-    status values (MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1)
+    status values (MQP-CONTRACT: AIC-v1.1 STATE MACHINE)
     ---------------------------------------------------------------------
     Linear progression (strict state machine):
 
-    created → staged → ready → queued → running → processing → finalizing → success
+    created → stored → queued → running → processing → indexing → finalizing → success
 
     Any state can transition to: failed
 
     State definitions:
-    - created: Job record exists, no processing yet
-    - staged: File written to disk (file uploads only)
-    - ready: .ready flag exists, file stable (file uploads only)
+    - created: Job record exists, no data yet
+    - stored: Blob data stored in database (≤ 500MB validated)
     - queued: Job in RQ queue, awaiting worker
-    - running: Worker started, pre-flight checks
-    - processing: Actively reading/parsing/chunking (progress 5-95%)
-    - finalizing: Final writes, cleanup (progress 95-99%)
+    - running: Worker started, blob loaded from DB
+    - processing: Content parsed, extraction in progress
+    - indexing: Chunks created and being indexed
+    - finalizing: Final persistence, metadata updates
     - success: Completed successfully (terminal)
     - failed: Failed with error (terminal)
+
+    Storage:
+    - ALL data stored as BLOB in database (blob_data field)
+    - NO filesystem dependencies
+    - Workers read ONLY from database
     """
 
     __tablename__ = "ingest_jobs"
@@ -654,10 +661,21 @@ class IngestJob(SQLModel, table=True):
     # For kind="repo": target branch (also embedded in source for uniqueness)
     branch: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
 
-    # Absolute path on disk for kind="file" (staging area)
+    # Absolute path on disk for kind="file" (staging area) - DEPRECATED (legacy compatibility)
     source_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
 
-    # created / staged / ready / queued / running / processing / finalizing / success / failed
+    # MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE
+    # Binary blob storage for all ingestion data (replaces filesystem dependency)
+    # All data (file uploads, fetched URLs, repo content) stored here
+    blob_data: Optional[bytes] = Field(default=None, sa_column=Column(sa.LargeBinary, nullable=True))
+    
+    # MIME type of the stored blob
+    blob_mime_type: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    
+    # Size of stored blob in bytes (for validation: must be ≤ 500MB)
+    blob_size_bytes: int = Field(default=0)
+
+    # created / stored / queued / running / processing / indexing / finalizing / success / failed
     status: str = Field(default="created", sa_column=Column(sa.Text, index=True))
 
     # Progress percentage (0-100)

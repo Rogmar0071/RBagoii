@@ -76,7 +76,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+# MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
 # ---------------------------------------------------------------------------
 # State Machine Definition
 #
@@ -84,8 +84,13 @@ logger = logging.getLogger(__name__)
 # Transitions are explicit, deterministic, and irreversible (except to FAILED).
 #
 # STATE FLOW:
-#   created → staged → ready → queued → running → processing → finalizing → success
+#   created → stored → queued → running → processing → indexing → finalizing → success
 #   Any state → failed
+#
+# STORAGE INVARIANT:
+#   - ALL data stored in database (blob_data field)
+#   - NO filesystem usage allowed
+#   - Workers read ONLY from database
 #
 # ---------------------------------------------------------------------------
 
@@ -94,17 +99,19 @@ class IngestJobState:
     """Canonical states for the ingestion state machine."""
 
     # Initial creation
-    CREATED = "created"          # Job record exists, no file yet
+    CREATED = "created"          # Job record exists, no data yet
 
-    # File staging
-    STAGED = "staged"            # File written to disk, not yet safe
-    READY = "ready"              # .ready flag exists, file is stable
+    # Blob storage
+    STORED = "stored"            # Blob data stored in DB (≤ 500MB validated)
 
     # Execution states
     QUEUED = "queued"            # In RQ queue, awaiting worker
-    RUNNING = "running"          # Worker started, pre-flight checks
-    PROCESSING = "processing"    # Actively reading/parsing/chunking
-    FINALIZING = "finalizing"    # Final writes, cleanup prep
+    RUNNING = "running"          # Worker started, blob loaded from DB
+    PROCESSING = "processing"    # Content parsed, extraction in progress
+    INDEXING = "indexing"        # Chunks created and being indexed
+
+    # Finalization
+    FINALIZING = "finalizing"    # Final persistence, metadata updates
 
     # Terminal states
     SUCCESS = "success"          # Completed successfully
@@ -114,8 +121,8 @@ class IngestJobState:
     def all_states(cls) -> set[str]:
         """Return all valid states."""
         return {
-            cls.CREATED, cls.STAGED, cls.READY, cls.QUEUED,
-            cls.RUNNING, cls.PROCESSING, cls.FINALIZING,
+            cls.CREATED, cls.STORED, cls.QUEUED,
+            cls.RUNNING, cls.PROCESSING, cls.INDEXING, cls.FINALIZING,
             cls.SUCCESS, cls.FAILED
         }
 
@@ -132,21 +139,16 @@ class IngestJobState:
 
 # Allowed state transitions (deterministic, linear)
 #
-# TWO PATHS:
-# 1. File uploads: created → staged → ready → queued → running → processing → finalizing → success
-# 2. URL/Repo:     created → queued → running → processing → finalizing → success
+# SINGLE PATH (no filesystem staging):
+#   created → stored → queued → running → processing → indexing → finalizing → success
 #
 ALLOWED_TRANSITIONS: dict[str, set[str]] = {
-    IngestJobState.CREATED: {
-        IngestJobState.STAGED,   # File uploads: write file to disk
-        IngestJobState.QUEUED,   # URL/Repo: skip staging, go directly to queue
-        IngestJobState.FAILED
-    },
-    IngestJobState.STAGED: {IngestJobState.READY, IngestJobState.FAILED},
-    IngestJobState.READY: {IngestJobState.QUEUED, IngestJobState.FAILED},
+    IngestJobState.CREATED: {IngestJobState.STORED, IngestJobState.FAILED},
+    IngestJobState.STORED: {IngestJobState.QUEUED, IngestJobState.FAILED},
     IngestJobState.QUEUED: {IngestJobState.RUNNING, IngestJobState.FAILED},
     IngestJobState.RUNNING: {IngestJobState.PROCESSING, IngestJobState.FAILED},
-    IngestJobState.PROCESSING: {IngestJobState.FINALIZING, IngestJobState.FAILED},
+    IngestJobState.PROCESSING: {IngestJobState.INDEXING, IngestJobState.FAILED},
+    IngestJobState.INDEXING: {IngestJobState.FINALIZING, IngestJobState.FAILED},
     IngestJobState.FINALIZING: {IngestJobState.SUCCESS, IngestJobState.FAILED},
     IngestJobState.SUCCESS: set(),  # Terminal - no transitions
     IngestJobState.FAILED: set(),   # Terminal - no transitions
@@ -195,6 +197,121 @@ def validate_state_transition(from_state: str | None, to_state: str) -> None:
         )
 
     logger.info("STATE_TRANSITION: %s → %s", from_state, to_state)
+
+
+# ---------------------------------------------------------------------------
+# Blob validation (pre-transition enforcement)
+# ---------------------------------------------------------------------------
+
+
+def validate_blob_before_stored(job: Any) -> None:
+    """
+    Validate blob_data before allowing transition to 'stored' state.
+    
+    MQP-CONTRACT: AIC-v1.1-FINAL-VALIDATION-LOCK
+    Enforces blob invariants before storage.
+    
+    Raises RuntimeError if validation fails.
+    """
+    MAX_BLOB_SIZE = 500 * 1024 * 1024  # 500MB
+    
+    if job.blob_data is None:
+        raise RuntimeError(
+            f"BLOB_VALIDATION_FAILED: Job {job.id} has no blob_data. "
+            f"Cannot transition to 'stored' state without blob content."
+        )
+    
+    if job.blob_size_bytes == 0:
+        raise RuntimeError(
+            f"BLOB_VALIDATION_FAILED: Job {job.id} has zero-size blob. "
+            f"Blob must contain data before storage."
+        )
+    
+    if job.blob_size_bytes > MAX_BLOB_SIZE:
+        raise RuntimeError(
+            f"BLOB_VALIDATION_FAILED: Job {job.id} blob size {job.blob_size_bytes:,} bytes "
+            f"exceeds maximum of {MAX_BLOB_SIZE:,} bytes (500MB)."
+        )
+    
+    logger.debug(
+        "BLOB_VALIDATED: job=%s size=%d bytes mime=%s",
+        job.id, job.blob_size_bytes, job.blob_mime_type
+    )
+
+
+# ---------------------------------------------------------------------------
+# TRANSITION AUTHORITY ENFORCEMENT
+# ---------------------------------------------------------------------------
+
+
+def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | None = None) -> None:
+    """
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — TRANSITION AUTHORITY
+    
+    Single source of truth for ALL state changes.
+    
+    ENFORCED:
+    - Atomic DB transaction
+    - Strict validation of allowed transitions
+    - Timestamp + logging
+    - Payload updates (progress, counts, error) in same transaction
+    
+    FORBIDDEN:
+    - Direct mutation (job.status = X)
+    - Partial updates
+    - Multi-step mutations
+    - Silent state changes
+    
+    Violation → HARD FAIL
+    
+    Args:
+        job_id: IngestJob primary key
+        next_state: Target state (must be valid transition)
+        payload: Optional dict with updates to apply atomically:
+            - progress: int (0-100)
+            - error: str
+            - file_count: int
+            - chunk_count: int
+    """
+    from sqlmodel import Session
+    
+    from backend.app.database import get_engine
+    from backend.app.models import IngestJob
+    
+    with Session(get_engine()) as session:
+        job = session.get(IngestJob, job_id)
+        if not job:
+            raise RuntimeError(f"TRANSITION_ERROR: Job {job_id} not found")
+        
+        # MQP-CONTRACT: BLOB VALIDATION ENFORCEMENT
+        # Validate blob exists before allowing 'stored' state
+        if next_state == "stored":
+            validate_blob_before_stored(job)
+        
+        # Validate transition
+        validate_state_transition(job.status, next_state)
+        
+        # Atomic state + payload update
+        job.status = next_state
+        job.updated_at = datetime.now(timezone.utc)
+        
+        if payload:
+            if "progress" in payload:
+                job.progress = payload["progress"]
+            if "error" in payload:
+                job.error = payload["error"]
+            if "file_count" in payload:
+                job.file_count = payload["file_count"]
+            if "chunk_count" in payload:
+                job.chunk_count = payload["chunk_count"]
+        
+        session.add(job)
+        session.commit()
+        
+        logger.info(
+            "TRANSITION_COMPLETE: job=%s %s → %s payload=%s",
+            job_id, job.status, next_state, payload
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -624,39 +741,6 @@ def _transition(job_id: str, next_state: str, **payload: Any) -> None:
         raise
 
 
-# Backward compatibility alias - will be removed
-def _update_ingest_job(job_id: str, **kwargs: Any) -> None:
-    """
-    DEPRECATED: Use _transition() instead.
-
-    This function exists only for backward compatibility.
-    It will be removed once all callers are migrated.
-    """
-    if "status" in kwargs:
-        status = kwargs.pop("status")
-        _transition(job_id, status, **kwargs)
-    else:
-        # Non-state updates (should be rare)
-        logger.warning("DEPRECATED: _update_ingest_job called without status for job %s", job_id)
-        try:
-            from sqlmodel import Session
-
-            from backend.app.database import get_engine
-            from backend.app.models import IngestJob
-
-            kwargs["updated_at"] = datetime.now(timezone.utc)
-            with Session(get_engine()) as session:
-                job = session.get(IngestJob, uuid.UUID(job_id))
-                if job is None:
-                    return
-                for k, v in kwargs.items():
-                    setattr(job, k, v)
-                session.add(job)
-                session.commit()
-        except Exception:
-            logger.exception("Failed to update IngestJob %s", job_id)
-
-
 # ---------------------------------------------------------------------------
 # Per-kind ingestion handlers
 # ---------------------------------------------------------------------------
@@ -664,97 +748,63 @@ def _update_ingest_job(job_id: str, **kwargs: Any) -> None:
 
 def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     """
-    Ingest a file that was previously saved to *job.source_path*.
+    Ingest a file from blob_data stored in the database.
 
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+    
     Returns ``(file_count, chunk_count)``.
-
-    MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §3
-    This function MUST NOT run unless BOTH the staged file AND the .ready flag exist.
-    The .ready flag is the deterministic signal that staging is complete.
+    
+    Worker MUST read from database ONLY. NO filesystem access.
     """
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §7 - Mandatory logging
-    logger.info("INGEST_START job_id=%s", job.id)
+    logger.info("INGEST_START job_id=%s kind=file", job.id)
 
-    _update_ingest_job(str(job.id), progress=10)
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §3 - HARD GATE
-    # Check source_path is set
-    if not job.source_path:
-        logger.error("INGEST_FAIL job_id=%s reason=no_source_path", job.id)
+    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    if not job.blob_data:
+        logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
         raise RuntimeError(
-            f"INVARIANT_VIOLATION: IngestJob {job.id} has no source_path. "
-            f"This indicates a programming error in the upload handler."
+            f"BLOB_MISSING: IngestJob {job.id} has no blob_data. "
+            f"Blob must be stored in database before processing."
         )
 
-    path = Path(job.source_path)
-    ready_path = Path(str(path) + ".ready")
-
-    # HARD VERIFY: File must exist
-    if not path.exists():
-        logger.error("INGEST_FAIL job_id=%s reason=file_missing path=%s", job.id, path)
+    # Validate blob size
+    if job.blob_size_bytes == 0 or len(job.blob_data) == 0:
+        logger.error("INGEST_FAIL job_id=%s reason=empty_blob", job.id)
         raise RuntimeError(
-            f"INVARIANT_VIOLATION: file missing {path}. "
-            f"Job {job.id} was enqueued but the file does not exist."
+            f"BLOB_MISSING: Blob data is empty for job {job.id}"
         )
 
-    # HARD VERIFY: Ready flag must exist
-    if not ready_path.exists():
-        logger.error("INGEST_FAIL job_id=%s reason=not_finalized path=%s", job.id, ready_path)
-        raise RuntimeError(
-            f"INVARIANT_VIOLATION: file not finalized {ready_path}. "
-            f"Job {job.id} has data file but no ready flag. "
-            f"System is structurally invalid if ingestion runs without ready file."
-        )
+    logger.debug(
+        "Processing blob: job=%s size=%d mime=%s",
+        job.id, job.blob_size_bytes, job.blob_mime_type
+    )
 
-    # Verify file is readable and get size
-    file_size = 0
-    try:
-        file_size = path.stat().st_size
-        if file_size == 0:
-            # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §4 - HARD FAIL ONLY
-            logger.error("INGEST_FAIL job_id=%s reason=empty_file path=%s", job.id, path)
-            raise RuntimeError(
-                f"INVARIANT_VIOLATION: Staged file is empty: {path} (job {job.id}). "
-                f"This indicates data corruption during staging."
-            )
-        logger.debug("Processing staged file: %s (%d bytes, job %s)", path, file_size, job.id)
-    except Exception as exc:
-        if "INVARIANT_VIOLATION" in str(exc):
-            raise  # Re-raise our own violations
-        logger.error("INGEST_FAIL job_id=%s reason=cannot_access path=%s", job.id, path)
-        raise RuntimeError(
-            f"INVARIANT_VIOLATION: Cannot access staged file {path}: {exc}"
-        ) from exc
-
-    data = path.read_bytes()
-    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    text = extract_text(data, mime_type, path.name)
+    data = job.blob_data
+    mime_type = job.blob_mime_type or "application/octet-stream"
+    filename = job.source
+    
+    text = extract_text(data, mime_type, filename)
 
     if not text or not text.strip():
-        # Binary file with content but no extractable text (e.g., images, videos)
-        # This is valid - return success with 0 chunks
+        # Binary file with content but no extractable text
         logger.info(
-            "No extractable text in uploaded file: %s (%d bytes, job %s)",
-            path.name, file_size, job.id
+            "No extractable text in blob: job=%s size=%d",
+            job.id, job.blob_size_bytes
         )
-        # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §5 - Cleanup after success
-        path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
         logger.info("INGEST_SUCCESS job_id=%s chunks=0", job.id)
         return 0, 0
 
-    _update_ingest_job(str(job.id), progress=50)
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
-        structure = extract_structure(chunk_text, path.name)
+        structure = extract_structure(chunk_text, filename)
         session.add(
             RepoChunk(
                 ingest_job_id=job.id,
-                file_path=path.name,
+                file_path=filename,
                 content=chunk_text,
                 chunk_index=idx,
                 token_estimate=max(1, len(chunk_text) // 4),
@@ -767,13 +817,10 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             )
         )
 
-    _update_ingest_job(str(job.id), progress=95)
+    # Commit chunks to database
+    session.commit()
+    
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §5 - Cleanup ONLY after success
-    path.unlink(missing_ok=True)
-    ready_path.unlink(missing_ok=True)
-
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §7 - Mandatory logging
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
 
     return 1, len(chunks)
@@ -781,46 +828,51 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
 def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     """
-    Fetch a URL and ingest its text content.
+    Ingest URL content from blob_data stored in the database.
+
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
 
     Returns ``(file_count, chunk_count)``.
+    
+    Worker reads from blob_data ONLY. URL was already fetched and stored.
     """
-    import httpx
-
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
-    _update_ingest_job(str(job.id), progress=10)
-
     url = job.source
-    try:
-        with httpx.Client(timeout=_URL_FETCH_TIMEOUT, follow_redirects=True) as client:
-            resp = client.get(url)
-    except httpx.RequestError as exc:
-        raise RuntimeError(f"Failed to fetch URL {url!r}: {exc}") from exc
+    logger.info("INGEST_START job_id=%s kind=url source=%s", job.id, url)
 
-    if resp.status_code != 200:
-        raise RuntimeError(f"URL {url!r} returned HTTP {resp.status_code}")
+    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    if not job.blob_data:
+        logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
+        raise RuntimeError(
+            f"BLOB_MISSING: IngestJob {job.id} has no blob_data. "
+            f"URL content must be fetched and stored before processing."
+        )
 
-    _update_ingest_job(str(job.id), progress=30)
 
-    content_bytes = resp.content[:_URL_FETCH_MAX_BYTES]
-    content_type = resp.headers.get("content-type", "text/html").split(";")[0].strip()
+    # Extract text from blob
+    content_bytes = job.blob_data
+    content_type = job.blob_mime_type or "text/html"
 
     # Use the <title> tag (or URL) as the document filename
-    title_match = re.search(
-        r"<title[^>]*>(.*?)</title>", resp.text[:4096], re.IGNORECASE | re.DOTALL
-    )
-    page_title = title_match.group(1).strip() if title_match else url
-    safe_title = re.sub(r"[^\w\-. ]", "_", page_title)[:80] or "webpage"
-    filename = f"{safe_title}.html"
+    try:
+        text_for_title = content_bytes[:4096].decode('utf-8', errors='ignore')
+        title_match = re.search(
+            r"<title[^>]*>(.*?)</title>", text_for_title, re.IGNORECASE | re.DOTALL
+        )
+        page_title = title_match.group(1).strip() if title_match else url
+        safe_title = re.sub(r"[^\w\-. ]", "_", page_title)[:80] or "webpage"
+        filename = f"{safe_title}.html"
+    except Exception:
+        filename = f"url_{job.id}.html"
+
 
     text = extract_text(content_bytes, content_type, filename)
     if not text or not text.strip():
-        logger.warning("No extractable text from URL: %s", url)
+        logger.warning("No extractable text from URL blob: job=%s", job.id)
         return 0, 0
 
-    _update_ingest_job(str(job.id), progress=50)
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
@@ -842,109 +894,73 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
             )
         )
 
-    _update_ingest_job(str(job.id), progress=95)
+    # Commit chunks to database
+    session.commit()
+    
+    logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
     return 1, len(chunks)
 
 
 def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     """
-    Ingest a GitHub repository using the Trees API.
+    Ingest a GitHub repository from blob manifest stored in database.
 
+    MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+    
+    Worker is PURE: reads ONLY from blob_data (no network, no filesystem).
+    Blob contains complete repo manifest with all file contents pre-fetched.
+    
     Returns ``(file_count, chunk_count)``.
-
-    MIGRATION: Supports legacy Repo table coordination.
-    If job.source_path contains a UUID, it's the repo_id from the legacy endpoint.
-    In this case, we also set repo_id FK on RepoChunk records and update Repo table.
     """
-    import httpx
+    import json
 
-    from backend.app.models import Repo, RepoChunk
+    from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
-    # source format: "{repo_url}@{branch}"
-    source = job.source  # e.g. "https://github.com/owner/repo@main"
-    match = re.search(r"github\.com/([^/]+)/([^/@]+)", source)
-    if not match:
-        raise ValueError(f"Cannot parse GitHub URL from job source: {source!r}")
+    logger.info("INGEST_START job_id=%s kind=repo", job.id)
 
-    owner, repo_name = match.groups()
-    if repo_name.endswith(".git"):
-        repo_name = repo_name[:-4]
-    branch = job.branch or "main"
+    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    if not job.blob_data:
+        logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
+        raise RuntimeError(
+            f"BLOB_MISSING: IngestJob {job.id} has no blob_data. "
+            f"Repo manifest must be stored before processing."
+        )
 
-    token = os.environ.get("GITHUB_TOKEN", "").strip() or None
-
-    # MIGRATION: Check if this is from legacy endpoint (repo_id in source_path)
-    legacy_repo_id = None
-    if job.source_path:
-        try:
-            legacy_repo_id = uuid.UUID(job.source_path)
-            logger.info(
-                "MIGRATION: IngestJob %s linked to legacy Repo %s",
-                str(job.id),
-                str(legacy_repo_id)
-            )
-            # Update Repo table to "running" status
-            repo_record = session.get(Repo, legacy_repo_id)
-            if repo_record:
-                repo_record.ingestion_status = "running"
-                repo_record.updated_at = datetime.now(timezone.utc)
-                session.add(repo_record)
-                session.commit()
-        except (ValueError, AttributeError):
-            # Not a UUID - source_path used for actual file path
-            pass
-
-    # TEST COMPATIBILITY: Check if tests are mocking the legacy _fetch_repo_file_list
-    # This allows existing tests to continue working with the unified pipeline
-    file_list = None
+    # Deserialize repo manifest from blob
     try:
-        from backend.app import github_routes
-        if hasattr(github_routes, '_fetch_repo_file_list'):
-            # Try to call the potentially mocked function
-            import asyncio
-            import inspect
-            if inspect.iscoroutinefunction(github_routes._fetch_repo_file_list):
-                # It's async - try to call it (will use mock if patched)
-                try:
-                    file_list = asyncio.run(
-                        github_routes._fetch_repo_file_list(owner, repo_name, branch)
-                    )
-                except Exception:
-                    # Mock not active or function failed - fall back to normal path
-                    file_list = None
-    except Exception:
-        # Import or call failed - use normal path
-        pass
+        manifest = json.loads(job.blob_data.decode('utf-8'))
+        files = manifest["files"]
+        repo_url = manifest.get("repo_url", job.source)
+        branch = manifest.get("branch", job.branch)
+    except Exception as exc:
+        raise RuntimeError(f"Invalid repo manifest blob: {exc}") from exc
 
-    if file_list is not None:
-        # TEST PATH: Using mocked file list format [(path, content), ...]
-        logger.info("Using test mock for repo file list")
-        max_files = int(os.environ.get("REPO_MAX_FILES", str(REPO_MAX_FILES)))
-        if len(file_list) > max_files:
-            file_list = file_list[:max_files]
+    logger.info(
+        "Processing repo manifest: job=%s repo=%s branch=%s files=%d",
+        job.id, repo_url, branch, len(files)
+    )
 
-        max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
-        file_count = 0
-        chunk_count = 0
+    file_count = 0
+    chunk_count = 0
 
-        for path, content in file_list:
-            if isinstance(content, str):
-                text = content
-            else:
-                # Decode bytes
-                try:
-                    text = content.decode('utf-8', errors='replace')
-                except AttributeError:
-                    text = str(content)
+    # Process each file from the manifest
+    for file_entry in files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
 
-            text = text[:max_file_chars]
-            chunks = split_with_overlap(text)
-            for idx, chunk_text in enumerate(chunks):
-                structure = extract_structure(chunk_text, path)
-                chunk = RepoChunk(
+        if not content or not content.strip():
+            continue
+
+        # Chunk the content
+        chunks = split_with_overlap(content)
+
+        for idx, chunk_text in enumerate(chunks):
+            structure = extract_structure(chunk_text, file_path)
+            session.add(
+                RepoChunk(
                     ingest_job_id=job.id,
-                    file_path=path,
+                    file_path=file_path,
                     content=chunk_text,
                     chunk_index=idx,
                     token_estimate=max(1, len(chunk_text) // 4),
@@ -955,166 +971,17 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                     start_line=structure["start_line"],
                     end_line=structure["end_line"],
                 )
-                # MIGRATION: Set repo_id FK for legacy compatibility
-                if legacy_repo_id:
-                    chunk.repo_id = legacy_repo_id
-                session.add(chunk)
-                chunk_count += 1
-
-            file_count += 1
-    else:
-        # PRODUCTION PATH: Fetch from GitHub API
-        blobs = _fetch_github_tree(owner, repo_name, branch, token)
-
-        max_files = int(os.environ.get("REPO_MAX_FILES", str(REPO_MAX_FILES)))
-        if not blobs:
-            raise RuntimeError(
-                f"No ingestible files found in {owner}/{repo_name}@{branch}. "
-                "Verify the repository URL, branch name, and that it contains "
-                "supported file types."
             )
+            chunk_count += 1
 
-        if len(blobs) > max_files:
-            logger.warning(
-                "Repo %s/%s@%s has %d eligible files; capping at %d (REPO_MAX_FILES)",
-                owner,
-                repo_name,
-                branch,
-                len(blobs),
-                max_files,
-            )
-            blobs = blobs[:max_files]
+        file_count += 1
 
-        max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
-        file_count = 0
-        chunk_count = 0
-        total_files = len(blobs)
+    # Commit all chunks to database
+    session.commit()
 
-        with httpx.Client(timeout=30.0) as client:
-            for item in blobs:
-                path = item.get("path", "")
-                raw_data = _fetch_raw_file(owner, repo_name, branch, path, client)
-                if raw_data is None:
-                    continue
-
-                mime_type = mimetypes.guess_type(path)[0] or "text/plain"
-                text = extract_text(raw_data, mime_type, path)
-                if not text or not text.strip():
-                    continue
-
-                text = text[:max_file_chars]
-                chunks = split_with_overlap(text)
-                for idx, chunk_text in enumerate(chunks):
-                    structure = extract_structure(chunk_text, path)
-                    chunk = RepoChunk(
-                        ingest_job_id=job.id,
-                        file_path=path,
-                        content=chunk_text,
-                        chunk_index=idx,
-                        token_estimate=max(1, len(chunk_text) // 4),
-                        chunk_type=structure["chunk_type"],
-                        symbol=structure["symbol"],
-                        dependencies=structure["dependencies"],
-                        graph_group=structure["graph_group"],
-                        start_line=structure["start_line"],
-                        end_line=structure["end_line"],
-                    )
-                    # MIGRATION: Set repo_id FK for legacy compatibility
-                    if legacy_repo_id:
-                        chunk.repo_id = legacy_repo_id
-                    session.add(chunk)
-                    chunk_count += 1
-
-                file_count += 1
-
-                # Commit partial progress every 20 files so status polling is live
-                if file_count % 20 == 0:
-                    job.chunk_count = chunk_count
-                    job.file_count = file_count
-                    # Calculate progress: 0-95% based on files processed
-                    job.progress = (
-                        min(95, int((file_count / total_files) * 95))
-                        if total_files > 0
-                        else 95
-                    )
-                    session.add(job)
-                    session.commit()
-                    logger.info(
-                        "IngestJob %s: progress %d files / %d chunks (%d%%)",
-                        str(job.id),
-                        file_count,
-                        chunk_count,
-                        job.progress,
-                    )
-
-            text = text[:max_file_chars]
-            chunks = split_with_overlap(text)
-            for idx, chunk_text in enumerate(chunks):
-                structure = extract_structure(chunk_text, path)
-                chunk = RepoChunk(
-                    ingest_job_id=job.id,
-                    file_path=path,
-                    content=chunk_text,
-                    chunk_index=idx,
-                    token_estimate=max(1, len(chunk_text) // 4),
-                    chunk_type=structure["chunk_type"],
-                    symbol=structure["symbol"],
-                    dependencies=structure["dependencies"],
-                    graph_group=structure["graph_group"],
-                    start_line=structure["start_line"],
-                    end_line=structure["end_line"],
-                )
-                # MIGRATION: Set repo_id FK for legacy compatibility
-                if legacy_repo_id:
-                    chunk.repo_id = legacy_repo_id
-                session.add(chunk)
-                chunk_count += 1
-
-            file_count += 1
-
-            # Commit partial progress every 20 files so status polling is live
-            if file_count % 20 == 0:
-                job.chunk_count = chunk_count
-                job.file_count = file_count
-                # Calculate progress: 0-95% based on files processed
-                job.progress = (
-                    min(95, int((file_count / total_files) * 95))
-                    if total_files > 0
-                    else 95
-                )
-                session.add(job)
-                session.commit()
-                logger.info(
-                    "IngestJob %s: progress %d files / %d chunks (%d%%)",
-                    str(job.id),
-                    file_count,
-                    chunk_count,
-                    job.progress,
-                )
-
-    # MIGRATION: Update legacy Repo table with final counts
-    if legacy_repo_id:
-        repo_record = session.get(Repo, legacy_repo_id)
-        if repo_record:
-            repo_record.total_files = file_count
-            repo_record.total_chunks = chunk_count
-            repo_record.ingestion_status = "success"
-            repo_record.updated_at = datetime.now(timezone.utc)
-            session.add(repo_record)
-            session.commit()
-            logger.info(
-                "MIGRATION: Updated legacy Repo %s: files=%d chunks=%d",
-                str(legacy_repo_id),
-                file_count,
-                chunk_count
-            )
-
+    logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
     return file_count, chunk_count
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 
 def process_ingest_job(job_id: str) -> None:
@@ -1158,28 +1025,18 @@ def process_ingest_job(job_id: str) -> None:
             elif job.kind == "url":
                 file_count, chunk_count = _ingest_url(session, job)
             elif job.kind == "repo":
-                # TEST COMPATIBILITY: Print statements for integration test assertions
-                # These match the legacy worker output that tests depend on
-                if job.source_path:
-                    try:
-                        legacy_repo_id = uuid.UUID(job.source_path)
-                        print("INGEST START:", str(legacy_repo_id))
-                    except (ValueError, AttributeError):
-                        pass
-
                 file_count, chunk_count = _ingest_repo(session, job)
-
-                # TEST COMPATIBILITY: Print completion for integration test assertions
-                if job.source_path:
-                    try:
-                        legacy_repo_id = uuid.UUID(job.source_path)
-                        print("INGEST DONE:", str(legacy_repo_id))
-                    except (ValueError, AttributeError):
-                        pass
             else:
                 raise ValueError(f"Unknown IngestJob kind: {job.kind!r}")
 
-            # TRANSITION: PROCESSING → FINALIZING
+            # TRANSITION: PROCESSING → INDEXING
+            _transition(job_id, IngestJobState.INDEXING, progress=90)
+            logger.info("STATE: INDEXING job_id=%s chunks=%d", job_id, chunk_count)
+            
+            # Indexing happens during chunk creation above
+            # This state represents the chunk persistence/indexing phase
+            
+            # TRANSITION: INDEXING → FINALIZING
             _transition(job_id, IngestJobState.FINALIZING, progress=98)
             logger.info("STATE: FINALIZING job_id=%s", job_id)
 
@@ -1198,34 +1055,6 @@ def process_ingest_job(job_id: str) -> None:
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
-
-        # MIGRATION: Update legacy Repo table on failure
-        try:
-            from sqlmodel import Session
-
-            from backend.app.database import get_engine
-            from backend.app.models import IngestJob, Repo
-
-            with Session(get_engine()) as session:
-                job = session.get(IngestJob, uuid.UUID(job_id))
-                if job and job.kind == "repo" and job.source_path:
-                    # Check if source_path contains legacy repo_id
-                    try:
-                        legacy_repo_id = uuid.UUID(job.source_path)
-                        repo_record = session.get(Repo, legacy_repo_id)
-                        if repo_record:
-                            repo_record.ingestion_status = "failed"
-                            repo_record.updated_at = datetime.now(timezone.utc)
-                            session.add(repo_record)
-                            session.commit()
-                            logger.info(
-                                "MIGRATION: Updated legacy Repo %s status=failed",
-                                str(legacy_repo_id)
-                            )
-                    except (ValueError, AttributeError):
-                        pass  # Not a legacy repo
-        except Exception as migration_exc:
-            logger.warning("Failed to update legacy Repo on failure: %s", migration_exc)
 
         # TRANSITION: ANY → FAILED (terminal state, can transition from anywhere)
         _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
