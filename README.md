@@ -416,6 +416,33 @@ Run unit tests (no device needed):
 
 ---
 
+## Debugging & Incident Response
+
+When system failures occur, follow the **Debugging Contract** methodology:
+
+1. **Read**: [`DEBUGGING_CONTRACT.md`](DEBUGGING_CONTRACT.md) - Complete debugging framework
+2. **Follow**: [`.github/DEBUGGING_CHECKLIST.md`](.github/DEBUGGING_CHECKLIST.md) - Phase-by-phase checklist
+3. **Use**: [`scripts/debug/`](scripts/debug/) - Debugging tools (health check, log analyzer)
+4. **Document**: [`.github/INCIDENT_TEMPLATE.md`](.github/INCIDENT_TEMPLATE.md) - Incident reporting
+
+### Quick debugging commands
+
+```bash
+# System health check
+python scripts/debug/health_check.py --verbose
+
+# Analyze recent errors
+./scripts/debug/analyze_logs.sh --since "1 hour ago" --errors-only
+
+# Check recent changes
+git log --oneline --since="1 hour ago"
+```
+
+The debugging contract follows a 9-phase methodology optimized for production incidents:
+**Assess → Inventory → Logs → Trace → Contain → Forensics → Context → Fix → Document**
+
+---
+
 ## License
 
 MIT
