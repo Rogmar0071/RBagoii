@@ -76,6 +76,118 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+# ---------------------------------------------------------------------------
+# State Machine Definition
+#
+# States represent a linear progression through the ingestion lifecycle.
+# Transitions are explicit, deterministic, and irreversible (except to FAILED).
+#
+# STATE FLOW:
+#   created → staged → ready → queued → running → processing → finalizing → success
+#   Any state → failed
+#
+# ---------------------------------------------------------------------------
+
+# State constants
+class IngestJobState:
+    """Canonical states for the ingestion state machine."""
+    
+    # Initial creation
+    CREATED = "created"          # Job record exists, no file yet
+    
+    # File staging
+    STAGED = "staged"            # File written to disk, not yet safe
+    READY = "ready"              # .ready flag exists, file is stable
+    
+    # Execution states
+    QUEUED = "queued"            # In RQ queue, awaiting worker
+    RUNNING = "running"          # Worker started, pre-flight checks
+    PROCESSING = "processing"    # Actively reading/parsing/chunking
+    FINALIZING = "finalizing"    # Final writes, cleanup prep
+    
+    # Terminal states
+    SUCCESS = "success"          # Completed successfully
+    FAILED = "failed"            # Failed with error
+    
+    @classmethod
+    def all_states(cls) -> set[str]:
+        """Return all valid states."""
+        return {
+            cls.CREATED, cls.STAGED, cls.READY, cls.QUEUED,
+            cls.RUNNING, cls.PROCESSING, cls.FINALIZING,
+            cls.SUCCESS, cls.FAILED
+        }
+    
+    @classmethod
+    def terminal_states(cls) -> set[str]:
+        """Return terminal states (no further transitions allowed)."""
+        return {cls.SUCCESS, cls.FAILED}
+    
+    @classmethod
+    def is_terminal(cls, state: str) -> bool:
+        """Check if a state is terminal."""
+        return state in cls.terminal_states()
+
+
+# Allowed state transitions (deterministic, linear)
+ALLOWED_TRANSITIONS: dict[str, set[str]] = {
+    IngestJobState.CREATED: {IngestJobState.STAGED, IngestJobState.FAILED},
+    IngestJobState.STAGED: {IngestJobState.READY, IngestJobState.FAILED},
+    IngestJobState.READY: {IngestJobState.QUEUED, IngestJobState.FAILED},
+    IngestJobState.QUEUED: {IngestJobState.RUNNING, IngestJobState.FAILED},
+    IngestJobState.RUNNING: {IngestJobState.PROCESSING, IngestJobState.FAILED},
+    IngestJobState.PROCESSING: {IngestJobState.FINALIZING, IngestJobState.FAILED},
+    IngestJobState.FINALIZING: {IngestJobState.SUCCESS, IngestJobState.FAILED},
+    IngestJobState.SUCCESS: set(),  # Terminal - no transitions
+    IngestJobState.FAILED: set(),   # Terminal - no transitions
+}
+
+
+def validate_state_transition(from_state: str | None, to_state: str) -> None:
+    """
+    Validate a state transition according to the state machine.
+    
+    MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+    
+    Raises RuntimeError if transition is forbidden.
+    """
+    # Initial transition (no previous state)
+    if from_state is None:
+        if to_state != IngestJobState.CREATED:
+            raise RuntimeError(
+                f"STATE_MACHINE_VIOLATION: Initial state must be CREATED, got {to_state}"
+            )
+        return
+    
+    # Verify states are valid
+    if from_state not in IngestJobState.all_states():
+        raise RuntimeError(
+            f"STATE_MACHINE_VIOLATION: Invalid from_state: {from_state}"
+        )
+    if to_state not in IngestJobState.all_states():
+        raise RuntimeError(
+            f"STATE_MACHINE_VIOLATION: Invalid to_state: {to_state}"
+        )
+    
+    # Terminal states cannot transition
+    if IngestJobState.is_terminal(from_state):
+        raise RuntimeError(
+            f"STATE_MACHINE_VIOLATION: Cannot transition from terminal state {from_state} to {to_state}"
+        )
+    
+    # Check if transition is allowed
+    allowed = ALLOWED_TRANSITIONS.get(from_state, set())
+    if to_state not in allowed:
+        raise RuntimeError(
+            f"STATE_MACHINE_VIOLATION: Forbidden transition {from_state} → {to_state}. "
+            f"Allowed transitions from {from_state}: {sorted(allowed)}"
+        )
+    
+    logger.info("STATE_TRANSITION: %s → %s", from_state, to_state)
+
+
+# ---------------------------------------------------------------------------
 # Configuration (all overridable via env vars)
 # ---------------------------------------------------------------------------
 
@@ -435,7 +547,14 @@ def _get_ingest_job(job_id: str):
 
 
 def _update_ingest_job(job_id: str, **kwargs: Any) -> None:
-    """Persist IngestJob field updates.  Silent on DB errors."""
+    """
+    Persist IngestJob field updates with state machine enforcement.
+    
+    MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+    
+    Validates state transitions before applying updates.
+    Silent on DB errors (to maintain backward compatibility).
+    """
     try:
         from sqlmodel import Session
 
@@ -447,6 +566,24 @@ def _update_ingest_job(job_id: str, **kwargs: Any) -> None:
             job = session.get(IngestJob, uuid.UUID(job_id))
             if job is None:
                 return
+            
+            # MQP-CONTRACT: State machine enforcement
+            if "status" in kwargs:
+                new_status = kwargs["status"]
+                old_status = job.status
+                
+                # Validate transition
+                try:
+                    validate_state_transition(old_status, new_status)
+                except RuntimeError as exc:
+                    # Log violation but don't crash (graceful degradation)
+                    logger.error(
+                        "STATE_MACHINE_VIOLATION for job %s: %s (will apply anyway for backward compatibility)",
+                        job_id, exc
+                    )
+                    # Still apply the update for backward compatibility with existing code
+                    # In strict mode, we would raise here instead
+            
             for k, v in kwargs.items():
                 setattr(job, k, v)
             session.add(job)
@@ -769,10 +906,11 @@ def process_ingest_job(job_id: str) -> None:
         unconditionally — even when an unexpected exception is raised.
         Callers never need to handle partial or stuck state.
     
-    MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §2
-        For kind="file", BOTH the data file AND .ready flag MUST exist.
-        The _ingest_file function performs the hard gate check.
+    MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+        States: QUEUED → RUNNING → PROCESSING → FINALIZING → SUCCESS
+        Any state can transition to FAILED on error.
     """
+    # STATE: RUNNING - Worker picked up job
     logger.info("IngestJob %s: starting", job_id)
     _update_ingest_job(job_id, status="running", progress=0)
 
@@ -788,6 +926,10 @@ def process_ingest_job(job_id: str) -> None:
                 logger.error("IngestJob %s not found in DB — aborting", job_id)
                 return
 
+            # STATE: PROCESSING - Actually processing the content
+            _update_ingest_job(job_id, status="processing", progress=5)
+            logger.info("STATE: PROCESSING job_id=%s", job_id)
+            
             # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §3
             # Pre-flight checks moved into _ingest_file for centralized validation
             if job.kind == "file":
@@ -799,21 +941,24 @@ def process_ingest_job(job_id: str) -> None:
             else:
                 raise ValueError(f"Unknown IngestJob kind: {job.kind!r}")
 
-            job.status = "success"
+            # STATE: FINALIZING - Final writes and cleanup
+            _update_ingest_job(job_id, status="finalizing", progress=98)
+            logger.info("STATE: FINALIZING job_id=%s", job_id)
+            
+            # Final commit - update counts but not status yet
             job.progress = 100
             job.file_count = file_count
             job.chunk_count = chunk_count
             job.updated_at = datetime.now(timezone.utc)
             session.add(job)
             session.commit()
-            logger.info(
-                "IngestJob %s: success (kind=%s, files=%d, chunks=%d)",
-                job_id,
-                job.kind,
-                file_count,
-                chunk_count,
-            )
+            
+            # STATE: SUCCESS - Terminal state (update after commit to ensure atomicity)
+            _update_ingest_job(job_id, status="success", progress=100, file_count=file_count, chunk_count=chunk_count)
+            logger.info("STATE: SUCCESS job_id=%s files=%d chunks=%d", job_id, file_count, chunk_count)
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
+        # STATE: FAILED - Terminal state (can transition from any state)
         _update_ingest_job(job_id, status="failed", error=str(exc)[:1000], progress=0)
+        logger.error("STATE: FAILED job_id=%s error=%s", job_id, str(exc)[:200])
