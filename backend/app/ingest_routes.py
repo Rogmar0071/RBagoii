@@ -214,31 +214,57 @@ async def ingest_file(
     _STAGING_DIR.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4()
     staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
+    ready_path = Path(str(staging_path) + ".ready")
     
-    # MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §1
-    # Write file and force flush to disk atomically for guaranteed handoff
+    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §1
+    # Atomic write with explicit READY flag for deterministic handoff
     try:
-        # Open, write, and fsync in one operation to avoid reopening
+        # STEP 1: Write data file with fsync
         with open(staging_path, "wb") as f:
             f.write(data)
-            f.flush()  # Flush Python buffer
-            os.fsync(f.fileno())  # Force OS to write to disk
+            f.flush()
+            os.fsync(f.fileno())
         
-        # Verify file was written correctly
-        file_stat = staging_path.stat()
-        if file_stat.st_size != len(data):
+        # STEP 2: HARD VERIFY file existence
+        if not staging_path.exists():
+            raise RuntimeError(f"STAGING_VIOLATION: missing file {staging_path}")
+        
+        # STEP 3: HARD VERIFY file size
+        if staging_path.stat().st_size != len(data):
             staging_path.unlink(missing_ok=True)
             raise RuntimeError(
-                f"STAGING_INVARIANT_VIOLATION: File size mismatch. "
-                f"Expected {len(data)}, got {file_stat.st_size}"
+                f"STAGING_VIOLATION: size mismatch {staging_path}. "
+                f"Expected {len(data)}, got {staging_path.stat().st_size}"
             )
+        
+        # STEP 4: CREATE READY FLAG (THIS IS THE TRUE SIGNAL)
+        # File existence alone is NOT sufficient - ready flag proves atomicity
+        with open(ready_path, "w") as f:
+            f.write("ok")
+            f.flush()
+            os.fsync(f.fileno())
+        
+        # STEP 5: HARD VERIFY ready flag exists
+        if not ready_path.exists():
+            staging_path.unlink(missing_ok=True)
+            raise RuntimeError(f"STAGING_VIOLATION: ready flag missing {ready_path}")
+        
+        # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §7 - Mandatory logging
+        logger.info(
+            "STAGING_READY job_id=%s path=%s size=%d",
+            job_id, staging_path, len(data)
+        )
+        
     except RuntimeError:
-        # Re-raise our own STAGING_INVARIANT_VIOLATION errors
+        # Re-raise our own STAGING_VIOLATION errors
+        staging_path.unlink(missing_ok=True)
+        ready_path.unlink(missing_ok=True)
         raise
     except Exception as exc:
         # Catch-all for I/O errors, permission issues, disk full, etc.
         staging_path.unlink(missing_ok=True)
-        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: Cannot write file: {exc}") from exc
+        ready_path.unlink(missing_ok=True)
+        raise RuntimeError(f"STAGING_VIOLATION: Cannot write file: {exc}") from exc
 
     job = IngestJob(
         id=job_id,
@@ -474,12 +500,16 @@ def delete_ingest_job(
     ).all():
         session.delete(chunk)
 
-    # Clean up the staged file from disk
+    # Clean up the staged file and ready flag from disk
+    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §6 - Cleanup both files
     if job.source_path:
         try:
-            Path(job.source_path).unlink(missing_ok=True)
+            staging_path = Path(job.source_path)
+            ready_path = Path(str(staging_path) + ".ready")
+            staging_path.unlink(missing_ok=True)
+            ready_path.unlink(missing_ok=True)
         except Exception as exc:
-            logger.warning("Could not delete staged file %s: %s", job.source_path, exc)
+            logger.warning("Could not delete staged files %s: %s", job.source_path, exc)
 
     session.delete(job)
     session.commit()
