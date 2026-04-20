@@ -130,10 +130,8 @@ class TestBlobStorage:
             job_id = str(job.id)
 
         # Now process it (simulates worker)
-        from backend.app.ingest_pipeline import process_ingest_job
-
         # Transition through states
-        from backend.app.ingest_pipeline import transition
+        from backend.app.ingest_pipeline import process_ingest_job, transition
 
         transition(uuid.UUID(job_id), "stored")
         transition(uuid.UUID(job_id), "queued")
@@ -168,11 +166,10 @@ class TestBlobStorage:
         """Repo ingestion with pre-fetched manifest is fully deterministic."""
         import json
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, RepoChunk
-        from sqlmodel import select
 
         # Create deterministic repo manifest (simulates API fetch)
         manifest = {
@@ -273,7 +270,10 @@ class TestStateMachine:
     """Test strict state machine enforcement."""
 
     def test_state_sequence_file_upload(self, client):
-        """File upload follows: created → stored → queued → running → processing → indexing → finalizing → success"""
+        """
+        File upload follows:
+        created → stored → queued → running → processing → indexing → finalizing → success
+        """
         from io import BytesIO
 
         from sqlmodel import Session
@@ -365,11 +365,10 @@ class TestChunkExtraction:
         """Chunks are correctly extracted from blob data."""
         from io import BytesIO
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, RepoChunk
-        from sqlmodel import select
 
         content = b"Line 1\nLine 2\nLine 3\n" * 100  # Multiple lines to create chunks
         files = {"file": ("test.txt", BytesIO(content), "text/plain")}
@@ -396,11 +395,10 @@ class TestChunkExtraction:
         """Code structure is extracted correctly."""
         from io import BytesIO
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, RepoChunk
-        from sqlmodel import select
 
         content = b"""
 def hello():
@@ -438,11 +436,10 @@ class TestRetrieval:
         """Chunks can be retrieved by job ID."""
         from io import BytesIO
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, RepoChunk
-        from sqlmodel import select
 
         content = b"Searchable content about Python programming"
         files = {"file": ("test.txt", BytesIO(content), "text/plain")}
@@ -464,11 +461,10 @@ class TestRetrieval:
         """Chunks can be retrieved by conversation_id."""
         from io import BytesIO
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
-        from backend.app.models import IngestJob, RepoChunk
-        from sqlmodel import select
+        from backend.app.models import IngestJob
 
         conversation_id = "test-conversation-123"
         content = b"Content for conversation"
