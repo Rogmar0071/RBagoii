@@ -131,13 +131,12 @@ class TestBlobStorage:
 
         # Now process it (simulates worker)
         # Transition through states
-        from backend.app.ingest_pipeline import process_ingest_job, transition
+        from backend.app.ingest_pipeline import transition
 
         transition(uuid.UUID(job_id), "stored")
         transition(uuid.UUID(job_id), "queued")
 
-        # Process
-        process_ingest_job(job_id)
+        # transition("queued") dispatches process_ingest_job synchronously in test mode
 
         # Verify blob was used and chunks created
         with Session(get_engine()) as session:
@@ -210,13 +209,12 @@ class TestBlobStorage:
             job_id = str(job.id)
 
         # Process through states
-        from backend.app.ingest_pipeline import process_ingest_job, transition
+        from backend.app.ingest_pipeline import transition
 
         transition(uuid.UUID(job_id), "stored")
         transition(uuid.UUID(job_id), "queued")
 
-        # Process (worker reads blob, NO network calls)
-        process_ingest_job(job_id)
+        # transition("queued") dispatches process_ingest_job synchronously in test mode
 
         # Verify deterministic output
         with Session(get_engine()) as session:
@@ -252,7 +250,7 @@ class TestBlobStorage:
 
         transition(uuid.UUID(job2_id), "stored")
         transition(uuid.UUID(job2_id), "queued")
-        process_ingest_job(job2_id)
+        # transition("queued") dispatches process_ingest_job synchronously in test mode
 
         # Verify identical chunk count (deterministic)
         with Session(get_engine()) as session:

@@ -14,21 +14,26 @@ DELETE /v1/ingest/{job_id}     Delete job + all associated chunks
 
 All endpoints require ``Authorization: Bearer <API_KEY>``.
 
-Enqueue behaviour
------------------
-``BACKEND_DISABLE_JOBS=1``  — run inline in a thread-pool (test mode).
+Dispatch behaviour
+------------------
+``transition(job_id, "queued")`` automatically dispatches the job.
+The execution path is selected inside ``ingest_pipeline._dispatch_job``:
+
+``BACKEND_DISABLE_JOBS=1``  — run inline synchronously (test mode).
 ``REDIS_URL`` set            — enqueue via RQ (production mode).
 Neither                      — run in a daemon background thread.
 
 All three paths call the same ``process_ingest_job`` function, so
 behaviour is identical regardless of execution context.
+
+Routes never call _dispatch_job directly — dispatch is a structural
+consequence of transitioning to "queued" state.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import threading
 import uuid
 from typing import Optional
 
@@ -45,10 +50,12 @@ router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 # Configuration
 # ---------------------------------------------------------------------------
 
-MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
+MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 500 * 1024 * 1024))
 
-# MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
-# Filesystem staging removed - all data stored in database blob
+# MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL
+# All data stored in database blob. No filesystem staging.
+# Dispatch is a structural consequence of transition("queued") — routes do
+# not call _dispatch_job or any enqueue helper directly.
 
 
 # ---------------------------------------------------------------------------
@@ -63,76 +70,6 @@ def _db_session():
         yield from get_session()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-
-# ---------------------------------------------------------------------------
-# Job enqueue helper
-# ---------------------------------------------------------------------------
-
-
-def _enqueue(job_id: str) -> None:
-    """
-    Dispatch *process_ingest_job(job_id)* through the appropriate executor.
-
-    Priority: BACKEND_DISABLE_JOBS > REDIS_URL > daemon thread.
-
-    MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §A
-        RULE A1 — SINGLE QUEUE: All jobs enqueued to Queue("default")
-        RULE A2 — DIRECT ENQUEUE ONLY: Using q.enqueue() directly
-        RULE A3 — VALIDATION CHECK: Assert queue name is "rq:queue:default"
-
-    MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2
-        Updated to use enqueue_job() single entry point instead of direct q.enqueue()
-    """
-    disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
-    if disable:
-        # Tests: run synchronously in the calling thread so DB is fully
-        # updated before the test assertion, and to avoid SQLite concurrency
-        # issues with ThreadPoolExecutor.
-        from backend.app.ingest_pipeline import process_ingest_job
-
-        process_ingest_job(job_id)
-        return
-
-    redis_url = os.environ.get("REDIS_URL", "").strip()
-    if redis_url:
-        try:
-            from redis import Redis
-
-            # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
-            from backend.app.worker import enqueue_job
-
-            enqueue_job(job_id, "process_ingest_job")
-            logger.info("IngestJob %s enqueued via RQ", job_id)
-
-            # MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §A3 — Validation
-            # Verify no intermediate queue exists
-            conn = Redis.from_url(redis_url)
-            keys = conn.keys("rq:queue:*:intermediate")
-            if keys:
-                logger.error(
-                    "QUEUE_VIOLATION: Intermediate queue detected after enqueue: %s",
-                    keys,
-                )
-                raise RuntimeError(
-                    f"QUEUE_VIOLATION: Intermediate queue prohibited. Found: {keys}"
-                )
-            return
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            logger.warning("RQ unavailable (%s) — falling back to thread", exc)
-
-    from backend.app.ingest_pipeline import process_ingest_job
-
-    t = threading.Thread(
-        target=process_ingest_job,
-        args=(job_id,),
-        daemon=True,
-        name=f"ingest-{job_id}",
-    )
-    t.start()
-    logger.info("IngestJob %s started in background thread", job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -205,65 +142,52 @@ async def ingest_file(
     filename = file.filename or "upload"
     data = await file.read()
 
-    # Validate size ≤ 500MB
-    MAX_BLOB_SIZE = 500 * 1024 * 1024
-    if len(data) > MAX_BLOB_SIZE:
+    # MQP-CONTRACT: SIZE ENFORCEMENT — reject before creating any DB record
+    if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(
             status_code=413,
             detail=(
-                f"File size {len(data):,} bytes exceeds the maximum allowed "
-                f"size of {MAX_BLOB_SIZE:,} bytes (500MB)."
+                f"File size {len(data):,} bytes exceeds the maximum allowed size of "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)}MB."
             ),
         )
 
-    # MQP-CONTRACT: AIC-v1.1 STATE MACHINE
-    # Flow: created → stored → queued
-
     job_id = uuid.uuid4()
 
-    # STATE: CREATED - Create job record
+    # MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL
+    # Create job with blob_data already stored in a single commit.
+    # The job never exists in DB without its blob — invalid state is impossible.
     job = IngestJob(
         id=job_id,
         kind="file",
         source=filename,
         status="created",
+        blob_data=data,
+        blob_mime_type=file.content_type or "application/octet-stream",
+        blob_size_bytes=len(data),
         conversation_id=conversation_id,
         workspace_id=workspace_id,
     )
     session.add(job)
     session.commit()
-    logger.info("STATE: CREATED job_id=%s", job_id)
+    logger.info("STATE: CREATED job_id=%s blob_size=%d", job_id, len(data))
 
     try:
-        # STEP 1: Store blob in database
-        job.blob_data = data
-        job.blob_mime_type = file.content_type or "application/octet-stream"
-        job.blob_size_bytes = len(data)
-        session.add(job)
-        session.commit()
-
-        # STEP 2: Validate blob persisted
+        # Validate blob persisted correctly
         session.refresh(job)
         if not job.blob_data or len(job.blob_data) != len(data):
             raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
 
-        # TRANSITION: CREATED → STORED
+        # TRANSITION: created → stored → queued
+        # transition("queued") automatically dispatches via _dispatch_job
         transition(job_id, "stored", {"progress": 0})
-        logger.info("STATE: STORED job_id=%s size=%d", job_id, len(data))
-
-        # TRANSITION: STORED → QUEUED
         transition(job_id, "queued")
-        logger.info("STATE: QUEUED job_id=%s", job_id)
 
     except Exception as exc:
-        logger.error("Failed to store blob for job %s: %s", job_id, exc)
+        logger.error("Failed to store/queue job %s: %s", job_id, exc)
         transition(job_id, "failed", {"error": str(exc)[:1000]})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # Enqueue the job (may run synchronously in test mode)
-    _enqueue(str(job_id))
-
-    # Refresh job to get latest status
     session.refresh(job)
     return _to_response(job)
 
@@ -345,13 +269,10 @@ def ingest_url(
         if not job.blob_data or len(job.blob_data) != len(blob_data):
             raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
 
-        # TRANSITION: CREATED → STORED
+        # TRANSITION: CREATED → STORED → QUEUED
+        # transition("queued") automatically dispatches via _dispatch_job
         transition(job_id, "stored", {"progress": 0})
-        logger.info("STATE: STORED job_id=%s size=%d", job_id, len(blob_data))
-
-        # TRANSITION: STORED → QUEUED
         transition(job_id, "queued")
-        logger.info("STATE: QUEUED job_id=%s", job_id)
 
     except httpx.HTTPError as exc:
         logger.error("Failed to fetch URL %s: %s", url, exc)
@@ -364,30 +285,8 @@ def ingest_url(
         transition(job_id, "failed", {"error": str(exc)[:1000]})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    _enqueue(str(job_id))
-
     session.refresh(job)
     return _to_response(job)
-    session.commit()
-
-    logger.info("STATE: CREATED job_id=%s kind=url", job_id)
-
-    # URL jobs skip staging/ready states (no file to stage)
-    # TRANSITION: CREATED → QUEUED
-    from backend.app.ingest_pipeline import _transition
-    _transition(str(job_id), "queued")
-    logger.info("STATE: QUEUED job_id=%s", job_id)
-
-    _enqueue(str(job_id))
-
-    # Refresh to get latest status
-    session.refresh(job)
-    return _to_response(job)
-
-
-# ---------------------------------------------------------------------------
-# POST /v1/ingest/repo
-# ---------------------------------------------------------------------------
 
 
 class IngestRepoRequest(BaseModel):
@@ -567,21 +466,16 @@ def ingest_repo(
             job_id, len(files), len(blob_bytes)
         )
 
-        # TRANSITION: CREATED → STORED
+        # TRANSITION: CREATED → STORED → QUEUED
+        # transition("queued") automatically dispatches via _dispatch_job
         transition(job_id, "stored", {"progress": 0})
-        logger.info("STATE: STORED job_id=%s", job_id)
-
-        # TRANSITION: STORED → QUEUED
         transition(job_id, "queued")
-        logger.info("STATE: QUEUED job_id=%s", job_id)
 
     except Exception as exc:
         logger.error("Failed to fetch/store repo for job %s: %s", job_id, exc)
         from backend.app.ingest_pipeline import transition
         transition(job_id, "failed", {"error": str(exc)[:1000]})
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    _enqueue(str(job_id))
 
     # Refresh to get latest status
     session.refresh(job)
@@ -662,7 +556,7 @@ def delete_ingest_job(
     """
     Delete an ingestion job and all chunks it produced.
 
-    Also removes the staged file from disk (for file uploads).
+    All data is stored in the database; no filesystem cleanup is needed.
     """
     from sqlmodel import select
 

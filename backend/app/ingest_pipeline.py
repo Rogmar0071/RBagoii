@@ -16,9 +16,9 @@ All ingestion flows through one entry point::
 
     process_ingest_job(job_id: str)
            │
-           ├─ kind="file" → read staging file → extract_text → chunk → store
-           ├─ kind="url"  → httpx.get → html.parser strip → chunk → store
-           └─ kind="repo" → GitHub Trees API → per-file extract → chunk → store
+           ├─ kind="file" → read blob from DB → extract_text → chunk → store
+           ├─ kind="url"  → read blob from DB → html.parser strip → chunk → store
+           └─ kind="repo" → read blob manifest from DB → per-file extract → chunk → store
 
 LAW: ALWAYS_UPDATE_TERMINAL
     ``process_ingest_job`` unconditionally writes a terminal status
@@ -67,6 +67,7 @@ import logging
 import mimetypes
 import os
 import re
+import threading
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -243,22 +244,83 @@ def validate_blob_before_stored(job: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _dispatch_job(job_id: str) -> None:
+    """
+    MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL — DISPATCH AUTHORITY
+
+    Dispatch process_ingest_job through the appropriate executor.
+    This function is ONLY called from transition() when next_state == "queued".
+    It MUST NOT be called from anywhere else.
+
+    Priority: BACKEND_DISABLE_JOBS > REDIS_URL > daemon thread.
+
+    In all three paths the same process_ingest_job function is invoked,
+    so runtime behaviour is identical regardless of execution context.
+    """
+    disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
+    if disable:
+        # Tests: run synchronously so DB is fully updated before test assertions
+        # and to avoid SQLite concurrency issues with background threads.
+        process_ingest_job(job_id)
+        return
+
+    redis_url = os.environ.get("REDIS_URL", "").strip()
+    if redis_url:
+        try:
+            from redis import Redis
+
+            from backend.app.worker import enqueue_job
+
+            enqueue_job(job_id, "process_ingest_job")
+            logger.info("IngestJob %s enqueued via RQ", job_id)
+
+            conn = Redis.from_url(redis_url)
+            keys = conn.keys("rq:queue:*:intermediate")
+            if keys:
+                logger.error(
+                    "QUEUE_VIOLATION: Intermediate queue detected after enqueue: %s", keys
+                )
+                raise RuntimeError(
+                    f"QUEUE_VIOLATION: Intermediate queue prohibited. Found: {keys}"
+                )
+            return
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            logger.warning("RQ unavailable (%s) — falling back to thread", exc)
+
+    t = threading.Thread(
+        target=process_ingest_job,
+        args=(job_id,),
+        daemon=True,
+        name=f"ingest-{job_id}",
+    )
+    t.start()
+    logger.info("IngestJob %s started in background thread", job_id)
+
+
 def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | None = None) -> None:
     """
-    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — TRANSITION AUTHORITY
+    MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL — TRANSITION + DISPATCH AUTHORITY
 
-    Single source of truth for ALL state changes.
+    Single source of truth for ALL state changes AND job dispatch.
 
     ENFORCED:
-    - Atomic DB transaction
+    - Atomic DB transaction (state change committed before dispatch)
     - Strict validation of allowed transitions
+    - Blob invariant check before "stored" AND before "queued"
+    - Automatic dispatch via _dispatch_job() when next_state == "queued"
     - Timestamp + logging
-    - Payload updates (progress, counts, error) in same transaction
+
+    STRUCTURAL COUPLING (queued):
+    - transition(job_id, "queued") is the ONLY path to enqueue a job
+    - _dispatch_job() MUST NOT be called from outside this function
+    - Enqueue is a consequence of state, not a separate procedure
 
     FORBIDDEN:
     - Direct mutation (job.status = X)
+    - Calling _dispatch_job() from routes or any code outside transition()
     - Partial updates
-    - Multi-step mutations
     - Silent state changes
 
     Violation → HARD FAIL
@@ -287,6 +349,18 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
         if next_state == "stored":
             validate_blob_before_stored(job)
 
+        # MQP-CONTRACT: ENQUEUE GATE — validate blob still exists before dispatch
+        if next_state == "queued":
+            if not job.blob_data:
+                raise RuntimeError(
+                    f"ENQUEUE_GATE_VIOLATION: job {job_id} has no blob_data — "
+                    f"data must be stored in DB before enqueue"
+                )
+            if job.blob_size_bytes == 0:
+                raise RuntimeError(
+                    f"ENQUEUE_GATE_VIOLATION: job {job_id} has empty blob_data"
+                )
+
         # Validate transition
         validate_state_transition(job.status, next_state)
 
@@ -311,6 +385,13 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
             "TRANSITION_COMPLETE: job=%s %s → %s payload=%s",
             job_id, job.status, next_state, payload
         )
+
+    # MQP-CONTRACT: STRUCTURAL DISPATCH COUPLING
+    # Enqueue happens AFTER the session is committed and closed.
+    # This is the ONLY call site for _dispatch_job — it is structurally
+    # impossible to enqueue a job without going through transition("queued").
+    if next_state == "queued":
+        _dispatch_job(str(job_id))
 
 
 # ---------------------------------------------------------------------------
@@ -917,8 +998,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
-
-    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    print(f"INGEST START: {job.id}")
     if not job.blob_data:
         logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
         raise RuntimeError(
@@ -979,6 +1059,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
+    print(f"INGEST DONE: {job.id} files={file_count} chunks={chunk_count}")
     return file_count, chunk_count
 
 
@@ -998,6 +1079,32 @@ def process_ingest_job(job_id: str) -> None:
         ALL state changes via _transition() ONLY.
         NO direct job.status mutations.
     """
+    # MQP-CONTRACT: WORKER_ENTRY_VALIDATION — validate state and data before any transition.
+    # Effect: transitions job to FAILED if invariants violated; returns immediately.
+    job = _get_ingest_job(job_id)
+    if job is None:
+        logger.error("WORKER_ENTRY_VIOLATION: Job %s not found in DB", job_id)
+        return
+    if job.status != IngestJobState.QUEUED:
+        logger.error(
+            "WORKER_ENTRY_VIOLATION: Job %s in state %r, expected %r",
+            job_id, job.status, IngestJobState.QUEUED,
+        )
+        _transition(job_id, IngestJobState.FAILED,
+                    error=f"WORKER_ENTRY_VIOLATION: state={job.status!r}")
+        return
+    if job.kind in ("file", "url", "repo"):
+        if not job.blob_data:
+            logger.error("WORKER_ENTRY_VIOLATION: Job %s has no blob_data", job_id)
+            _transition(job_id, IngestJobState.FAILED,
+                        error="WORKER_ENTRY_VIOLATION: blob_data missing")
+            return
+        if job.blob_size_bytes == 0:
+            logger.error("WORKER_ENTRY_VIOLATION: Job %s has empty blob_data", job_id)
+            _transition(job_id, IngestJobState.FAILED,
+                        error="WORKER_ENTRY_VIOLATION: blob_data empty")
+            return
+
     # TRANSITION: QUEUED → RUNNING
     logger.info("IngestJob %s: starting", job_id)
     _transition(job_id, IngestJobState.RUNNING, progress=0)

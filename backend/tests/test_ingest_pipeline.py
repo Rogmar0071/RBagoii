@@ -1,15 +1,16 @@
 """
 backend/tests/test_ingest_pipeline.py
 ======================================
-Tests for the new unified ingestion pipeline.
+Tests for the unified ingestion pipeline.
 
 Covers:
 - Text extraction (plain text, HTML, CSV, ZIP, missing PDF/DOCX libs)
 - Chunking with overlap
-- IngestJob model creation and status transitions
+- IngestJob model creation and DB-backed state transitions
 - API endpoints: POST /v1/ingest/{file,url,repo}, GET, DELETE
 - Deduplication for repo jobs
-- Staging file cleanup on DELETE
+- Invariant enforcement: blob presence before enqueue, worker purity
+- Static structural scans: no filesystem, no network in worker
 """
 
 from __future__ import annotations
@@ -363,20 +364,34 @@ class TestIngestFileEndpoint:
 
 class TestIngestUrlEndpoint:
     def test_url_ingestion_queued(self, client):
-        """URL ingestion endpoint returns 202 and creates a job."""
-        # We don't mock httpx here — the job will fail (no real server),
-        # but the endpoint itself must return 202 and create a queued job.
-        resp = client.post(
-            "/v1/ingest/url",
-            headers=_AUTH,
-            json={"url": "https://example.com/test-page"},
-        )
+        """
+        URL content is pre-fetched in the API layer and stored as blob_data.
+        The worker reads ONLY from blob_data — no network dependency.
+
+        MQP-CONTRACT: URL ingestion MUST store blob before enqueue.
+        """
+        from unittest.mock import MagicMock, patch
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.content = b"<html><body><p>Hello world content</p></body></html>"
+        fake_response.headers = {"content-type": "text/html; charset=utf-8"}
+        fake_response.raise_for_status = MagicMock()
+
+        with patch("httpx.get", return_value=fake_response):
+            resp = client.post(
+                "/v1/ingest/url",
+                headers=_AUTH,
+                json={"url": "https://example.com/test-page"},
+            )
+
         assert resp.status_code == 202
         data = resp.json()
         assert data["kind"] == "url"
         assert data["source"] == "https://example.com/test-page"
         assert data["job_id"]
-        # Status is either queued, running, success, or failed — any is valid here
+        # BACKEND_DISABLE_JOBS=1 runs worker synchronously; job must succeed
+        assert data["status"] == "success"
 
     def test_invalid_url_rejected(self, client):
         resp = client.post(
@@ -424,11 +439,11 @@ class TestIngestRepoEndpoint:
 
     def test_deduplication_returns_existing_job(self, client, monkeypatch):
         """Two identical repo requests return the same job ID (no force_refresh)."""
-        import backend.app.ingest_routes as ir
+        import backend.app.ingest_pipeline as pipeline
 
-        # Patch _enqueue to a no-op so the job stays "queued" between requests,
-        # allowing the deduplication logic to detect it on the second call.
-        monkeypatch.setattr(ir, "_enqueue", lambda job_id: None)
+        # Patch _dispatch_job to a no-op so the job stays "queued" between
+        # requests, allowing the deduplication logic to detect it on the second call.
+        monkeypatch.setattr(pipeline, "_dispatch_job", lambda job_id: None)
 
         conv_id = str(uuid.uuid4())
         payload = {
@@ -446,9 +461,9 @@ class TestIngestRepoEndpoint:
 
     def test_force_refresh_creates_new_job(self, client, monkeypatch):
         """force_refresh=true always creates a new job."""
-        import backend.app.ingest_routes as ir
+        import backend.app.ingest_pipeline as pipeline
 
-        monkeypatch.setattr(ir, "_enqueue", lambda job_id: None)
+        monkeypatch.setattr(pipeline, "_dispatch_job", lambda job_id: None)
 
         conv_id = str(uuid.uuid4())
         base_payload = {
@@ -583,25 +598,562 @@ class TestDeleteIngestJob:
         resp = client.delete(f"/v1/ingest/{uuid.uuid4()}", headers=_AUTH)
         assert resp.status_code == 404
 
-    def test_delete_cleans_staging_file(self, client, tmp_path, monkeypatch):
-        import backend.app.ingest_routes as ir
+    def test_delete_removes_blob_and_chunks(self, client):
+        """
+        DELETE removes the job record (and its blob_data) plus all associated chunks.
 
-        staging = tmp_path / "staging"
-        staging.mkdir()
-        monkeypatch.setattr(ir, "_STAGING_DIR", staging)
+        MQP-CONTRACT: All data is DB-backed; no filesystem cleanup is involved.
+        """
+        import uuid as _uuid
+
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob, RepoChunk
 
         resp = client.post(
             "/v1/ingest/file",
             headers=_AUTH,
-            files={"file": ("staged.txt", b"staged content here", "text/plain")},
+            files={
+                "file": (
+                    "delete_blob_test.txt",
+                    b"Content to be fully removed from the database on delete.",
+                    "text/plain",
+                )
+            },
         )
+        assert resp.status_code == 202
         job_id = resp.json()["job_id"]
+        chunk_count = resp.json()["chunk_count"]
+        assert chunk_count >= 1
 
-        # Delete the job — staged file should be removed
-        client.delete(f"/v1/ingest/{job_id}", headers=_AUTH)
-        remaining = list(staging.iterdir())
-        assert len(remaining) == 0
+        # Confirm job and chunks exist in DB before delete
+        job_uuid = _uuid.UUID(job_id)
+        with Session(get_engine()) as s:
+            assert s.get(IngestJob, job_uuid) is not None
+
+        # Delete the job
+        del_resp = client.delete(f"/v1/ingest/{job_id}", headers=_AUTH)
+        assert del_resp.status_code == 204
+
+        # Job record must be gone from DB
+        with Session(get_engine()) as s:
+            assert s.get(IngestJob, job_uuid) is None, (
+                "Job record must be removed from DB on DELETE"
+            )
+            # Chunks must also be gone
+            from sqlmodel import select as _select
+            remaining = s.exec(
+                _select(RepoChunk).where(RepoChunk.ingest_job_id == job_uuid)
+            ).all()
+            assert remaining == [], (
+                f"All {len(remaining)} chunk(s) must be removed from DB on DELETE"
+            )
 
     def test_delete_requires_auth(self, client):
         resp = client.delete(f"/v1/ingest/{uuid.uuid4()}")
         assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Invariant enforcement regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestInvariantEnforcement:
+    """
+    MQP-CONTRACT: AIC-v1.1 — Regression tests that lock invariants.
+
+    These tests MUST BREAK THE BUILD if any invariant is removed or weakened.
+    """
+
+    def test_blob_stored_in_db_before_enqueue(self, client):
+        """
+        INVARIANT 1+2: blob_data must exist in DB and job must be in 'queued'
+        state before dispatch.
+
+        Verifies the API layer stores blob THEN transitions state THEN dispatches —
+        by intercepting _dispatch_job at the moment it is called from transition().
+        """
+        import uuid as _uuid
+
+        from sqlmodel import Session
+
+        import backend.app.ingest_pipeline as pipeline
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        captured = {}
+        original_dispatch = pipeline._dispatch_job
+
+        def capturing_dispatch(job_id):
+            with Session(get_engine()) as s:
+                job = s.get(IngestJob, _uuid.UUID(job_id))
+                captured["status"] = job.status if job else None
+                captured["has_blob"] = bool(job.blob_data) if job else False
+                captured["blob_size"] = job.blob_size_bytes if job else 0
+            original_dispatch(job_id)
+
+        pipeline._dispatch_job = capturing_dispatch
+        try:
+            resp = client.post(
+                "/v1/ingest/file",
+                headers=_AUTH,
+                files={"file": ("invariant_test.txt", b"hello invariant", "text/plain")},
+            )
+        finally:
+            pipeline._dispatch_job = original_dispatch
+
+        assert resp.status_code == 202
+        assert captured.get("status") == "queued", (
+            f"INVARIANT_VIOLATION: job must be in 'queued' state at dispatch, "
+            f"got {captured.get('status')!r}"
+        )
+        assert captured.get("has_blob") is True, (
+            "INVARIANT_VIOLATION: blob_data must exist in DB before dispatch"
+        )
+        assert captured.get("blob_size", 0) > 0, (
+            "INVARIANT_VIOLATION: blob_size_bytes must be > 0 before dispatch"
+        )
+
+    def test_worker_fails_deterministically_if_blob_missing(self):
+        """
+        INVARIANT 4: Worker must transition job to FAILED with WORKER_ENTRY_VIOLATION
+        if blob_data is missing — never raise an unhandled exception.
+        """
+        import uuid as _uuid
+
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import process_ingest_job
+        from backend.app.models import IngestJob
+
+        # Create a job in QUEUED state with NO blob_data
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="ghost.txt",
+                status="queued",
+                blob_data=None,
+                blob_size_bytes=0,
+            )
+            s.add(job)
+            s.commit()
+
+        # Worker must handle this gracefully — no unhandled exception
+        process_ingest_job(str(job_id))
+
+        # Job must be in FAILED state with WORKER_ENTRY_VIOLATION error
+        with Session(db_module.get_engine()) as s:
+            job = s.get(IngestJob, job_id)
+            assert job is not None
+            assert job.status == "failed", (
+                f"INVARIANT_VIOLATION: worker must transition to 'failed' "
+                f"when blob_data is missing, got {job.status!r}"
+            )
+            assert job.error and "WORKER_ENTRY_VIOLATION" in job.error, (
+                f"INVARIANT_VIOLATION: error must contain 'WORKER_ENTRY_VIOLATION', "
+                f"got {job.error!r}"
+            )
+
+    def test_enqueue_blocked_without_queued_state(self, client):
+        """
+        INVARIANT 5 (STRUCTURAL): transition("queued") raises ENQUEUE_GATE_VIOLATION
+        if blob_data is absent, even when the state machine would otherwise allow it.
+
+        This verifies the gate is inside transition(), not in caller code.
+        """
+        import uuid as _uuid
+
+        import pytest
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import transition
+        from backend.app.models import IngestJob
+
+        # Create a job that has reached 'stored' state but then somehow
+        # lost its blob_data (e.g., DB corruption scenario).
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="gate_test.txt",
+                status="stored",
+                blob_data=None,
+                blob_size_bytes=0,
+            )
+            s.add(job)
+            s.commit()
+
+        # transition("queued") MUST raise — the enqueue gate is inside transition()
+        with pytest.raises(RuntimeError, match="ENQUEUE_GATE_VIOLATION"):
+            transition(job_id, "queued")
+
+    def test_enqueue_blocked_without_blob_data(self, client):
+        """
+        INVARIANT 1 (STRUCTURAL): transition("queued") raises ENQUEUE_GATE_VIOLATION
+        if blob_data is absent.
+
+        Tests the identical scenario via the public transition() API to confirm
+        the gate cannot be bypassed by any caller.
+        """
+        import uuid as _uuid
+
+        import pytest
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import transition
+        from backend.app.models import IngestJob
+
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="no_blob.txt",
+                status="stored",
+                blob_data=None,
+                blob_size_bytes=0,
+            )
+            s.add(job)
+            s.commit()
+
+        with pytest.raises(RuntimeError, match="ENQUEUE_GATE_VIOLATION"):
+            transition(job_id, "queued")
+
+    def test_size_limit_rejects_before_db_record_created(self, client, monkeypatch):
+        """
+        SIZE ENFORCEMENT: 413 must be returned before any IngestJob is created.
+        """
+
+        from sqlmodel import Session, select
+
+        import backend.app.ingest_routes as ir
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        monkeypatch.setattr(ir, "MAX_UPLOAD_BYTES", 5)
+
+        resp = client.post(
+            "/v1/ingest/file",
+            headers=_AUTH,
+            files={"file": ("toobig.txt", b"x" * 100, "text/plain")},
+        )
+        assert resp.status_code == 413
+
+        # No DB record must exist for this rejected upload
+        with Session(get_engine()) as s:
+            jobs = s.exec(
+                select(IngestJob).where(IngestJob.source == "toobig.txt")
+            ).all()
+            assert jobs == [], (
+                "INVARIANT_VIOLATION: no IngestJob must be created when upload is rejected"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Static structural invariant scans
+# ---------------------------------------------------------------------------
+
+
+class TestStaticInvariants:
+    """
+    Static scan tests that enforce structural invariants by inspecting source.
+
+    MQP-CONTRACT: CI MUST FAIL if forbidden patterns appear in worker code.
+    These tests break the build if legacy architecture re-emerges.
+    """
+
+    @staticmethod
+    def _worker_sources() -> dict[str, str]:
+        """Return {name: source} for all worker-path functions."""
+        import inspect
+
+        from backend.app import ingest_pipeline as p
+
+        return {
+            fn.__name__: inspect.getsource(fn)
+            for fn in (
+                p.process_ingest_job,
+                p._ingest_file,
+                p._ingest_url,
+                p._ingest_repo,
+            )
+        }
+
+    def test_no_tmp_paths_in_ingest_pipeline(self):
+        """
+        Worker pipeline must never reference /tmp/ filesystem paths.
+        All data is stored in the database.
+        """
+        import inspect
+
+        from backend.app import ingest_pipeline
+
+        source_lines = inspect.getsource(ingest_pipeline).splitlines()
+        violations = [
+            f"line {i + 1}: {line.rstrip()}"
+            for i, line in enumerate(source_lines)
+            if "/tmp/" in line and not line.strip().startswith("#")
+        ]
+        assert not violations, (
+            "INVARIANT_VIOLATION: /tmp/ path found in ingest_pipeline.py — "
+            "all data must use database storage:\n" + "\n".join(violations)
+        )
+
+    def test_no_httpx_in_worker_functions(self):
+        """
+        Worker functions must not use httpx.
+        Network access is forbidden in the worker; URL content is pre-fetched
+        at the API layer and stored as blob_data.
+        """
+        for name, source in self._worker_sources().items():
+            assert "httpx" not in source, (
+                f"INVARIANT_VIOLATION: httpx found in {name}() — "
+                f"workers must be pure (no network access)"
+            )
+
+    def test_no_filesystem_open_in_worker_functions(self):
+        """
+        Worker functions must not call open() for filesystem access.
+        All I/O uses in-memory bytes (io.BytesIO) read from blob_data.
+        """
+        import re
+
+        for name, source in self._worker_sources().items():
+            # Match bare open( but not io.open( or os.fdopen(
+            if re.search(r"(?<![.\w])open\s*\(", source):
+                raise AssertionError(
+                    f"INVARIANT_VIOLATION: open() found in {name}() — "
+                    f"workers must not access the filesystem directly"
+                )
+
+    def test_no_staging_dir_references(self):
+        """
+        The _STAGING_DIR and source_path patterns must not exist anywhere
+        in the ingestion codebase. The filesystem-staging architecture
+        has been eliminated.
+        """
+        import inspect
+
+        import backend.app.ingest_pipeline as ip
+        import backend.app.ingest_routes as ir
+
+        for mod_name, mod in (("ingest_routes", ir), ("ingest_pipeline", ip)):
+            source = inspect.getsource(mod)
+            assert "_STAGING_DIR" not in source, (
+                f"INVARIANT_VIOLATION: _STAGING_DIR found in {mod_name} — "
+                f"filesystem staging has been eliminated"
+            )
+            assert "source_path" not in source, (
+                f"INVARIANT_VIOLATION: source_path found in {mod_name} — "
+                f"filesystem staging has been eliminated"
+            )
+
+    def test_no_ready_flag_references_in_pipeline(self):
+        """
+        .ready flag pattern must not exist in the pipeline.
+        Ready flags were part of the eliminated filesystem-staging protocol.
+        """
+        import inspect
+
+        from backend.app import ingest_pipeline
+
+        source = inspect.getsource(ingest_pipeline)
+        assert ".ready" not in source, (
+            "INVARIANT_VIOLATION: .ready flag reference found in ingest_pipeline — "
+            "filesystem-staging protocol has been eliminated"
+        )
+
+    def test_no_external_dispatch_calls_in_routes(self):
+        """
+        MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL §4
+
+        Routes MUST NOT call _dispatch_job() or _enqueue() directly.
+        Dispatch is a structural consequence of transition("queued") —
+        it happens inside ingest_pipeline.transition(), not in caller code.
+
+        CI MUST FAIL if any direct dispatch call appears in ingest_routes.
+        """
+        import inspect
+
+        import backend.app.ingest_routes as ir
+
+        source = inspect.getsource(ir)
+        assert "_dispatch_job(" not in source, (
+            "INVARIANT_VIOLATION: _dispatch_job() called directly in ingest_routes — "
+            "dispatch must only occur inside transition(); never in routes"
+        )
+        assert "_enqueue(" not in source, (
+            "INVARIANT_VIOLATION: _enqueue() called directly in ingest_routes — "
+            "the _enqueue helper has been eliminated; dispatch is inside transition()"
+        )
+
+    def test_dispatch_coupled_to_transition_in_pipeline(self):
+        """
+        MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL §4
+
+        _dispatch_job() MUST be called from within transition() — it must be
+        structurally impossible to reach dispatch without going through
+        the full transition authority (state validation + blob gate + commit).
+
+        Verify by inspecting the source of transition().
+        """
+        import inspect
+
+        from backend.app.ingest_pipeline import transition
+
+        source = inspect.getsource(transition)
+        assert "_dispatch_job(" in source, (
+            "INVARIANT_VIOLATION: _dispatch_job() is not called from transition() — "
+            "the structural coupling has been broken"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Invalid path prevention tests
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidPathPrevention:
+    """
+    MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL §2
+
+    Simulate attempts to create or execute invalid ingestion jobs.
+    ALL attempts MUST be structurally blocked.
+    """
+
+    def test_simulate_invalid_path_attempt_no_blob(self):
+        """
+        Simulate a scenario where code attempts to enqueue a job
+        without blob_data — this MUST be structurally impossible.
+
+        Any code path that tries to call transition("queued") on a job
+        without blob_data MUST raise ENQUEUE_GATE_VIOLATION.
+        """
+        import uuid as _uuid
+
+        import pytest
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import transition
+        from backend.app.models import IngestJob
+
+        # Attempt: create job in "stored" state (bypassing blob requirement)
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="attempt.txt",
+                status="stored",
+                blob_data=None,
+                blob_size_bytes=0,
+            )
+            s.add(job)
+            s.commit()
+
+        # Attempt: transition to queued — MUST be blocked
+        with pytest.raises(RuntimeError, match="ENQUEUE_GATE_VIOLATION"):
+            transition(job_id, "queued")
+
+        # Verify job was NOT dispatched (still in 'stored' state, not 'queued')
+        with Session(db_module.get_engine()) as s:
+            job = s.get(IngestJob, job_id)
+            assert job.status == "stored", (
+                "INVARIANT_VIOLATION: job must remain in 'stored' after failed enqueue attempt"
+            )
+
+    def test_simulate_invalid_path_attempt_bypass_transition(self):
+        """
+        Simulate an attempt to manipulate job state by mutating status directly,
+        bypassing transition() authority.
+
+        The validate_state_transition() function enforces state machine rules.
+        Direct mutation is technically possible in Python but architecturally
+        forbidden — this test documents the requirement.
+        """
+        import uuid as _uuid
+
+        import pytest
+        from sqlmodel import Session
+
+        import backend.app.database as db_module
+        from backend.app.ingest_pipeline import transition
+        from backend.app.models import IngestJob
+
+        # Attempt: skip "stored" and jump directly from "created" to "queued"
+        job_id = _uuid.uuid4()
+        with Session(db_module.get_engine()) as s:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="bypass.txt",
+                status="created",
+                blob_data=b"data",
+                blob_size_bytes=4,
+            )
+            s.add(job)
+            s.commit()
+
+        # transition() MUST reject created → queued (must go through stored)
+        with pytest.raises(Exception):  # STATE_MACHINE_VIOLATION
+            transition(job_id, "queued")
+
+    def test_file_upload_job_never_created_without_blob(self, client, monkeypatch):
+        """
+        MQP-CONTRACT: File upload jobs must be created with blob_data in a
+        single atomic commit — the "created without blob" window is eliminated.
+
+        Verify: DB record is never present in "created" state without blob_data
+        after a successful upload.
+        """
+
+        from sqlmodel import Session
+
+        import backend.app.ingest_pipeline as pipeline
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        snapshots = []
+        original_dispatch = pipeline._dispatch_job
+
+        def inspecting_dispatch(job_id):
+            # Look up the job at dispatch time — it must already have blob_data
+            with Session(get_engine()) as s:
+                all_jobs = s.exec(
+                    __import__("sqlmodel").select(IngestJob)
+                ).all()
+                for j in all_jobs:
+                    snapshots.append({
+                        "id": str(j.id),
+                        "status": j.status,
+                        "has_blob": bool(j.blob_data),
+                    })
+            original_dispatch(job_id)
+
+        pipeline._dispatch_job = inspecting_dispatch
+        try:
+            resp = client.post(
+                "/v1/ingest/file",
+                headers=_AUTH,
+                files={"file": ("atomic_test.txt", b"atomic blob data", "text/plain")},
+            )
+        finally:
+            pipeline._dispatch_job = original_dispatch
+
+        assert resp.status_code == 202
+
+        # At no point during dispatch should any job exist without blob_data
+        blobless = [s for s in snapshots if not s["has_blob"]]
+        assert blobless == [], (
+            "INVARIANT_VIOLATION: jobs without blob_data observed at dispatch time — "
+            f"found: {blobless}"
+        )
