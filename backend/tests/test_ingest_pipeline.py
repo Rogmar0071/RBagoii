@@ -354,7 +354,6 @@ class TestIngestFileEndpoint:
             headers=_AUTH,
             files={"file": ("big.txt", b"x" * 100, "text/plain")},
         )
-        # MQP-CONTRACT: SIZE ENFORCEMENT — 413 returned before any DB record is created
         assert resp.status_code == 413
 
 

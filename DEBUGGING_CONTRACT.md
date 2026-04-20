@@ -418,8 +418,9 @@ sqlite3 <db_path> \
 1. For stuck jobs: re-upload the file or re-submit the URL/repo request
 2. For systematic failures: check DB connection, storage capacity, and that no code
    change has bypassed the `transition()` authority function
-3. If `WORKER_ENTRY_VIOLATION` fires repeatedly: verify the enqueue gate
-   (`_assert_enqueue_ready`) is called before every `_enqueue()` invocation
+3. If `WORKER_ENTRY_VIOLATION` fires repeatedly: verify the ENQUEUE_GATE_VIOLATION
+   check inside `transition()` is intact — the blob gate runs automatically when
+   `next_state == "queued"` and prevents dispatch if `blob_data` is absent
 
 **Invariant reference** (`MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2` → superseded by
 `MQP-CONTRACT:AIC-v1.1-ENFORCEMENT-COMPLETE`):

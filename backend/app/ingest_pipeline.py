@@ -1080,7 +1080,7 @@ def process_ingest_job(job_id: str) -> None:
         NO direct job.status mutations.
     """
     # MQP-CONTRACT: WORKER_ENTRY_VALIDATION — validate state and data before any transition.
-    # Raises: transitions job to FAILED if invariants violated; returns immediately.
+    # Effect: transitions job to FAILED if invariants violated; returns immediately.
     job = _get_ingest_job(job_id)
     if job is None:
         logger.error("WORKER_ENTRY_VIOLATION: Job %s not found in DB", job_id)
