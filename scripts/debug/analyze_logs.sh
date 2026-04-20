@@ -64,12 +64,9 @@ echo ""
 echo "📁 Searching for log files..."
 FOUND_LOGS=()
 for pattern in "${LOG_PATHS[@]}"; do
-    # shellcheck disable=SC2086
-    for file in $pattern 2>/dev/null; do
-        if [[ -f "$file" ]]; then
-            FOUND_LOGS+=("$file")
-        fi
-    done
+    while IFS= read -r -d '' file; do
+        FOUND_LOGS+=("$file")
+    done < <(find . -path "$pattern" -type f -print0 2>/dev/null)
 done
 
 if [[ ${#FOUND_LOGS[@]} -eq 0 ]]; then

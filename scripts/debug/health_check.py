@@ -26,7 +26,7 @@ class HealthCheck:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
         self.results = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now().isoformat(),
             "checks": {},
             "overall_status": "unknown",
         }
@@ -34,7 +34,7 @@ class HealthCheck:
     def log(self, message: str, level: str = "INFO") -> None:
         """Log message if verbose mode is enabled"""
         if self.verbose or level == "ERROR":
-            timestamp = datetime.utcnow().strftime("%H:%M:%S")
+            timestamp = datetime.now().strftime("%H:%M:%S")
             print(f"[{timestamp}] {level}: {message}")
 
     def check_python_environment(self) -> dict[str, Any]:
