@@ -49,12 +49,23 @@ else
     }
 fi
 
+# 6. NEW: Run quick sanity test to catch breaking changes early
+echo "🧪 Running quick sanity tests..."
+if [ -n "$SKIP_SESSION_TESTS" ]; then
+    echo "⏭️  Skipping tests (SKIP_SESSION_TESTS set)"
+else
+    # Run a subset of critical tests (fast ones) to validate the code works
+    BACKEND_DISABLE_JOBS=1 pytest backend/tests/test_api.py::TestHealth -q --tb=line &> /dev/null && \
+        echo "✅ Sanity tests passed" || \
+        echo "⚠️  Some sanity tests failed. Run 'make test' for details."
+fi
+
 echo ""
 echo "✨ Session initialized successfully!"
 echo ""
 echo "Quick commands:"
 echo "  pre-commit run --all-files  # Run all checks"
-echo "  pytest tests/ -v            # Run ui_blueprint tests"
-echo "  pytest backend/tests/ -v    # Run backend tests"
-echo "  ruff check backend/         # Check backend linting"
+echo "  make test                   # Run all tests"
+echo "  make check                  # Run lint + test"
+echo "  make ci-local               # Simulate CI pipeline"
 echo ""

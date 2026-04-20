@@ -8,18 +8,19 @@ help:
 	@echo "=============================="
 	@echo ""
 	@echo "Session Management:"
-	@echo "  make init          - Initialize development session (hooks, deps, health check)"
+	@echo "  make init          - Initialize development session (hooks, deps, health, quick tests)"
 	@echo ""
 	@echo "Code Quality:"
-	@echo "  make check         - Run all checks (lint + test)"
+	@echo "  make check         - Run all checks (lint + test) ⚠️  MUST PASS BEFORE PUSH"
 	@echo "  make lint          - Run linting only"
 	@echo "  make format        - Auto-fix formatting issues"
 	@echo "  make ci-local      - Simulate CI pipeline locally"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test          - Run all tests"
+	@echo "  make test          - Run all tests (UI + backend)"
 	@echo "  make test-ui       - Run ui_blueprint tests only"
 	@echo "  make test-backend  - Run backend tests only"
+	@echo "  make test-quick    - Run quick sanity tests"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean         - Remove temporary files and caches"
@@ -30,9 +31,11 @@ init:
 	@echo "🚀 Initializing development session..."
 	@bash scripts/init-session.sh
 
-# Run all checks (what CI runs)
+# Run all checks (what CI runs) - REQUIRED before push
 check: lint test
+	@echo ""
 	@echo "✅ All checks passed!"
+	@echo "   Safe to push to GitHub"
 
 # Linting
 lint:
@@ -61,7 +64,12 @@ test-backend:
 	@echo "🧪 Running backend tests..."
 	@BACKEND_DISABLE_JOBS=1 pytest backend/tests/ -v --tb=short
 
-# Simulate CI pipeline locally
+# Quick sanity test (subset of critical tests)
+test-quick:
+	@echo "🧪 Running quick sanity tests..."
+	@BACKEND_DISABLE_JOBS=1 pytest backend/tests/test_api.py::TestHealth tests/ -q --tb=line
+
+# Simulate CI pipeline locally (ALWAYS run before creating PR)
 ci-local: format check
 	@echo "🎯 Local CI simulation complete!"
 	@echo ""
