@@ -508,6 +508,18 @@ def remove_github_repo(
 
 def _enqueue_repo_ingestion(repo_id: str) -> None:
     """
+    DEPRECATED: This function is no longer used by any endpoints.
+    All repo ingestion now goes through the unified pipeline.
+
+    This function is kept temporarily for backward compatibility but will be
+    removed in a future release. Do not use for new code.
+
+    Use the unified pipeline instead:
+    - Create IngestJob with kind="repo"
+    - Call ingest_pipeline._transition() and ingest_routes._enqueue()
+
+    ---
+
     Enqueue or synchronously run repo ingestion.
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V5 §2
@@ -520,6 +532,23 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
     or running before submitting a new one.
     """
     import os as _os
+    import warnings
+
+    # DEPRECATION WARNING
+    warnings.warn(
+        "_enqueue_repo_ingestion() is deprecated. Use the unified pipeline instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    logger.warning({
+        "event": "deprecated_function_called",
+        "function": "_enqueue_repo_ingestion",
+        "repo_id": repo_id,
+        "message": (
+            "This function is deprecated. "
+            "Use unified pipeline (IngestJob + process_ingest_job)."
+        )
+    })
 
     disable = _os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
@@ -685,7 +714,9 @@ def retry_repo_ingestion(
     REPO_CONTEXT_FINALIZATION_V1 — Phase 8.
 
     Retry ingestion for a failed (or stuck) Repo.
-    Resets status to "pending" and re-enqueues the ingestion worker.
+    Resets status to "pending" and re-enqueues via unified pipeline.
+
+    MIGRATION: Now uses unified IngestJob pipeline instead of legacy run_repo_ingestion().
     """
     try:
         repo_uuid = uuid.UUID(repo_id)
@@ -708,7 +739,7 @@ def retry_repo_ingestion(
             ),
         )
 
-    # Delete stale chunks from previous attempt
+    # Delete stale chunks from previous attempt (both repo_id and ingest_job_id linked)
     chunk_stmt = select(RepoChunk).where(RepoChunk.repo_id == repo_uuid)
     for chunk in session.exec(chunk_stmt).all():
         session.delete(chunk)
@@ -720,14 +751,40 @@ def retry_repo_ingestion(
     session.commit()
     session.refresh(repo)
 
-    # Re-trigger ingestion
-    print("STEP 1: before enqueue", repo.id)
-    try:
-        _enqueue_repo_ingestion(str(repo.id))
-        print("STEP 2: enqueue success", repo.id)
-    except Exception as e:
-        print("ENQUEUE ERROR:", repr(e))
-        raise
+    # MIGRATION: Create new IngestJob and use unified pipeline
+    from backend.app.models import IngestJob
+
+    source_key = f"{repo.repo_url}@{repo.branch}"
+    job_id = uuid.uuid4()
+
+    ingest_job = IngestJob(
+        id=job_id,
+        kind="repo",
+        source=source_key,
+        branch=repo.branch,
+        status="created",
+        conversation_id=repo.conversation_id,
+        workspace_id=None,
+        source_path=str(repo.id),  # Store repo_id for legacy coordination
+    )
+    session.add(ingest_job)
+    session.commit()
+
+    logger.info({
+        "event": "retry_ingest_job_created",
+        "job_id": str(job_id),
+        "repo_id": repo_id,
+        "pipeline": "unified"
+    })
+
+    # Use unified pipeline
+    from backend.app.ingest_pipeline import _transition
+    from backend.app.ingest_routes import _enqueue
+
+    _transition(str(job_id), "queued")
+    _enqueue(str(job_id))
+
+    logger.info({"event": "retry_job_enqueued", "job_id": str(job_id), "repo_id": repo_id})
 
     return RepoStatusResponse(
         id=str(repo.id),
@@ -909,6 +966,10 @@ def add_repo(
     # -----------------------------------------------------------------------
     # Phase 3 — Queue discipline (after transaction is committed)
     # -----------------------------------------------------------------------
+    # MIGRATION: Use unified ingestion pipeline (IngestJob + process_ingest_job)
+    # instead of legacy run_repo_ingestion() path.
+    # Maintains Repo table for backward compatibility but uses unified pipeline.
+
     if not newly_created and current_status in ("running", "success"):
         # Repo is already being ingested or fully ingested — idempotent guard.
         raise HTTPException(
@@ -917,8 +978,43 @@ def add_repo(
         )
 
     if newly_created or current_status in ("pending", "failed"):
-        _enqueue_repo_ingestion(repo_id_str)
-        logger.info({"event": "job_enqueued", "repo_id": repo_id_str})
+        # Create IngestJob to track this ingestion via unified pipeline
+        from backend.app.models import IngestJob
+
+        source_key = f"{req.repo_url}@{branch}"
+        job_id = uuid.uuid4()
+
+        # Create IngestJob - unified pipeline will process this
+        # The repo_id is stored in source_path for linking back to Repo table
+        ingest_job = IngestJob(
+            id=job_id,
+            kind="repo",
+            source=source_key,
+            branch=branch,
+            status="created",
+            conversation_id=req.conversation_id,
+            workspace_id=None,  # Legacy endpoint doesn't support workspace
+            source_path=repo_id_str,  # Store repo_id for legacy Repo table coordination
+        )
+        session.add(ingest_job)
+        session.commit()
+
+        logger.info({
+            "event": "ingest_job_created",
+            "job_id": str(job_id),
+            "repo_id": repo_id_str,
+            "pipeline": "unified"
+        })
+
+        # Use unified pipeline transition and enqueue
+        from backend.app.ingest_pipeline import _transition
+        from backend.app.ingest_routes import _enqueue
+
+        _transition(str(job_id), "queued")
+        logger.info("STATE: QUEUED job_id=%s repo_id=%s", job_id, repo_id_str)
+
+        _enqueue(str(job_id))
+        logger.info({"event": "job_enqueued", "job_id": str(job_id), "repo_id": repo_id_str})
 
     return RepoAddResponse(
         repo_id=repo_id_str,
