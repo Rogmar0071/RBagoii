@@ -255,9 +255,9 @@ async def ingest_file(
                 f"Expected {len(data)}, got {staging_path.stat().st_size}"
             )
         
-        # STATE: STAGED - File written successfully
-        from backend.app.ingest_pipeline import _update_ingest_job
-        _update_ingest_job(str(job_id), status="staged")
+        # TRANSITION: CREATED → STAGED
+        from backend.app.ingest_pipeline import _transition
+        _transition(str(job_id), "staged")
         logger.info("STATE: STAGED job_id=%s path=%s size=%d", job_id, staging_path, len(data))
         
         # STEP 4: CREATE READY FLAG (THIS IS THE TRUE SIGNAL)
@@ -272,25 +272,25 @@ async def ingest_file(
             staging_path.unlink(missing_ok=True)
             raise RuntimeError(f"STAGING_VIOLATION: ready flag missing {ready_path}")
         
-        # STATE: READY - Both file and ready flag exist
-        _update_ingest_job(str(job_id), status="ready")
+        # TRANSITION: STAGED → READY
+        _transition(str(job_id), "ready")
         logger.info("STATE: READY job_id=%s", job_id)
         
     except RuntimeError:
         # Re-raise our own STAGING_VIOLATION errors
         staging_path.unlink(missing_ok=True)
         ready_path.unlink(missing_ok=True)
-        _update_ingest_job(str(job_id), status="failed", error="Staging failed")
+        _transition(str(job_id), "failed", error="Staging failed")
         raise
     except Exception as exc:
         # Catch-all for I/O errors, permission issues, disk full, etc.
         staging_path.unlink(missing_ok=True)
         ready_path.unlink(missing_ok=True)
-        _update_ingest_job(str(job_id), status="failed", error=str(exc)[:1000])
+        _transition(str(job_id), "failed", error=str(exc)[:1000])
         raise RuntimeError(f"STAGING_VIOLATION: Cannot write file: {exc}") from exc
 
-    # STATE: QUEUED - Must update BEFORE calling _enqueue in case of synchronous execution
-    _update_ingest_job(str(job_id), status="queued")
+    # TRANSITION: READY → QUEUED (must happen BEFORE enqueue for synchronous execution)
+    _transition(str(job_id), "queued")
     logger.info("STATE: QUEUED job_id=%s", job_id)
     
     # Enqueue the job (may run synchronously in test mode)
@@ -353,8 +353,9 @@ def ingest_url(
     logger.info("STATE: CREATED job_id=%s kind=url", job_id)
     
     # URL jobs skip staging/ready states (no file to stage)
-    from backend.app.ingest_pipeline import _update_ingest_job
-    _update_ingest_job(str(job_id), status="queued")
+    # TRANSITION: CREATED → QUEUED
+    from backend.app.ingest_pipeline import _transition
+    _transition(str(job_id), "queued")
     logger.info("STATE: QUEUED job_id=%s", job_id)
     
     _enqueue(str(job_id))
@@ -441,8 +442,9 @@ def ingest_repo(
     logger.info("STATE: CREATED job_id=%s kind=repo", job_id)
     
     # Repo jobs skip staging/ready states (no file to stage)
-    from backend.app.ingest_pipeline import _update_ingest_job
-    _update_ingest_job(str(job_id), status="queued")
+    # TRANSITION: CREATED → QUEUED
+    from backend.app.ingest_pipeline import _transition
+    _transition(str(job_id), "queued")
     logger.info("STATE: QUEUED job_id=%s", job_id)
     
     _enqueue(str(job_id))
