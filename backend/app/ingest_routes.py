@@ -82,6 +82,9 @@ def _enqueue(job_id: str) -> None:
         RULE A1 — SINGLE QUEUE: All jobs enqueued to Queue("default")
         RULE A2 — DIRECT ENQUEUE ONLY: Using q.enqueue() directly
         RULE A3 — VALIDATION CHECK: Assert queue name is "rq:queue:default"
+    
+    MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2
+        Updated to use enqueue_job() single entry point instead of direct q.enqueue()
     """
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
@@ -97,20 +100,16 @@ def _enqueue(job_id: str) -> None:
     if redis_url:
         try:
             from redis import Redis
-            from rq import Queue as RQueue
 
-            conn = Redis.from_url(redis_url)
-            q = RQueue("default", connection=conn)
-            q.enqueue(
-                "backend.app.job_runner.execute_job",
-                "process_ingest_job",
-                job_id,
-                job_timeout=3600,
-            )
+            # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
+            from backend.app.worker import enqueue_job
+            
+            enqueue_job(job_id, "process_ingest_job")
             logger.info("IngestJob %s enqueued via RQ", job_id)
 
             # MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §A3 — Validation
             # Verify no intermediate queue exists
+            conn = Redis.from_url(redis_url)
             keys = conn.keys("rq:queue:*:intermediate")
             if keys:
                 logger.error(

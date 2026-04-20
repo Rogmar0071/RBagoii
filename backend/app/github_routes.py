@@ -537,7 +537,6 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
     redis_url = _os.environ.get("REDIS_URL", "").strip()
     if redis_url:
         from redis import Redis
-        from rq import Queue as RQueue
         from rq.exceptions import NoSuchJobError
         from rq.job import Job as RQJob
 
@@ -556,14 +555,10 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
         except NoSuchJobError:
             pass  # No existing job — proceed to enqueue.
 
-        q = RQueue("default", connection=conn)
-        q.enqueue(
-            "backend.app.job_runner.execute_job",
-            "run_repo_ingestion",
-            repo_id,
-            job_id=job_id,
-            job_timeout=1800,
-        )
+        # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
+        from backend.app.worker import enqueue_job
+        
+        enqueue_job(repo_id, "run_repo_ingestion", rq_job_id=job_id)
         logger.info({"event": "job_enqueued", "repo_id": repo_id, "job_id": job_id})
         return
 
