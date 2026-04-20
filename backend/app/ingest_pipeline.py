@@ -1100,9 +1100,10 @@ def process_ingest_job(job_id: str) -> None:
         return
 
     logger.info("IngestJob %s: starting", job_id)
-    _transition(job_id, IngestJobState.RUNNING)
 
     try:
+        _transition(job_id, IngestJobState.RUNNING)
+
         from sqlmodel import Session
 
         from backend.app.database import get_engine

@@ -1,6 +1,87 @@
 package com.uiblueprint.android
 
+import android.content.Context
+import android.graphics.drawable.Drawable
+import androidx.core.content.ContextCompat
 import java.util.Date
+
+/**
+ * The three user-visible states for any ingested item (file or repository).
+ *
+ * Maps backend IngestJob states:
+ *   UPLOADING  ← created | stored | queued
+ *   ANALYZING  ← running | processing | indexing | finalizing
+ *   AVAILABLE  ← success
+ *   FAILED     ← failed
+ */
+enum class IngestStatus {
+    UPLOADING,
+    ANALYZING,
+    AVAILABLE,
+    FAILED;
+
+    companion object {
+        /** Derive display status from a raw backend IngestJob status string. */
+        fun fromBackendStatus(status: String): IngestStatus = when (status) {
+            "created", "stored", "queued" -> UPLOADING
+            "running", "processing", "indexing", "finalizing" -> ANALYZING
+            "success" -> AVAILABLE
+            "failed" -> FAILED
+            else -> {
+                android.util.Log.w("IngestStatus", "Unknown backend status: '$status' — defaulting to UPLOADING")
+                UPLOADING
+            }
+        }
+    }
+}
+
+/**
+ * Bind a status pill TextView to the given [IngestStatus].
+ *
+ * Sets visibility, background drawable, text colour, leading icon, and label.
+ * Hides the view when status is null.
+ */
+fun android.widget.TextView.bindIngestStatus(status: IngestStatus?) {
+    if (status == null) {
+        visibility = android.view.View.GONE
+        return
+    }
+    visibility = android.view.View.VISIBLE
+
+    val ctx = context
+    when (status) {
+        IngestStatus.UPLOADING -> {
+            setBackgroundResource(R.drawable.bg_status_pill_uploading)
+            setTextColor(ContextCompat.getColor(ctx, android.R.color.white))
+            setText(R.string.status_ingest_uploading)
+            setCompoundDrawablesWithIntrinsicBounds(
+                ContextCompat.getDrawable(ctx, R.drawable.ic_status_uploading), null, null, null
+            )
+        }
+        IngestStatus.ANALYZING -> {
+            setBackgroundResource(R.drawable.bg_status_pill_analyzing)
+            setTextColor(ContextCompat.getColor(ctx, R.color.status_pill_text_dark))
+            setText(R.string.status_ingest_analyzing)
+            setCompoundDrawablesWithIntrinsicBounds(
+                ContextCompat.getDrawable(ctx, R.drawable.ic_status_analyzing), null, null, null
+            )
+        }
+        IngestStatus.AVAILABLE -> {
+            setBackgroundResource(R.drawable.bg_status_pill_available)
+            setTextColor(ContextCompat.getColor(ctx, R.color.status_pill_text_muted))
+            setText(R.string.status_ingest_available)
+            setCompoundDrawablesWithIntrinsicBounds(
+                ContextCompat.getDrawable(ctx, R.drawable.ic_status_available), null, null, null
+            )
+        }
+        IngestStatus.FAILED -> {
+            setBackgroundResource(R.drawable.bg_status_pill_failed)
+            setTextColor(ContextCompat.getColor(ctx, android.R.color.white))
+            setText(R.string.status_ingest_failed)
+            setCompoundDrawablesWithIntrinsicBounds(null, null, null, null)
+        }
+    }
+}
 
 /**
  * Data model for a file uploaded to a chat conversation.
@@ -17,6 +98,7 @@ data class ChatFile(
     val createdAt: Date,
     val updatedAt: Date,
     val downloadUrl: String?,
+    var ingestStatus: IngestStatus = IngestStatus.AVAILABLE,
 )
 
 /**

@@ -19,4 +19,7 @@
     <color name="status_succeeded">#4CAF50</color>
     <color name="status_failed">#F44336</color>
     <color name="status_unknown">#9E9E9E</color>
+    <!-- Ingest status pill text colours -->
+    <color name="status_pill_text_dark">#1A1A1A</color>
+    <color name="status_pill_text_muted">#AAAAAA</color>
 </resources>

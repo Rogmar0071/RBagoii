@@ -183,4 +183,9 @@
     <string name="error_unknown">Error: %1$s</string>
     <string name="error_file_upload_network">Network error uploading file: %1$s</string>
     <string name="error_file_upload_generic">Error uploading file: %1$s</string>
+    <!-- File / repo ingest status pill labels -->
+    <string name="status_ingest_uploading">Uploading</string>
+    <string name="status_ingest_analyzing">Analyzing</string>
+    <string name="status_ingest_available">Available</string>
+    <string name="status_ingest_failed">Failed</string>
 </resources>
