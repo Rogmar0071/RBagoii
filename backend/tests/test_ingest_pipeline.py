@@ -677,10 +677,11 @@ class TestInvariantEnforcement:
         """
         import uuid as _uuid
 
+        from sqlmodel import Session
+
         import backend.app.ingest_pipeline as pipeline
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
-        from sqlmodel import Session
 
         captured = {}
         original_dispatch = pipeline._dispatch_job
@@ -722,10 +723,11 @@ class TestInvariantEnforcement:
         """
         import uuid as _uuid
 
+        from sqlmodel import Session
+
         import backend.app.database as db_module
         from backend.app.ingest_pipeline import process_ingest_job
         from backend.app.models import IngestJob
-        from sqlmodel import Session
 
         # Create a job in QUEUED state with NO blob_data
         job_id = _uuid.uuid4()
@@ -829,14 +831,12 @@ class TestInvariantEnforcement:
         """
         SIZE ENFORCEMENT: 413 must be returned before any IngestJob is created.
         """
-        import uuid as _uuid
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         import backend.app.ingest_routes as ir
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
-        from sqlmodel import select
 
         monkeypatch.setattr(ir, "MAX_UPLOAD_BYTES", 5)
 
@@ -874,6 +874,7 @@ class TestStaticInvariants:
     def _worker_sources() -> dict[str, str]:
         """Return {name: source} for all worker-path functions."""
         import inspect
+
         from backend.app import ingest_pipeline as p
 
         return {
@@ -892,6 +893,7 @@ class TestStaticInvariants:
         All data is stored in the database.
         """
         import inspect
+
         from backend.app import ingest_pipeline
 
         source_lines = inspect.getsource(ingest_pipeline).splitlines()
@@ -939,8 +941,9 @@ class TestStaticInvariants:
         has been eliminated.
         """
         import inspect
-        import backend.app.ingest_routes as ir
+
         import backend.app.ingest_pipeline as ip
+        import backend.app.ingest_routes as ir
 
         for mod_name, mod in (("ingest_routes", ir), ("ingest_pipeline", ip)):
             source = inspect.getsource(mod)
@@ -959,6 +962,7 @@ class TestStaticInvariants:
         Ready flags were part of the eliminated filesystem-staging protocol.
         """
         import inspect
+
         from backend.app import ingest_pipeline
 
         source = inspect.getsource(ingest_pipeline)
@@ -978,6 +982,7 @@ class TestStaticInvariants:
         CI MUST FAIL if any direct dispatch call appears in ingest_routes.
         """
         import inspect
+
         import backend.app.ingest_routes as ir
 
         source = inspect.getsource(ir)
@@ -1001,6 +1006,7 @@ class TestStaticInvariants:
         Verify by inspecting the source of transition().
         """
         import inspect
+
         from backend.app.ingest_pipeline import transition
 
         source = inspect.getsource(transition)
@@ -1109,12 +1115,12 @@ class TestInvalidPathPrevention:
         Verify: DB record is never present in "created" state without blob_data
         after a successful upload.
         """
-        import uuid as _uuid
+
+        from sqlmodel import Session
 
         import backend.app.ingest_pipeline as pipeline
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
-        from sqlmodel import Session
 
         snapshots = []
         original_dispatch = pipeline._dispatch_job
