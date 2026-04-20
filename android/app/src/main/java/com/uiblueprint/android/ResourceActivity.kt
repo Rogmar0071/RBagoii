@@ -746,6 +746,7 @@ class ResourceActivity : AppCompatActivity() {
         githubRepos.clear()
         githubRepos.addAll(updatedRepos)
         repoAdapter.submitList(updatedRepos)
+    }
 
     /**
      * Load ingestion jobs for this conversation and overlay their status.
