@@ -444,44 +444,6 @@ tool execution yet — information only).
 
 ---
 
-## 🔧 Debugging & Incident Response
-
-### When System Failures Occur
-
-If you encounter a failing system, **immediately** consult the debugging framework:
-
-1. **Read**: `DEBUGGING_CONTRACT.md` - Full debugging methodology
-2. **Follow**: `.github/DEBUGGING_CHECKLIST.md` - Step-by-step guide
-3. **Use**: `scripts/debug/` - Debugging tools
-4. **Document**: `.github/INCIDENT_TEMPLATE.md` - Incident reporting
-
-### Quick Debugging Commands
-
-```bash
-# System health check
-python scripts/debug/health_check.py --verbose
-
-# Analyze recent errors
-./scripts/debug/analyze_logs.sh --since "1 hour ago"
-
-# Check recent changes
-git log --oneline --since="1 hour ago"
-```
-
-### Debugging Contract Principles
-
-When debugging production issues:
-
-- ✅ **Observe before modifying** - Gather evidence first
-- ✅ **Make changes reversible** - Every fix must be rollbackable
-- ✅ **One variable at a time** - Surgical, isolated changes only
-- ✅ **Document everything** - Leave breadcrumbs for future debuggers
-- ✅ **Stabilize, don't optimize** - Stability > elegance
-
-**See `DEBUGGING_CONTRACT.md` for the complete 9-phase methodology.**
-
----
-
 **Last Updated**: 2026-04-20
 **Generated From**: README.md
 **Generator**: scripts/sync_ai_context.py
