@@ -270,7 +270,10 @@ class TestStateMachine:
     """Test strict state machine enforcement."""
 
     def test_state_sequence_file_upload(self, client):
-        """File upload follows: created → stored → queued → running → processing → indexing → finalizing → success"""
+        """
+        File upload follows:
+        created → stored → queued → running → processing → indexing → finalizing → success
+        """
         from io import BytesIO
 
         from sqlmodel import Session

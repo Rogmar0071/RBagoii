@@ -667,7 +667,9 @@ class IngestJob(SQLModel, table=True):
     # MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE
     # Binary blob storage for all ingestion data (replaces filesystem dependency)
     # All data (file uploads, fetched URLs, repo content) stored here
-    blob_data: Optional[bytes] = Field(default=None, sa_column=Column(sa.LargeBinary, nullable=True))
+    blob_data: Optional[bytes] = Field(
+        default=None, sa_column=Column(sa.LargeBinary, nullable=True)
+    )
 
     # MIME type of the stored blob
     blob_mime_type: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
