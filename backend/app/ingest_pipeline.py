@@ -858,156 +858,64 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
 
 def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     """
-    Ingest a GitHub repository from metadata blob stored in database.
+    Ingest a GitHub repository from blob manifest stored in database.
 
-    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+    MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+    
+    Worker is PURE: reads ONLY from blob_data (no network, no filesystem).
+    Blob contains complete repo manifest with all file contents pre-fetched.
     
     Returns ``(file_count, chunk_count)``.
-    
-    Worker reads repo metadata from blob_data, fetches files, and processes.
-    ALL data flows through database.
     """
-    import httpx
     import json
 
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
+
+    logger.info("INGEST_START job_id=%s kind=repo", job.id)
 
     # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
     if not job.blob_data:
         logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
         raise RuntimeError(
             f"BLOB_MISSING: IngestJob {job.id} has no blob_data. "
-            f"Repo metadata must be stored before processing."
+            f"Repo manifest must be stored before processing."
         )
 
-    # Parse repo metadata from blob
+    # Deserialize repo manifest from blob
     try:
-        metadata = json.loads(job.blob_data.decode('utf-8'))
-        repo_url = metadata["repo_url"]
-        branch = metadata["branch"]
+        manifest = json.loads(job.blob_data.decode('utf-8'))
+        files = manifest["files"]
+        repo_url = manifest.get("repo_url", job.source)
+        branch = manifest.get("branch", job.branch)
     except Exception as exc:
-        raise RuntimeError(f"Invalid repo metadata blob: {exc}") from exc
+        raise RuntimeError(f"Invalid repo manifest blob: {exc}") from exc
 
-    # Extract owner/repo from URL
-    match = re.search(r"github\.com/([^/]+)/([^/@]+)", repo_url)
-    if not match:
-        raise ValueError(f"Cannot parse GitHub URL: {repo_url!r}")
+    logger.info(
+        "Processing repo manifest: job=%s repo=%s branch=%s files=%d",
+        job.id, repo_url, branch, len(files)
+    )
 
-    owner, repo_name = match.groups()
-    if repo_name.endswith(".git"):
-        repo_name = repo_name[:-4]
+    file_count = 0
+    chunk_count = 0
 
-    token = os.environ.get("GITHUB_TOKEN", "").strip() or None
+    # Process each file from the manifest
+    for file_entry in files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
 
-    logger.info("INGEST_START job_id=%s kind=repo owner=%s repo=%s branch=%s",
-                job.id, owner, repo_name, branch)
-                    chunk_type=structure["chunk_type"],
-                    symbol=structure["symbol"],
-                    dependencies=structure["dependencies"],
-                    graph_group=structure["graph_group"],
-                    start_line=structure["start_line"],
-                    end_line=structure["end_line"],
-                )
-                # MIGRATION: Set repo_id FK for legacy compatibility
-                if legacy_repo_id:
-                    chunk.repo_id = legacy_repo_id
-                session.add(chunk)
-                chunk_count += 1
+        if not content or not content.strip():
+            continue
 
-            file_count += 1
-    else:
-        # PRODUCTION PATH: Fetch from GitHub API
-        blobs = _fetch_github_tree(owner, repo_name, branch, token)
+        # Chunk the content
+        chunks = split_with_overlap(content)
 
-        max_files = int(os.environ.get("REPO_MAX_FILES", str(REPO_MAX_FILES)))
-        if not blobs:
-            raise RuntimeError(
-                f"No ingestible files found in {owner}/{repo_name}@{branch}. "
-                "Verify the repository URL, branch name, and that it contains "
-                "supported file types."
-            )
-
-        if len(blobs) > max_files:
-            logger.warning(
-                "Repo %s/%s@%s has %d eligible files; capping at %d (REPO_MAX_FILES)",
-                owner,
-                repo_name,
-                branch,
-                len(blobs),
-                max_files,
-            )
-            blobs = blobs[:max_files]
-
-        max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
-        file_count = 0
-        chunk_count = 0
-        total_files = len(blobs)
-
-        with httpx.Client(timeout=30.0) as client:
-            for item in blobs:
-                path = item.get("path", "")
-                raw_data = _fetch_raw_file(owner, repo_name, branch, path, client)
-                if raw_data is None:
-                    continue
-
-                mime_type = mimetypes.guess_type(path)[0] or "text/plain"
-                text = extract_text(raw_data, mime_type, path)
-                if not text or not text.strip():
-                    continue
-
-                text = text[:max_file_chars]
-                chunks = split_with_overlap(text)
-                for idx, chunk_text in enumerate(chunks):
-                    structure = extract_structure(chunk_text, path)
-                    chunk = RepoChunk(
-                        ingest_job_id=job.id,
-                        file_path=path,
-                        content=chunk_text,
-                        chunk_index=idx,
-                        token_estimate=max(1, len(chunk_text) // 4),
-                        chunk_type=structure["chunk_type"],
-                        symbol=structure["symbol"],
-                        dependencies=structure["dependencies"],
-                        graph_group=structure["graph_group"],
-                        start_line=structure["start_line"],
-                        end_line=structure["end_line"],
-                    )
-                    # MIGRATION: Set repo_id FK for legacy compatibility
-                    if legacy_repo_id:
-                        chunk.repo_id = legacy_repo_id
-                    session.add(chunk)
-                    chunk_count += 1
-
-                file_count += 1
-
-                # Commit partial progress every 20 files so status polling is live
-                if file_count % 20 == 0:
-                    job.chunk_count = chunk_count
-                    job.file_count = file_count
-                    # Calculate progress: 0-95% based on files processed
-                    job.progress = (
-                        min(95, int((file_count / total_files) * 95))
-                        if total_files > 0
-                        else 95
-                    )
-                    session.add(job)
-                    session.commit()
-                    logger.info(
-                        "IngestJob %s: progress %d files / %d chunks (%d%%)",
-                        str(job.id),
-                        file_count,
-                        chunk_count,
-                        job.progress,
-                    )
-
-            text = text[:max_file_chars]
-            chunks = split_with_overlap(text)
-            for idx, chunk_text in enumerate(chunks):
-                structure = extract_structure(chunk_text, path)
-                chunk = RepoChunk(
+        for idx, chunk_text in enumerate(chunks):
+            structure = extract_structure(chunk_text, file_path)
+            session.add(
+                RepoChunk(
                     ingest_job_id=job.id,
-                    file_path=path,
+                    file_path=file_path,
                     content=chunk_text,
                     chunk_index=idx,
                     token_estimate=max(1, len(chunk_text) // 4),
@@ -1018,57 +926,17 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                     start_line=structure["start_line"],
                     end_line=structure["end_line"],
                 )
-                # MIGRATION: Set repo_id FK for legacy compatibility
-                if legacy_repo_id:
-                    chunk.repo_id = legacy_repo_id
-                session.add(chunk)
-                chunk_count += 1
-
-            file_count += 1
-
-            # Commit partial progress every 20 files so status polling is live
-            if file_count % 20 == 0:
-                job.chunk_count = chunk_count
-                job.file_count = file_count
-                # Calculate progress: 0-95% based on files processed
-                job.progress = (
-                    min(95, int((file_count / total_files) * 95))
-                    if total_files > 0
-                    else 95
-                )
-                session.add(job)
-                session.commit()
-                logger.info(
-                    "IngestJob %s: progress %d files / %d chunks (%d%%)",
-                    str(job.id),
-                    file_count,
-                    chunk_count,
-                    job.progress,
-                )
-
-    # MIGRATION: Update legacy Repo table with final counts
-    if legacy_repo_id:
-        repo_record = session.get(Repo, legacy_repo_id)
-        if repo_record:
-            repo_record.total_files = file_count
-            repo_record.total_chunks = chunk_count
-            repo_record.ingestion_status = "success"
-            repo_record.updated_at = datetime.now(timezone.utc)
-            session.add(repo_record)
-            session.commit()
-            logger.info(
-                "MIGRATION: Updated legacy Repo %s: files=%d chunks=%d",
-                str(legacy_repo_id),
-                file_count,
-                chunk_count
             )
+            chunk_count += 1
 
+        file_count += 1
+
+    # Commit all chunks to database
+    session.commit()
+
+    logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
     return file_count, chunk_count
 
-
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 
 def process_ingest_job(job_id: str) -> None:
@@ -1112,24 +980,7 @@ def process_ingest_job(job_id: str) -> None:
             elif job.kind == "url":
                 file_count, chunk_count = _ingest_url(session, job)
             elif job.kind == "repo":
-                # TEST COMPATIBILITY: Print statements for integration test assertions
-                # These match the legacy worker output that tests depend on
-                if job.source_path:
-                    try:
-                        legacy_repo_id = uuid.UUID(job.source_path)
-                        print("INGEST START:", str(legacy_repo_id))
-                    except (ValueError, AttributeError):
-                        pass
-
                 file_count, chunk_count = _ingest_repo(session, job)
-
-                # TEST COMPATIBILITY: Print completion for integration test assertions
-                if job.source_path:
-                    try:
-                        legacy_repo_id = uuid.UUID(job.source_path)
-                        print("INGEST DONE:", str(legacy_repo_id))
-                    except (ValueError, AttributeError):
-                        pass
             else:
                 raise ValueError(f"Unknown IngestJob kind: {job.kind!r}")
 
@@ -1159,34 +1010,6 @@ def process_ingest_job(job_id: str) -> None:
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
-
-        # MIGRATION: Update legacy Repo table on failure
-        try:
-            from sqlmodel import Session
-
-            from backend.app.database import get_engine
-            from backend.app.models import IngestJob, Repo
-
-            with Session(get_engine()) as session:
-                job = session.get(IngestJob, uuid.UUID(job_id))
-                if job and job.kind == "repo" and job.source_path:
-                    # Check if source_path contains legacy repo_id
-                    try:
-                        legacy_repo_id = uuid.UUID(job.source_path)
-                        repo_record = session.get(Repo, legacy_repo_id)
-                        if repo_record:
-                            repo_record.ingestion_status = "failed"
-                            repo_record.updated_at = datetime.now(timezone.utc)
-                            session.add(repo_record)
-                            session.commit()
-                            logger.info(
-                                "MIGRATION: Updated legacy Repo %s status=failed",
-                                str(legacy_repo_id)
-                            )
-                    except (ValueError, AttributeError):
-                        pass  # Not a legacy repo
-        except Exception as migration_exc:
-            logger.warning("Failed to update legacy Repo on failure: %s", migration_exc)
 
         # TRANSITION: ANY → FAILED (terminal state, can transition from anywhere)
         _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
