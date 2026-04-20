@@ -200,6 +200,46 @@ def validate_state_transition(from_state: str | None, to_state: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Blob validation (pre-transition enforcement)
+# ---------------------------------------------------------------------------
+
+
+def validate_blob_before_stored(job: Any) -> None:
+    """
+    Validate blob_data before allowing transition to 'stored' state.
+    
+    MQP-CONTRACT: AIC-v1.1-FINAL-VALIDATION-LOCK
+    Enforces blob invariants before storage.
+    
+    Raises RuntimeError if validation fails.
+    """
+    MAX_BLOB_SIZE = 500 * 1024 * 1024  # 500MB
+    
+    if job.blob_data is None:
+        raise RuntimeError(
+            f"BLOB_VALIDATION_FAILED: Job {job.id} has no blob_data. "
+            f"Cannot transition to 'stored' state without blob content."
+        )
+    
+    if job.blob_size_bytes == 0:
+        raise RuntimeError(
+            f"BLOB_VALIDATION_FAILED: Job {job.id} has zero-size blob. "
+            f"Blob must contain data before storage."
+        )
+    
+    if job.blob_size_bytes > MAX_BLOB_SIZE:
+        raise RuntimeError(
+            f"BLOB_VALIDATION_FAILED: Job {job.id} blob size {job.blob_size_bytes:,} bytes "
+            f"exceeds maximum of {MAX_BLOB_SIZE:,} bytes (500MB)."
+        )
+    
+    logger.debug(
+        "BLOB_VALIDATED: job=%s size=%d bytes mime=%s",
+        job.id, job.blob_size_bytes, job.blob_mime_type
+    )
+
+
+# ---------------------------------------------------------------------------
 # TRANSITION AUTHORITY ENFORCEMENT
 # ---------------------------------------------------------------------------
 
@@ -242,6 +282,11 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
         job = session.get(IngestJob, job_id)
         if not job:
             raise RuntimeError(f"TRANSITION_ERROR: Job {job_id} not found")
+        
+        # MQP-CONTRACT: BLOB VALIDATION ENFORCEMENT
+        # Validate blob exists before allowing 'stored' state
+        if next_state == "stored":
+            validate_blob_before_stored(job)
         
         # Validate transition
         validate_state_transition(job.status, next_state)

@@ -103,13 +103,53 @@ class TestBlobStorage:
             assert job.status == "success"
 
     def test_url_ingest_stores_blob(self, client):
-        """URL ingestion stores fetched content as blob."""
-        import pytest
-        
-        # Skip this test - URL fetching requires network or complex mocking
-        # The core functionality (blob storage) is tested in file upload
-        # and the route code path is the same
-        pytest.skip("URL ingestion requires network access or complex httpx mocking")
+        """URL ingestion stores fetched content as blob - DETERMINISTIC."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        # Create job with pre-stored blob (simulating URL fetch)
+        # This is deterministic - no actual network call
+        job = IngestJob(
+            id=uuid.uuid4(),
+            kind="url",
+            source="https://example.com",
+            status="created",
+        )
+
+        # Simulate what the route does: store fetched content as blob
+        fake_html = b"<html><body><h1>Test Content</h1><p>Some text</p></body></html>"
+        job.blob_data = fake_html
+        job.blob_mime_type = "text/html"
+        job.blob_size_bytes = len(fake_html)
+
+        with Session(get_engine()) as session:
+            session.add(job)
+            session.commit()
+            job_id = str(job.id)
+
+        # Now process it (simulates worker)
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        # Transition through states
+        from backend.app.ingest_pipeline import transition
+
+        transition(uuid.UUID(job_id), "stored")
+        transition(uuid.UUID(job_id), "queued")
+
+        # Process
+        process_ingest_job(job_id)
+
+        # Verify blob was used and chunks created
+        with Session(get_engine()) as session:
+            job = session.get(IngestJob, uuid.UUID(job_id))
+            assert job is not None
+            assert job.blob_data is not None
+            assert len(job.blob_data) > 0
+            assert job.blob_mime_type == "text/html"
+            assert job.status == "success"
+            assert job.chunk_count > 0
 
     def test_blob_size_validation(self, client):
         """Blobs exceeding 500MB are rejected."""
@@ -123,6 +163,105 @@ class TestBlobStorage:
 
         assert resp.status_code == 413
         assert "500MB" in resp.json()["detail"]
+
+    def test_repo_ingestion_deterministic(self, client):
+        """Repo ingestion with pre-fetched manifest is fully deterministic."""
+        import json
+
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob, RepoChunk
+        from sqlmodel import select
+
+        # Create deterministic repo manifest (simulates API fetch)
+        manifest = {
+            "repo_url": "https://github.com/test/repo",
+            "owner": "test",
+            "name": "repo",
+            "branch": "main",
+            "files": [
+                {
+                    "path": "src/main.py",
+                    "content": "def hello():\n    return 'world'\n",
+                    "size": 30
+                },
+                {
+                    "path": "README.md",
+                    "content": "# Test Repo\n\nThis is a test.\n",
+                    "size": 32
+                }
+            ]
+        }
+
+        # Create job with manifest blob
+        job = IngestJob(
+            id=uuid.uuid4(),
+            kind="repo",
+            source="https://github.com/test/repo@main",
+            branch="main",
+            status="created",
+        )
+
+        job.blob_data = json.dumps(manifest).encode("utf-8")
+        job.blob_mime_type = "application/json"
+        job.blob_size_bytes = len(job.blob_data)
+
+        with Session(get_engine()) as session:
+            session.add(job)
+            session.commit()
+            job_id = str(job.id)
+
+        # Process through states
+        from backend.app.ingest_pipeline import process_ingest_job, transition
+
+        transition(uuid.UUID(job_id), "stored")
+        transition(uuid.UUID(job_id), "queued")
+
+        # Process (worker reads blob, NO network calls)
+        process_ingest_job(job_id)
+
+        # Verify deterministic output
+        with Session(get_engine()) as session:
+            job = session.get(IngestJob, uuid.UUID(job_id))
+            assert job.status == "success"
+            assert job.file_count == 2
+            assert job.chunk_count > 0
+
+            # Verify chunks were created
+            chunks = list(session.exec(
+                select(RepoChunk).where(RepoChunk.ingest_job_id == uuid.UUID(job_id))
+            ))
+            assert len(chunks) > 0
+            assert any(c.file_path == "src/main.py" for c in chunks)
+            assert any(c.file_path == "README.md" for c in chunks)
+
+        # Run AGAIN with same manifest - should produce identical output
+        job2 = IngestJob(
+            id=uuid.uuid4(),
+            kind="repo",
+            source="https://github.com/test/repo@main",
+            branch="main",
+            status="created",
+        )
+        job2.blob_data = json.dumps(manifest).encode("utf-8")
+        job2.blob_mime_type = "application/json"
+        job2.blob_size_bytes = len(job2.blob_data)
+
+        with Session(get_engine()) as session:
+            session.add(job2)
+            session.commit()
+            job2_id = str(job2.id)
+
+        transition(uuid.UUID(job2_id), "stored")
+        transition(uuid.UUID(job2_id), "queued")
+        process_ingest_job(job2_id)
+
+        # Verify identical chunk count (deterministic)
+        with Session(get_engine()) as session:
+            job2_record = session.get(IngestJob, uuid.UUID(job2_id))
+            assert job2_record.chunk_count == job.chunk_count  # SAME output
+            assert job2_record.file_count == job.file_count
 
 
 # ---------------------------------------------------------------------------
@@ -182,11 +321,11 @@ class TestStateMachine:
             assert "/tmp/ingest_staging" not in write_path
 
     def test_blob_missing_fails(self, client):
-        """Processing fails if blob_data is missing."""
+        """Processing fails if blob_data is missing - validation enforced."""
         from sqlmodel import Session
 
         from backend.app.database import get_engine
-        from backend.app.ingest_pipeline import process_ingest_job, transition
+        from backend.app.ingest_pipeline import transition
         from backend.app.models import IngestJob
 
         # Create job without blob
@@ -202,19 +341,16 @@ class TestStateMachine:
             session.commit()
             job_id = str(job.id)
 
-        # Transition through required states (created → stored → queued)
-        # but skip storing blob_data (invalid!)
-        transition(uuid.UUID(job_id), "stored")
-        transition(uuid.UUID(job_id), "queued")
+        # Try to transition to stored without blob - should fail validation
+        import pytest
 
-        # Try to process - should fail due to missing blob
-        process_ingest_job(job_id)
+        with pytest.raises(RuntimeError, match="BLOB_VALIDATION_FAILED"):
+            transition(uuid.UUID(job_id), "stored")
 
-        # Verify it failed
+        # Verify job is still in created state (transition was rejected)
         with Session(get_engine()) as session:
             job = session.get(IngestJob, uuid.UUID(job_id))
-            assert job.status == "failed"
-            assert "BLOB_MISSING" in job.error
+            assert job.status == "created"
 
 
 # ---------------------------------------------------------------------------
@@ -375,13 +511,16 @@ class TestTransitionAuthority:
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
 
-        # Create job
+        # Create job with valid blob
         with Session(get_engine()) as session:
             job = IngestJob(
                 id=job_id,
                 kind="file",
                 source="test.txt",
                 status="created",
+                blob_data=b"test content",
+                blob_mime_type="text/plain",
+                blob_size_bytes=12,
             )
             session.add(job)
             session.commit()
@@ -407,13 +546,16 @@ class TestTransitionAuthority:
 
         job_id = uuid.uuid4()
 
-        # Create job
+        # Create job with valid blob
         with Session(get_engine()) as session:
             job = IngestJob(
                 id=job_id,
                 kind="file",
                 source="test.txt",
                 status="created",
+                blob_data=b"test content",
+                blob_mime_type="text/plain",
+                blob_size_bytes=12,
             )
             session.add(job)
             session.commit()
