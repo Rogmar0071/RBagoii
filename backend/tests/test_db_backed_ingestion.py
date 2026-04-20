@@ -638,3 +638,119 @@ class TestCompliance:
                 job = session.get(IngestJob, uuid.UUID(job_id))
                 assert job.blob_data == content
                 assert len(job.blob_data) == len(content)
+
+
+# ---------------------------------------------------------------------------
+# Test: MQP-CONTRACT WORKER-EXECUTION-CLOSURE — Terminal State Enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerTerminalStateEnforcement:
+    """
+    MQP-CONTRACT: WORKER-EXECUTION-CLOSURE v1.1
+
+    Verifies that process_ingest_job enforces the execution boundary:
+        execution_allowed(job) = job.status == queued
+    """
+
+    def _make_job(self, status: str, blob_data: bytes = b"hello world") -> str:
+        """Create an IngestJob directly in DB with the given status. Returns str(job_id)."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        job_id = uuid.uuid4()
+        with Session(get_engine()) as session:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="test.txt",
+                status=status,
+                blob_data=blob_data,
+                blob_mime_type="text/plain",
+                blob_size_bytes=len(blob_data),
+            )
+            session.add(job)
+            session.commit()
+        return str(job_id)
+
+    def _get_status(self, job_id: str) -> str:
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        with Session(get_engine()) as session:
+            job = session.get(IngestJob, uuid.UUID(job_id))
+            return job.status
+
+    def test_worker_skips_failed_job(self):
+        """
+        TEST 1 — Terminal Execution Block (failed)
+
+        GIVEN  job.status = failed
+        WHEN   process_ingest_job(job_id)
+        THEN   no transition occurs, no exception raised
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("failed")
+        process_ingest_job(job_id)  # must not raise
+        assert self._get_status(job_id) == "failed"
+
+    def test_worker_skips_success_job(self):
+        """
+        TEST 2 — Terminal Execution Block (success)
+
+        GIVEN  job.status = success
+        WHEN   process_ingest_job(job_id)
+        THEN   no execution, no transition
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("success")
+        process_ingest_job(job_id)  # must not raise
+        assert self._get_status(job_id) == "success"
+
+    def test_worker_rejects_non_queued(self):
+        """
+        TEST 3 — Invalid State Block (non-queued, non-terminal)
+
+        GIVEN  job.status = created
+        WHEN   process_ingest_job(job_id)
+        THEN   exits immediately, no transition
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("created")
+        process_ingest_job(job_id)  # must not raise
+        assert self._get_status(job_id) == "created"
+
+    def test_worker_executes_only_queued(self):
+        """
+        TEST 4 — Valid Execution
+
+        GIVEN  job.status = queued
+        WHEN   process_ingest_job(job_id)
+        THEN   pipeline runs and job reaches success
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("queued")
+        process_ingest_job(job_id)
+        assert self._get_status(job_id) == "success"
+
+    def test_no_double_failure_transition(self):
+        """
+        TEST 5 — No Double-Failure Transition
+
+        GIVEN  job.status = failed
+        WHEN   _transition(job_id, failed) is attempted
+        THEN   raises RuntimeError with STATE_MACHINE_VIOLATION
+        """
+        from backend.app.ingest_pipeline import _transition
+
+        job_id = self._make_job("failed")
+        with pytest.raises(RuntimeError, match="STATE_MACHINE_VIOLATION"):
+            _transition(job_id, "failed", error="test")
