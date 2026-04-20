@@ -979,6 +979,8 @@ def add_repo(
 
     if newly_created or current_status in ("pending", "failed"):
         # Create IngestJob to track this ingestion via unified pipeline
+        import json
+
         from backend.app.models import IngestJob
 
         source_key = f"{req.repo_url}@{branch}"
@@ -1006,15 +1008,136 @@ def add_repo(
             "pipeline": "unified"
         })
 
-        # Use unified pipeline transition and enqueue
-        from backend.app.ingest_pipeline import _transition
-        from backend.app.ingest_routes import _enqueue
+        # Fetch repo data and store as blob (following ingest_routes.py pattern)
+        try:
+            from backend.app.ingest_pipeline import (
+                REPO_MAX_FILE_CHARS,
+                REPO_MAX_FILES,
+                _fetch_github_tree,
+                _fetch_raw_file,
+                transition,
+            )
 
-        _transition(str(job_id), "queued")
-        logger.info("STATE: QUEUED job_id=%s repo_id=%s", job_id, repo_id_str)
+            # Parse repo URL
+            match = re.search(r"github\.com/([^/]+)/([^/@]+)", req.repo_url)
+            if not match:
+                raise ValueError(f"Invalid GitHub URL: {req.repo_url}")
 
-        _enqueue(str(job_id))
-        logger.info({"event": "job_enqueued", "job_id": str(job_id), "repo_id": repo_id_str})
+            owner, repo_name = match.groups()
+            if repo_name.endswith(".git"):
+                repo_name = repo_name[:-4]
+
+            token = os.environ.get("GITHUB_TOKEN", "").strip() or None
+
+            # Fetch repo tree
+            logger.info("Fetching repo tree: %s/%s@%s", owner, repo_name, branch)
+            blobs = _fetch_github_tree(owner, repo_name, branch, token)
+
+            if not blobs:
+                raise RuntimeError(
+                    f"No ingestible files found in {owner}/{repo_name}@{branch}. "
+                    "Verify the repository URL, branch name, and that it contains "
+                    "supported file types."
+                )
+
+            # Cap at max files
+            max_files = int(os.environ.get("REPO_MAX_FILES", str(REPO_MAX_FILES)))
+            if len(blobs) > max_files:
+                logger.warning(
+                    "Repo %s/%s@%s has %d files; capping at %d",
+                    owner, repo_name, branch, len(blobs), max_files
+                )
+                blobs = blobs[:max_files]
+
+            # Fetch ALL file contents
+            logger.info(
+                "Fetching %d files from %s/%s@%s",
+                len(blobs), owner, repo_name, branch
+            )
+            max_file_chars = int(
+                os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS))
+            )
+            files = []
+
+            with httpx.Client(timeout=60.0) as client:
+                for blob in blobs:
+                    file_path = blob["path"]
+                    raw_bytes = _fetch_raw_file(
+                        owner, repo_name, branch, file_path, client
+                    )
+
+                    if raw_bytes is None:
+                        logger.debug("Skipping file (fetch failed): %s", file_path)
+                        continue
+
+                    try:
+                        content = raw_bytes.decode("utf-8", errors="replace")[
+                            :max_file_chars
+                        ]
+                    except Exception:
+                        logger.debug("Skipping non-UTF-8 file: %s", file_path)
+                        continue
+
+                    files.append({
+                        "path": file_path,
+                        "content": content,
+                        "size": len(raw_bytes)
+                    })
+
+            if not files:
+                raise RuntimeError(
+                    f"No readable files fetched from {owner}/{repo_name}@{branch}"
+                )
+
+            # Build repo manifest
+            repo_manifest = {
+                "repo_url": req.repo_url,
+                "owner": owner,
+                "name": repo_name,
+                "branch": branch,
+                "files": files
+            }
+
+            # Serialize and store as blob
+            blob_bytes = json.dumps(repo_manifest).encode("utf-8")
+
+            # Validate size (500MB limit)
+            MAX_BLOB_SIZE = 500 * 1024 * 1024
+            if len(blob_bytes) > MAX_BLOB_SIZE:
+                raise RuntimeError(
+                    f"Repo manifest size {len(blob_bytes):,} bytes exceeds 500MB limit. "
+                    f"Fetched {len(files)} files."
+                )
+
+            ingest_job.blob_data = blob_bytes
+            ingest_job.blob_mime_type = "application/json"
+            ingest_job.blob_size_bytes = len(blob_bytes)
+            session.add(ingest_job)
+            session.commit()
+
+            logger.info(
+                "Repo manifest stored: job=%s files=%d size=%d bytes",
+                job_id, len(files), len(blob_bytes)
+            )
+
+            # TRANSITION: CREATED → STORED
+            transition(job_id, "stored", {"progress": 0})
+            logger.info("STATE: STORED job_id=%s", job_id)
+
+            # TRANSITION: STORED → QUEUED
+            transition(job_id, "queued")
+            logger.info("STATE: QUEUED job_id=%s repo_id=%s", job_id, repo_id_str)
+
+            # Enqueue the job for processing
+            from backend.app.ingest_routes import _enqueue
+            _enqueue(str(job_id))
+            logger.info({"event": "job_enqueued", "job_id": str(job_id), "repo_id": repo_id_str})
+
+        except Exception as exc:
+            logger.error("Failed to fetch/store repo for job %s: %s", job_id, exc)
+            from backend.app.ingest_pipeline import transition
+            transition(job_id, "failed", {"error": str(exc)[:1000]})
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return RepoAddResponse(
         repo_id=repo_id_str,
