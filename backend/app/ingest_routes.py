@@ -218,13 +218,17 @@ async def ingest_file(
     
     # MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §1
     # Ensure file is physically present and readable before proceeding
-    if not staging_path.exists():
+    try:
+        file_stat = staging_path.stat()
+        if file_stat.st_size != len(data):
+            raise RuntimeError(
+                f"STAGING_INVARIANT_VIOLATION: File size mismatch. "
+                f"Expected {len(data)}, got {file_stat.st_size}"
+            )
+    except FileNotFoundError:
         raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: File write failed: {staging_path}")
-    if staging_path.stat().st_size != len(data):
-        raise RuntimeError(
-            f"STAGING_INVARIANT_VIOLATION: File size mismatch. "
-            f"Expected {len(data)}, got {staging_path.stat().st_size}"
-        )
+    except Exception as exc:
+        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: Cannot verify file: {exc}") from exc
     
     # Force flush to disk to ensure atomic handoff
     try:

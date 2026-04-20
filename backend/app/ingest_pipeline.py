@@ -497,6 +497,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         if file_size == 0:
             logger.warning("Staged file is empty: %s (job %s)", path, job.id)
             return 0, 0
+        logger.debug("Processing staged file: %s (%d bytes, job %s)", path, file_size, job.id)
     except Exception as exc:
         raise RuntimeError(
             f"STAGING_INVARIANT_VIOLATION: Cannot access staged file {path}: {exc}"
