@@ -233,10 +233,12 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
             - file_count: int
             - chunk_count: int
     """
-    from backend.app.database import get_session
+    from sqlmodel import Session
+    
+    from backend.app.database import get_engine
     from backend.app.models import IngestJob
     
-    with get_session() as session:
+    with Session(get_engine()) as session:
         job = session.get(IngestJob, job_id)
         if not job:
             raise RuntimeError(f"TRANSITION_ERROR: Job {job_id} not found")
