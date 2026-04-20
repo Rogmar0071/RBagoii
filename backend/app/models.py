@@ -618,9 +618,24 @@ class IngestJob(SQLModel, table=True):
     "url"   — a web page fetched via POST /v1/ingest/url
     "repo"  — a GitHub repository ingested via POST /v1/ingest/repo
 
-    status values
-    -------------
-    queued  → running → success | failed
+    status values (MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1)
+    ---------------------------------------------------------------------
+    Linear progression (strict state machine):
+
+    created → staged → ready → queued → running → processing → finalizing → success
+
+    Any state can transition to: failed
+
+    State definitions:
+    - created: Job record exists, no processing yet
+    - staged: File written to disk (file uploads only)
+    - ready: .ready flag exists, file stable (file uploads only)
+    - queued: Job in RQ queue, awaiting worker
+    - running: Worker started, pre-flight checks
+    - processing: Actively reading/parsing/chunking (progress 5-95%)
+    - finalizing: Final writes, cleanup (progress 95-99%)
+    - success: Completed successfully (terminal)
+    - failed: Failed with error (terminal)
     """
 
     __tablename__ = "ingest_jobs"
@@ -642,8 +657,8 @@ class IngestJob(SQLModel, table=True):
     # Absolute path on disk for kind="file" (staging area)
     source_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
 
-    # queued / running / success / failed
-    status: str = Field(default="queued", sa_column=Column(sa.Text, index=True))
+    # created / staged / ready / queued / running / processing / finalizing / success / failed
+    status: str = Field(default="created", sa_column=Column(sa.Text, index=True))
 
     # Progress percentage (0-100)
     progress: int = Field(default=0)

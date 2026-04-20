@@ -82,6 +82,9 @@ def _enqueue(job_id: str) -> None:
         RULE A1 — SINGLE QUEUE: All jobs enqueued to Queue("default")
         RULE A2 — DIRECT ENQUEUE ONLY: Using q.enqueue() directly
         RULE A3 — VALIDATION CHECK: Assert queue name is "rq:queue:default"
+
+    MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2
+        Updated to use enqueue_job() single entry point instead of direct q.enqueue()
     """
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
@@ -97,20 +100,16 @@ def _enqueue(job_id: str) -> None:
     if redis_url:
         try:
             from redis import Redis
-            from rq import Queue as RQueue
 
-            conn = Redis.from_url(redis_url)
-            q = RQueue("default", connection=conn)
-            q.enqueue(
-                "backend.app.job_runner.execute_job",
-                "process_ingest_job",
-                job_id,
-                job_timeout=3600,
-            )
+            # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
+            from backend.app.worker import enqueue_job
+
+            enqueue_job(job_id, "process_ingest_job")
             logger.info("IngestJob %s enqueued via RQ", job_id)
 
             # MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §A3 — Validation
             # Verify no intermediate queue exists
+            conn = Redis.from_url(redis_url)
             keys = conn.keys("rq:queue:*:intermediate")
             if keys:
                 logger.error(
@@ -215,21 +214,90 @@ async def ingest_file(
     _STAGING_DIR.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4()
     staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
-    staging_path.write_bytes(data)
+    ready_path = Path(str(staging_path) + ".ready")
 
+    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+    # State: CREATED → STAGED → READY → QUEUED
+
+    # STATE: CREATED - Create job record before file operations
     job = IngestJob(
         id=job_id,
         kind="file",
         source=filename,
         source_path=str(staging_path),
-        status="queued",
+        status="created",  # Initial state
         conversation_id=conversation_id,
         workspace_id=workspace_id,
     )
     session.add(job)
     session.commit()
 
+    logger.info("STATE: CREATED job_id=%s", job_id)
+
+    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §1
+    # Atomic write with explicit READY flag for deterministic handoff
+    try:
+        # STEP 1: Write data file with fsync
+        with open(staging_path, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # STEP 2: HARD VERIFY file existence
+        if not staging_path.exists():
+            raise RuntimeError(f"STAGING_VIOLATION: missing file {staging_path}")
+
+        # STEP 3: HARD VERIFY file size
+        if staging_path.stat().st_size != len(data):
+            staging_path.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"STAGING_VIOLATION: size mismatch {staging_path}. "
+                f"Expected {len(data)}, got {staging_path.stat().st_size}"
+            )
+
+        # TRANSITION: CREATED → STAGED
+        from backend.app.ingest_pipeline import _transition
+        _transition(str(job_id), "staged")
+        logger.info("STATE: STAGED job_id=%s path=%s size=%d", job_id, staging_path, len(data))
+
+        # STEP 4: CREATE READY FLAG (THIS IS THE TRUE SIGNAL)
+        # File existence alone is NOT sufficient - ready flag proves atomicity
+        with open(ready_path, "w") as f:
+            f.write("ok")
+            f.flush()
+            os.fsync(f.fileno())
+
+        # STEP 5: HARD VERIFY ready flag exists
+        if not ready_path.exists():
+            staging_path.unlink(missing_ok=True)
+            raise RuntimeError(f"STAGING_VIOLATION: ready flag missing {ready_path}")
+
+        # TRANSITION: STAGED → READY
+        _transition(str(job_id), "ready")
+        logger.info("STATE: READY job_id=%s", job_id)
+
+    except RuntimeError:
+        # Re-raise our own STAGING_VIOLATION errors
+        staging_path.unlink(missing_ok=True)
+        ready_path.unlink(missing_ok=True)
+        _transition(str(job_id), "failed", error="Staging failed")
+        raise
+    except Exception as exc:
+        # Catch-all for I/O errors, permission issues, disk full, etc.
+        staging_path.unlink(missing_ok=True)
+        ready_path.unlink(missing_ok=True)
+        _transition(str(job_id), "failed", error=str(exc)[:1000])
+        raise RuntimeError(f"STAGING_VIOLATION: Cannot write file: {exc}") from exc
+
+    # TRANSITION: READY → QUEUED (must happen BEFORE enqueue for synchronous execution)
+    _transition(str(job_id), "queued")
+    logger.info("STATE: QUEUED job_id=%s", job_id)
+
+    # Enqueue the job (may run synchronously in test mode)
     _enqueue(str(job_id))
+
+    # Refresh job to get latest status
+    session.refresh(job)
     # After commit + synchronous enqueue, lazy-load on _to_response(job) reads
     # the terminal status committed by process_ingest_job.
     return _to_response(job)
@@ -268,18 +336,32 @@ def ingest_url(
         )
 
     job_id = uuid.uuid4()
+
+    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+    # For URL/repo jobs: CREATED → QUEUED (no staging phase)
     job = IngestJob(
         id=job_id,
         kind="url",
         source=url,
-        status="queued",
+        status="created",  # Initial state
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
     )
     session.add(job)
     session.commit()
 
+    logger.info("STATE: CREATED job_id=%s kind=url", job_id)
+
+    # URL jobs skip staging/ready states (no file to stage)
+    # TRANSITION: CREATED → QUEUED
+    from backend.app.ingest_pipeline import _transition
+    _transition(str(job_id), "queued")
+    logger.info("STATE: QUEUED job_id=%s", job_id)
+
     _enqueue(str(job_id))
+
+    # Refresh to get latest status
+    session.refresh(job)
     return _to_response(job)
 
 
@@ -336,23 +418,42 @@ def ingest_repo(
             .where(IngestJob.conversation_id == body.conversation_id)
             .order_by(IngestJob.created_at.desc())
         ).first()
-        if existing and existing.status in ("queued", "running", "success"):
+        # Check for active states (not just queued/running/success)
+        active_states = {
+            "created", "staged", "ready", "queued", "running",
+            "processing", "finalizing", "success"
+        }
+        if existing and existing.status in active_states:
             return _to_response(existing)
 
     job_id = uuid.uuid4()
+
+    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
+    # For repo jobs: CREATED → QUEUED (no staging phase)
     job = IngestJob(
         id=job_id,
         kind="repo",
         source=source_key,
         branch=body.branch,
-        status="queued",
+        status="created",  # Initial state
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
     )
     session.add(job)
     session.commit()
 
+    logger.info("STATE: CREATED job_id=%s kind=repo", job_id)
+
+    # Repo jobs skip staging/ready states (no file to stage)
+    # TRANSITION: CREATED → QUEUED
+    from backend.app.ingest_pipeline import _transition
+    _transition(str(job_id), "queued")
+    logger.info("STATE: QUEUED job_id=%s", job_id)
+
     _enqueue(str(job_id))
+
+    # Refresh to get latest status
+    session.refresh(job)
     return _to_response(job)
 
 
@@ -451,12 +552,16 @@ def delete_ingest_job(
     ).all():
         session.delete(chunk)
 
-    # Clean up the staged file from disk
+    # Clean up the staged file and ready flag from disk
+    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §6 - Cleanup both files
     if job.source_path:
         try:
-            Path(job.source_path).unlink(missing_ok=True)
+            staging_path = Path(job.source_path)
+            ready_path = Path(str(staging_path) + ".ready")
+            staging_path.unlink(missing_ok=True)
+            ready_path.unlink(missing_ok=True)
         except Exception as exc:
-            logger.warning("Could not delete staged file %s: %s", job.source_path, exc)
+            logger.warning("Could not delete staged files %s: %s", job.source_path, exc)
 
     session.delete(job)
     session.commit()

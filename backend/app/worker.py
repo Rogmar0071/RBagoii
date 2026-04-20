@@ -195,7 +195,7 @@ def flush_queue(queue_names: list[str] | None = None) -> None:
         logger.warning("RQ queue flush failed (non-fatal): %s", exc)
 
 
-def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
+def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> Optional[str]:
     """
     Enqueue *job_type* for *job_id*.
 
@@ -209,10 +209,22 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
     - RQ_JOB_TIMEOUT_S: hard job timeout in seconds (default 1800)
     - RQ_RESULT_TTL_S: how long to retain job result metadata (default 86400)
 
+    Parameters
+    ----------
+    job_id:
+        ID of the job to execute (passed to the job function).
+    job_type:
+        Type/name of the job to execute (looked up in JOB_REGISTRY).
+    rq_job_id:
+        Optional custom RQ job ID for deduplication. If not provided, RQ auto-generates one.
+
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §3
     The queue ALWAYS stores the string path "backend.app.job_runner.execute_job"
     rather than a pickled function object.  This prevents DeserializationError
     when functions are renamed or moved across deployments.
+
+    CONTRACT: MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2
+    This is the ONLY function that should enqueue jobs. All other code must use this entry point.
     """
     # Lazy import avoids circular-import issues at module load time.
     from backend.app.job_registry import JOB_REGISTRY
@@ -241,14 +253,24 @@ def enqueue_job(job_id: str, job_type: str) -> Optional[str]:
 
     q = _redis_queue()
     if q is not None:
+        # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §3 — Hard assert queue name
+        if q.name != "default":
+            raise RuntimeError("QUEUE_VIOLATION")
+
         # Enqueue by stable STRING PATH — never by function object.
         # The worker resolves the function at execution time via execute_job.
+        enqueue_kwargs = {
+            "job_timeout": job_timeout,
+            "result_ttl": result_ttl,
+        }
+        if rq_job_id is not None:
+            enqueue_kwargs["job_id"] = rq_job_id
+
         rq_job = q.enqueue(
             "backend.app.job_runner.execute_job",
             job_type,
             job_id,
-            job_timeout=job_timeout,
-            result_ttl=result_ttl,
+            **enqueue_kwargs,
         )
         return rq_job.id
 
