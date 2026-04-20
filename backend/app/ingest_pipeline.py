@@ -1078,27 +1078,20 @@ def process_ingest_job(job_id: str) -> None:
         ALL state changes via _transition() ONLY.
         NO direct job.status mutations.
     """
-    # MQP-CONTRACT: WORKER_ENTRY_GUARD
     job = _get_ingest_job(job_id)
     if job is None:
-        logger.error("WORKER_MISSING_JOB: Job %s not found in DB", job_id)
+        logger.error("WORKER_MISSING_JOB: job=%s", job_id)
         return
 
-    # ─────────────────────────────────────────────────────────────────────
-    # TERMINAL STATE BLOCK (HARD STOP)
-    # Terminal states are non-executable. No transition allowed.
-    # ─────────────────────────────────────────────────────────────────────
-    if IngestJobState.is_terminal(job.status):
-        logger.warning(
-            "WORKER_TERMINAL_VIOLATION: job=%s state=%s — terminal state, execution refused",
+    # TERMINAL STATES — HARD STOP
+    if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
+        logger.error(
+            "WORKER_TERMINAL_VIOLATION: job=%s state=%s",
             job_id, job.status,
         )
         return
 
-    # ─────────────────────────────────────────────────────────────────────
-    # NON-QUEUED BLOCK (HARD STOP)
-    # Worker executes ONLY queued jobs.
-    # ─────────────────────────────────────────────────────────────────────
+    # NON-QUEUED — HARD STOP
     if job.status != IngestJobState.QUEUED:
         logger.error(
             "WORKER_ENTRY_VIOLATION: job=%s state=%s expected=queued",
@@ -1106,22 +1099,22 @@ def process_ingest_job(job_id: str) -> None:
         )
         return
 
-    # ─────────────────────────────────────────────────────────────────────
-    # PRECONDITION CHECKS (HARD STOP — no transition on violation)
-    # ─────────────────────────────────────────────────────────────────────
+    # ONLY VALID EXECUTION PATH
+    # Blob data must be present before execution can proceed.
     if job.kind in ("file", "url", "repo"):
         if not job.blob_data:
-            logger.error("WORKER_ENTRY_VIOLATION: job=%s has no blob_data", job_id)
+            logger.error("WORKER_ENTRY_VIOLATION: Job %s has no blob_data", job_id)
+            _transition(job_id, IngestJobState.FAILED,
+                        error="WORKER_ENTRY_VIOLATION: blob_data missing")
             return
         if job.blob_size_bytes == 0:
-            logger.error("WORKER_ENTRY_VIOLATION: job=%s has empty blob_data", job_id)
+            logger.error("WORKER_ENTRY_VIOLATION: Job %s has empty blob_data", job_id)
+            _transition(job_id, IngestJobState.FAILED,
+                        error="WORKER_ENTRY_VIOLATION: blob_data empty")
             return
 
-    # ─────────────────────────────────────────────────────────────────────
-    # ONLY VALID EXECUTION PATH: job.status == queued
-    # TRANSITION: QUEUED → RUNNING
     logger.info("IngestJob %s: starting", job_id)
-    _transition(job_id, IngestJobState.RUNNING, progress=0)
+    _transition(job_id, IngestJobState.RUNNING)
 
     try:
         from sqlmodel import Session
