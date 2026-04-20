@@ -508,6 +508,18 @@ def remove_github_repo(
 
 def _enqueue_repo_ingestion(repo_id: str) -> None:
     """
+    DEPRECATED: This function is no longer used by any endpoints.
+    All repo ingestion now goes through the unified pipeline.
+    
+    This function is kept temporarily for backward compatibility but will be
+    removed in a future release. Do not use for new code.
+    
+    Use the unified pipeline instead:
+    - Create IngestJob with kind="repo"
+    - Call ingest_pipeline._transition() and ingest_routes._enqueue()
+    
+    ---
+    
     Enqueue or synchronously run repo ingestion.
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V5 §2
@@ -520,6 +532,20 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
     or running before submitting a new one.
     """
     import os as _os
+    import warnings
+    
+    # DEPRECATION WARNING
+    warnings.warn(
+        "_enqueue_repo_ingestion() is deprecated. Use the unified pipeline instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    logger.warning({
+        "event": "deprecated_function_called",
+        "function": "_enqueue_repo_ingestion",
+        "repo_id": repo_id,
+        "message": "This function is deprecated. Use unified pipeline (IngestJob + process_ingest_job)."
+    })
 
     disable = _os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
