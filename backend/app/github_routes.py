@@ -978,43 +978,43 @@ def add_repo(
         )
 
     if newly_created or current_status in ("pending", "failed"):
-        # Create IngestJob to track this ingestion via unified pipeline
-        from backend.app.models import IngestJob
+        # Create IngestJob via unified pipeline endpoint
+        # This ensures proper blob storage and state transitions
+        from backend.app.ingest_routes import IngestRepoRequest, ingest_repo
 
-        source_key = f"{req.repo_url}@{branch}"
-        job_id = uuid.uuid4()
-
-        # Create IngestJob - unified pipeline will process this
-        # The repo_id is stored in source_path for linking back to Repo table
-        ingest_job = IngestJob(
-            id=job_id,
-            kind="repo",
-            source=source_key,
+        ingest_req = IngestRepoRequest(
+            repo_url=req.repo_url,
             branch=branch,
-            status="created",
             conversation_id=req.conversation_id,
-            workspace_id=None,  # Legacy endpoint doesn't support workspace
-            source_path=repo_id_str,  # Store repo_id for legacy Repo table coordination
+            workspace_id=None,
+            force_refresh=False
         )
-        session.add(ingest_job)
-        session.commit()
 
-        logger.info({
-            "event": "ingest_job_created",
-            "job_id": str(job_id),
-            "repo_id": repo_id_str,
-            "pipeline": "unified"
-        })
+        try:
+            # Use the unified ingest endpoint to handle repo fetching and storage
+            ingest_response = ingest_repo(ingest_req, session)
+            job_id = uuid.UUID(ingest_response.job_id)
 
-        # Use unified pipeline transition and enqueue
-        from backend.app.ingest_pipeline import _transition
-        from backend.app.ingest_routes import _enqueue
+            # Update IngestJob to link back to Repo table
+            from backend.app.models import IngestJob
+            ingest_job = session.get(IngestJob, job_id)
+            if ingest_job:
+                ingest_job.source_path = repo_id_str
+                session.add(ingest_job)
+                session.commit()
 
-        _transition(str(job_id), "queued")
-        logger.info("STATE: QUEUED job_id=%s repo_id=%s", job_id, repo_id_str)
+            logger.info({
+                "event": "ingest_job_linked",
+                "job_id": str(job_id),
+                "repo_id": repo_id_str,
+            })
 
-        _enqueue(str(job_id))
-        logger.info({"event": "job_enqueued", "job_id": str(job_id), "repo_id": repo_id_str})
+        except HTTPException:
+            # Ingest endpoint already handles errors properly
+            raise
+        except Exception as exc:
+            logger.error("Failed to create ingest job for repo %s: %s", repo_id_str, exc)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return RepoAddResponse(
         repo_id=repo_id_str,

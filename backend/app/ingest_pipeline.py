@@ -70,7 +70,6 @@ import re
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -207,32 +206,32 @@ def validate_state_transition(from_state: str | None, to_state: str) -> None:
 def validate_blob_before_stored(job: Any) -> None:
     """
     Validate blob_data before allowing transition to 'stored' state.
-    
+
     MQP-CONTRACT: AIC-v1.1-FINAL-VALIDATION-LOCK
     Enforces blob invariants before storage.
-    
+
     Raises RuntimeError if validation fails.
     """
     MAX_BLOB_SIZE = 500 * 1024 * 1024  # 500MB
-    
+
     if job.blob_data is None:
         raise RuntimeError(
             f"BLOB_VALIDATION_FAILED: Job {job.id} has no blob_data. "
             f"Cannot transition to 'stored' state without blob content."
         )
-    
+
     if job.blob_size_bytes == 0:
         raise RuntimeError(
             f"BLOB_VALIDATION_FAILED: Job {job.id} has zero-size blob. "
             f"Blob must contain data before storage."
         )
-    
+
     if job.blob_size_bytes > MAX_BLOB_SIZE:
         raise RuntimeError(
             f"BLOB_VALIDATION_FAILED: Job {job.id} blob size {job.blob_size_bytes:,} bytes "
             f"exceeds maximum of {MAX_BLOB_SIZE:,} bytes (500MB)."
         )
-    
+
     logger.debug(
         "BLOB_VALIDATED: job=%s size=%d bytes mime=%s",
         job.id, job.blob_size_bytes, job.blob_mime_type
@@ -247,23 +246,23 @@ def validate_blob_before_stored(job: Any) -> None:
 def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | None = None) -> None:
     """
     MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — TRANSITION AUTHORITY
-    
+
     Single source of truth for ALL state changes.
-    
+
     ENFORCED:
     - Atomic DB transaction
     - Strict validation of allowed transitions
     - Timestamp + logging
     - Payload updates (progress, counts, error) in same transaction
-    
+
     FORBIDDEN:
     - Direct mutation (job.status = X)
     - Partial updates
     - Multi-step mutations
     - Silent state changes
-    
+
     Violation → HARD FAIL
-    
+
     Args:
         job_id: IngestJob primary key
         next_state: Target state (must be valid transition)
@@ -274,27 +273,27 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
             - chunk_count: int
     """
     from sqlmodel import Session
-    
+
     from backend.app.database import get_engine
     from backend.app.models import IngestJob
-    
+
     with Session(get_engine()) as session:
         job = session.get(IngestJob, job_id)
         if not job:
             raise RuntimeError(f"TRANSITION_ERROR: Job {job_id} not found")
-        
+
         # MQP-CONTRACT: BLOB VALIDATION ENFORCEMENT
         # Validate blob exists before allowing 'stored' state
         if next_state == "stored":
             validate_blob_before_stored(job)
-        
+
         # Validate transition
         validate_state_transition(job.status, next_state)
-        
+
         # Atomic state + payload update
         job.status = next_state
         job.updated_at = datetime.now(timezone.utc)
-        
+
         if payload:
             if "progress" in payload:
                 job.progress = payload["progress"]
@@ -304,10 +303,10 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
                 job.file_count = payload["file_count"]
             if "chunk_count" in payload:
                 job.chunk_count = payload["chunk_count"]
-        
+
         session.add(job)
         session.commit()
-        
+
         logger.info(
             "TRANSITION_COMPLETE: job=%s %s → %s payload=%s",
             job_id, job.status, next_state, payload
@@ -751,9 +750,9 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     Ingest a file from blob_data stored in the database.
 
     MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
-    
+
     Returns ``(file_count, chunk_count)``.
-    
+
     Worker MUST read from database ONLY. NO filesystem access.
     """
     from backend.app.models import RepoChunk
@@ -785,7 +784,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     data = job.blob_data
     mime_type = job.blob_mime_type or "application/octet-stream"
     filename = job.source
-    
+
     text = extract_text(data, mime_type, filename)
 
     if not text or not text.strip():
@@ -819,7 +818,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
     # Commit chunks to database
     session.commit()
-    
+
 
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
 
@@ -833,7 +832,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
 
     Returns ``(file_count, chunk_count)``.
-    
+
     Worker reads from blob_data ONLY. URL was already fetched and stored.
     """
     from backend.app.models import RepoChunk
@@ -896,7 +895,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
 
     # Commit chunks to database
     session.commit()
-    
+
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
     return 1, len(chunks)
 
@@ -906,10 +905,10 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     Ingest a GitHub repository from blob manifest stored in database.
 
     MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
-    
+
     Worker is PURE: reads ONLY from blob_data (no network, no filesystem).
     Blob contains complete repo manifest with all file contents pre-fetched.
-    
+
     Returns ``(file_count, chunk_count)``.
     """
     import json
@@ -1032,10 +1031,10 @@ def process_ingest_job(job_id: str) -> None:
             # TRANSITION: PROCESSING → INDEXING
             _transition(job_id, IngestJobState.INDEXING, progress=90)
             logger.info("STATE: INDEXING job_id=%s chunks=%d", job_id, chunk_count)
-            
+
             # Indexing happens during chunk creation above
             # This state represents the chunk persistence/indexing phase
-            
+
             # TRANSITION: INDEXING → FINALIZING
             _transition(job_id, IngestJobState.FINALIZING, progress=98)
             logger.info("STATE: FINALIZING job_id=%s", job_id)

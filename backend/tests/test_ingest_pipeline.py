@@ -64,6 +64,31 @@ def client():
     return TestClient(app, raise_server_exceptions=True)
 
 
+def mock_github_fetch(files=None):
+    """
+    Create a context manager that mocks GitHub fetch functions for testing.
+    Usage: with mock_github_fetch([("file.py", "content")]):
+    """
+    if files is None:
+        files = [("README.md", "# Hello")]
+
+    def mock_fetch_tree(owner, repo, branch, token):
+        return [{"path": path} for path, _ in files]
+
+    def mock_fetch_file(owner, repo, branch, path, client):
+        for file_path, content in files:
+            if file_path == path:
+                return content.encode("utf-8")
+        return None
+
+    from unittest.mock import patch
+    return patch.multiple(
+        "backend.app.ingest_pipeline",
+        _fetch_github_tree=mock_fetch_tree,
+        _fetch_raw_file=mock_fetch_file,
+    )
+
+
 _AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
@@ -373,15 +398,16 @@ class TestIngestUrlEndpoint:
 
 class TestIngestRepoEndpoint:
     def test_repo_ingestion_queued(self, client):
-        resp = client.post(
-            "/v1/ingest/repo",
-            headers=_AUTH,
-            json={
-                "repo_url": "https://github.com/testowner/testrepo",
-                "branch": "main",
-                "conversation_id": str(uuid.uuid4()),
-            },
-        )
+        with mock_github_fetch([("README.md", "# Test Repo")]):
+            resp = client.post(
+                "/v1/ingest/repo",
+                headers=_AUTH,
+                json={
+                    "repo_url": "https://github.com/testowner/testrepo",
+                    "branch": "main",
+                    "conversation_id": str(uuid.uuid4()),
+                },
+            )
         assert resp.status_code == 202
         data = resp.json()
         assert data["kind"] == "repo"
@@ -410,8 +436,9 @@ class TestIngestRepoEndpoint:
             "branch": "main",
             "conversation_id": conv_id,
         }
-        resp1 = client.post("/v1/ingest/repo", headers=_AUTH, json=payload)
-        resp2 = client.post("/v1/ingest/repo", headers=_AUTH, json=payload)
+        with mock_github_fetch([("main.py", "print('hello')")]):
+            resp1 = client.post("/v1/ingest/repo", headers=_AUTH, json=payload)
+            resp2 = client.post("/v1/ingest/repo", headers=_AUTH, json=payload)
 
         assert resp1.status_code == 202
         assert resp2.status_code == 202
@@ -429,12 +456,13 @@ class TestIngestRepoEndpoint:
             "branch": "main",
             "conversation_id": conv_id,
         }
-        resp1 = client.post("/v1/ingest/repo", headers=_AUTH, json=base_payload)
-        resp2 = client.post(
-            "/v1/ingest/repo",
-            headers=_AUTH,
-            json={**base_payload, "force_refresh": True},
-        )
+        with mock_github_fetch([("code.py", "def foo(): pass")]):
+            resp1 = client.post("/v1/ingest/repo", headers=_AUTH, json=base_payload)
+            resp2 = client.post(
+                "/v1/ingest/repo",
+                headers=_AUTH,
+                json={**base_payload, "force_refresh": True},
+            )
         assert resp1.status_code == 202
         assert resp2.status_code == 202
         assert resp1.json()["job_id"] != resp2.json()["job_id"]

@@ -30,7 +30,6 @@ import logging
 import os
 import threading
 import uuid
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -189,7 +188,7 @@ async def ingest_file(
     Upload a file and queue it for text extraction and chunking.
 
     MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
-    
+
     ALL data stored in database as BLOB. NO filesystem usage.
 
     Accepted formats: PDF, DOCX, HTML, CSV, JSON, XML, plain text,
@@ -197,7 +196,7 @@ async def ingest_file(
 
     The endpoint returns immediately with ``status: "stored"``.
     Poll ``GET /v1/ingest/{job_id}`` to track progress.
-    
+
     Flow: created → stored → queued → (worker processes)
     """
     from backend.app.ingest_pipeline import transition
@@ -205,7 +204,7 @@ async def ingest_file(
 
     filename = file.filename or "upload"
     data = await file.read()
-    
+
     # Validate size ≤ 500MB
     MAX_BLOB_SIZE = 500 * 1024 * 1024
     if len(data) > MAX_BLOB_SIZE:
@@ -242,12 +241,12 @@ async def ingest_file(
         job.blob_size_bytes = len(data)
         session.add(job)
         session.commit()
-        
+
         # STEP 2: Validate blob persisted
         session.refresh(job)
         if not job.blob_data or len(job.blob_data) != len(data):
             raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
-        
+
         # TRANSITION: CREATED → STORED
         transition(job_id, "stored", {"progress": 0})
         logger.info("STATE: STORED job_id=%s size=%d", job_id, len(data))
@@ -320,10 +319,10 @@ def ingest_url(
     # Fetch URL content and store as blob
     try:
         import httpx
-        
+
         response = httpx.get(url, timeout=30.0, follow_redirects=True)
         response.raise_for_status()
-        
+
         blob_data = response.content
         MAX_BLOB_SIZE = 500 * 1024 * 1024
         if len(blob_data) > MAX_BLOB_SIZE:
@@ -331,21 +330,21 @@ def ingest_url(
                 status_code=413,
                 detail=f"URL content size {len(blob_data):,} bytes exceeds 500MB limit"
             )
-        
+
         # Store blob in database
         from backend.app.ingest_pipeline import transition
-        
+
         job.blob_data = blob_data
         job.blob_mime_type = response.headers.get("content-type", "text/html")
         job.blob_size_bytes = len(blob_data)
         session.add(job)
         session.commit()
-        
+
         # Validate blob persisted
         session.refresh(job)
         if not job.blob_data or len(job.blob_data) != len(blob_data):
             raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
-        
+
         # TRANSITION: CREATED → STORED
         transition(job_id, "stored", {"progress": 0})
         logger.info("STATE: STORED job_id=%s size=%d", job_id, len(blob_data))
@@ -353,7 +352,7 @@ def ingest_url(
         # TRANSITION: STORED → QUEUED
         transition(job_id, "queued")
         logger.info("STATE: QUEUED job_id=%s", job_id)
-        
+
     except httpx.HTTPError as exc:
         logger.error("Failed to fetch URL %s: %s", url, exc)
         from backend.app.ingest_pipeline import transition
@@ -466,39 +465,39 @@ def ingest_repo(
     logger.info("STATE: CREATED job_id=%s kind=repo source=%s", job_id, source_key)
 
     try:
-        import httpx
         import json
-        
+
+        import httpx
+
         from backend.app.ingest_pipeline import (
-            INGESTIBLE_EXTENSIONS,
             REPO_MAX_FILE_CHARS,
             REPO_MAX_FILES,
             _fetch_github_tree,
             _fetch_raw_file,
             transition,
         )
-        
+
         # Parse repo URL
         match = re.search(r"github\.com/([^/]+)/([^/@]+)", body.repo_url)
         if not match:
             raise ValueError(f"Invalid GitHub URL: {body.repo_url}")
-        
+
         owner, repo_name = match.groups()
         if repo_name.endswith(".git"):
             repo_name = repo_name[:-4]
-        
+
         token = os.environ.get("GITHUB_TOKEN", "").strip() or None
-        
+
         # Fetch repo tree
         logger.info("Fetching repo tree: %s/%s@%s", owner, repo_name, body.branch)
         blobs = _fetch_github_tree(owner, repo_name, body.branch, token)
-        
+
         if not blobs:
             raise RuntimeError(
                 f"No ingestible files found in {owner}/{repo_name}@{body.branch}. "
                 "Verify the repository URL, branch name, and that it contains supported file types."
             )
-        
+
         # Cap at max files
         max_files = int(os.environ.get("REPO_MAX_FILES", str(REPO_MAX_FILES)))
         if len(blobs) > max_files:
@@ -507,36 +506,36 @@ def ingest_repo(
                 owner, repo_name, body.branch, len(blobs), max_files
             )
             blobs = blobs[:max_files]
-        
+
         # Fetch ALL file contents
         logger.info("Fetching %d files from %s/%s@%s", len(blobs), owner, repo_name, body.branch)
         max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
         files = []
-        
+
         with httpx.Client(timeout=60.0) as client:
             for blob in blobs:
                 file_path = blob["path"]
                 raw_bytes = _fetch_raw_file(owner, repo_name, body.branch, file_path, client)
-                
+
                 if raw_bytes is None:
                     logger.debug("Skipping file (fetch failed): %s", file_path)
                     continue
-                
+
                 try:
                     content = raw_bytes.decode("utf-8", errors="replace")[:max_file_chars]
                 except Exception:
                     logger.debug("Skipping non-UTF-8 file: %s", file_path)
                     continue
-                
+
                 files.append({
                     "path": file_path,
                     "content": content,
                     "size": len(raw_bytes)
                 })
-        
+
         if not files:
             raise RuntimeError(f"No readable files fetched from {owner}/{repo_name}@{body.branch}")
-        
+
         # Build repo manifest
         repo_manifest = {
             "repo_url": body.repo_url,
@@ -545,10 +544,10 @@ def ingest_repo(
             "branch": body.branch,
             "files": files
         }
-        
+
         # Serialize and store as blob
         blob_bytes = json.dumps(repo_manifest).encode("utf-8")
-        
+
         # Validate size (500MB limit)
         MAX_BLOB_SIZE = 500 * 1024 * 1024
         if len(blob_bytes) > MAX_BLOB_SIZE:
@@ -556,18 +555,18 @@ def ingest_repo(
                 f"Repo manifest size {len(blob_bytes):,} bytes exceeds 500MB limit. "
                 f"Fetched {len(files)} files."
             )
-        
+
         job.blob_data = blob_bytes
         job.blob_mime_type = "application/json"
         job.blob_size_bytes = len(blob_bytes)
         session.add(job)
         session.commit()
-        
+
         logger.info(
             "Repo manifest stored: job=%s files=%d size=%d bytes",
             job_id, len(files), len(blob_bytes)
         )
-        
+
         # TRANSITION: CREATED → STORED
         transition(job_id, "stored", {"progress": 0})
         logger.info("STATE: STORED job_id=%s", job_id)
@@ -575,7 +574,7 @@ def ingest_repo(
         # TRANSITION: STORED → QUEUED
         transition(job_id, "queued")
         logger.info("STATE: QUEUED job_id=%s", job_id)
-        
+
     except Exception as exc:
         logger.error("Failed to fetch/store repo for job %s: %s", job_id, exc)
         from backend.app.ingest_pipeline import transition
