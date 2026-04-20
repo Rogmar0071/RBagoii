@@ -1012,9 +1012,6 @@ def add_repo(
 
             ingest_job = session.get(IngestJob, job_id)
             if ingest_job:
-                ingest_job.source_path = repo_id_str
-                session.add(ingest_job)
-
                 # MQP-CONTRACT: Sync Repo.ingestion_status with IngestJob terminal state.
                 if ingest_job.status in ("success", "failed"):
                     repo_obj = session.get(Repo, uuid.UUID(repo_id_str))
