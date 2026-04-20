@@ -909,6 +909,10 @@ def add_repo(
     # -----------------------------------------------------------------------
     # Phase 3 — Queue discipline (after transaction is committed)
     # -----------------------------------------------------------------------
+    # MIGRATION: Use unified ingestion pipeline (IngestJob + process_ingest_job)
+    # instead of legacy run_repo_ingestion() path.
+    # Maintains Repo table for backward compatibility but uses unified pipeline.
+    
     if not newly_created and current_status in ("running", "success"):
         # Repo is already being ingested or fully ingested — idempotent guard.
         raise HTTPException(
@@ -917,8 +921,43 @@ def add_repo(
         )
 
     if newly_created or current_status in ("pending", "failed"):
-        _enqueue_repo_ingestion(repo_id_str)
-        logger.info({"event": "job_enqueued", "repo_id": repo_id_str})
+        # Create IngestJob to track this ingestion via unified pipeline
+        from backend.app.models import IngestJob
+        
+        source_key = f"{req.repo_url}@{branch}"
+        job_id = uuid.uuid4()
+        
+        # Create IngestJob - unified pipeline will process this
+        # The repo_id is stored in source_path for linking back to Repo table
+        ingest_job = IngestJob(
+            id=job_id,
+            kind="repo",
+            source=source_key,
+            branch=branch,
+            status="created",
+            conversation_id=req.conversation_id,
+            workspace_id=None,  # Legacy endpoint doesn't support workspace
+            source_path=repo_id_str,  # Store repo_id for legacy Repo table coordination
+        )
+        session.add(ingest_job)
+        session.commit()
+        
+        logger.info({
+            "event": "ingest_job_created",
+            "job_id": str(job_id),
+            "repo_id": repo_id_str,
+            "pipeline": "unified"
+        })
+        
+        # Use unified pipeline transition and enqueue
+        from backend.app.ingest_pipeline import _transition
+        from backend.app.ingest_routes import _enqueue
+        
+        _transition(str(job_id), "queued")
+        logger.info("STATE: QUEUED job_id=%s repo_id=%s", job_id, repo_id_str)
+        
+        _enqueue(str(job_id))
+        logger.info({"event": "job_enqueued", "job_id": str(job_id), "repo_id": repo_id_str})
 
     return RepoAddResponse(
         repo_id=repo_id_str,

@@ -851,10 +851,14 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     Ingest a GitHub repository using the Trees API.
 
     Returns ``(file_count, chunk_count)``.
+    
+    MIGRATION: Supports legacy Repo table coordination.
+    If job.source_path contains a UUID, it's the repo_id from the legacy endpoint.
+    In this case, we also set repo_id FK on RepoChunk records and update Repo table.
     """
     import httpx
 
-    from backend.app.models import RepoChunk
+    from backend.app.models import Repo, RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
     # source format: "{repo_url}@{branch}"
@@ -869,6 +873,27 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     branch = job.branch or "main"
 
     token = os.environ.get("GITHUB_TOKEN", "").strip() or None
+    
+    # MIGRATION: Check if this is from legacy endpoint (repo_id in source_path)
+    legacy_repo_id = None
+    if job.source_path:
+        try:
+            legacy_repo_id = uuid.UUID(job.source_path)
+            logger.info(
+                "MIGRATION: IngestJob %s linked to legacy Repo %s",
+                str(job.id),
+                str(legacy_repo_id)
+            )
+            # Update Repo table to "running" status
+            repo_record = session.get(Repo, legacy_repo_id)
+            if repo_record:
+                repo_record.ingestion_status = "running"
+                repo_record.updated_at = datetime.now(timezone.utc)
+                session.add(repo_record)
+                session.commit()
+        except (ValueError, AttributeError):
+            # Not a UUID - source_path used for actual file path
+            pass
 
     # Fetch full file tree (single API request)
     blobs = _fetch_github_tree(owner, repo_name, branch, token)
@@ -913,21 +938,23 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             chunks = split_with_overlap(text)
             for idx, chunk_text in enumerate(chunks):
                 structure = extract_structure(chunk_text, path)
-                session.add(
-                    RepoChunk(
-                        ingest_job_id=job.id,
-                        file_path=path,
-                        content=chunk_text,
-                        chunk_index=idx,
-                        token_estimate=max(1, len(chunk_text) // 4),
-                        chunk_type=structure["chunk_type"],
-                        symbol=structure["symbol"],
-                        dependencies=structure["dependencies"],
-                        graph_group=structure["graph_group"],
-                        start_line=structure["start_line"],
-                        end_line=structure["end_line"],
-                    )
+                chunk = RepoChunk(
+                    ingest_job_id=job.id,
+                    file_path=path,
+                    content=chunk_text,
+                    chunk_index=idx,
+                    token_estimate=max(1, len(chunk_text) // 4),
+                    chunk_type=structure["chunk_type"],
+                    symbol=structure["symbol"],
+                    dependencies=structure["dependencies"],
+                    graph_group=structure["graph_group"],
+                    start_line=structure["start_line"],
+                    end_line=structure["end_line"],
                 )
+                # MIGRATION: Set repo_id FK for legacy compatibility
+                if legacy_repo_id:
+                    chunk.repo_id = legacy_repo_id
+                session.add(chunk)
                 chunk_count += 1
 
             file_count += 1
@@ -951,6 +978,23 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                     chunk_count,
                     job.progress,
                 )
+
+    # MIGRATION: Update legacy Repo table with final counts
+    if legacy_repo_id:
+        repo_record = session.get(Repo, legacy_repo_id)
+        if repo_record:
+            repo_record.total_files = file_count
+            repo_record.total_chunks = chunk_count
+            repo_record.ingestion_status = "success"
+            repo_record.updated_at = datetime.now(timezone.utc)
+            session.add(repo_record)
+            session.commit()
+            logger.info(
+                "MIGRATION: Updated legacy Repo %s: files=%d chunks=%d",
+                str(legacy_repo_id),
+                file_count,
+                chunk_count
+            )
 
     return file_count, chunk_count
 
@@ -1024,6 +1068,34 @@ def process_ingest_job(job_id: str) -> None:
 
     except Exception as exc:
         logger.exception("IngestJob %s: failed — %s", job_id, exc)
+        
+        # MIGRATION: Update legacy Repo table on failure
+        try:
+            from sqlmodel import Session
+            from backend.app.database import get_engine
+            from backend.app.models import IngestJob, Repo
+            
+            with Session(get_engine()) as session:
+                job = session.get(IngestJob, uuid.UUID(job_id))
+                if job and job.kind == "repo" and job.source_path:
+                    # Check if source_path contains legacy repo_id
+                    try:
+                        legacy_repo_id = uuid.UUID(job.source_path)
+                        repo_record = session.get(Repo, legacy_repo_id)
+                        if repo_record:
+                            repo_record.ingestion_status = "failed"
+                            repo_record.updated_at = datetime.now(timezone.utc)
+                            session.add(repo_record)
+                            session.commit()
+                            logger.info(
+                                "MIGRATION: Updated legacy Repo %s status=failed",
+                                str(legacy_repo_id)
+                            )
+                    except (ValueError, AttributeError):
+                        pass  # Not a legacy repo
+        except Exception as migration_exc:
+            logger.warning("Failed to update legacy Repo on failure: %s", migration_exc)
+        
         # TRANSITION: ANY → FAILED (terminal state, can transition from anywhere)
         _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
         logger.error("STATE: FAILED job_id=%s error=%s", job_id, str(exc)[:200])
