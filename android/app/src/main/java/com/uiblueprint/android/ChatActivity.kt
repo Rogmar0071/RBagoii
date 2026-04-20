@@ -383,31 +383,42 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 val apiKey = prefs.getString("api_key", "") ?: ""
                 val baseUrl = prefs.getString("backend_url", BuildConfig.BACKEND_BASE_URL) ?: BuildConfig.BACKEND_BASE_URL
 
-                // Use the chunked upload helper
-                val success = ChatFileUploadHelper.uploadFile(
+                // MQP-CONTRACT: INGESTION_UI_STATE_ENFORCEMENT_V3 — Receive job_id
+                val jobId = ChatFileUploadHelper.uploadFile(
                     uri = uri,
                     conversationId = convId,
                     apiKey = apiKey,
                     baseUrl = baseUrl,
                     contentResolver = contentResolver,
                     cacheDir = cacheDir,
-                    onProgress = { current, total ->
-                        runOnUiThread {
-                            if (total > 1) {
-                                Toast.makeText(
-                                    this,
-                                    "Uploading… chunk $current/$total",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        }
-                    }
+                    onProgress = null
                 )
 
-                if (success) {
+                if (jobId != null) {
                     runOnUiThread {
-                        Toast.makeText(this, getString(R.string.status_file_uploaded), Toast.LENGTH_SHORT).show()
-                        loadChatFiles()
+                        // STEP 4: EVENT FEEDBACK — After POST
+                        Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
+                    }
+                    
+                    // STEP 5: CALL SITE RULE — Each job = one independent loop
+                    pollIngestJob(jobId, apiKey, baseUrl) { json ->
+                        // STEP 3: RENDER = PURE BINDING
+                        val status = json.optString("status")
+                        val error = json.optString("error")
+                        
+                        // STEP 4: EVENT FEEDBACK — On final failure ONLY
+                        if (status == "failed") {
+                            Toast.makeText(
+                                this,
+                                "File ingestion failed: $error",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        
+                        // Reload on terminal success (action, not feedback)
+                        if (status == "success") {
+                            loadChatFiles()
+                        }
                     }
                 } else {
                     runOnUiThread {
@@ -474,6 +485,61 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                 }
             } catch (e: Exception) {
                 Log.e("ChatActivity", "Error updating file context", e)
+            }
+        }
+    }
+
+    /**
+     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — UNIFIED POLLING
+     * 
+     * Single polling function used by ALL ingestion types.
+     * UI is a pure projection surface with ZERO memory.
+     * 
+     * STEP 2: SINGLE POLLING FUNCTION (SHARED PATTERN)
+     * Each job = one independent loop. NO aggregation.
+     * 
+     * FORBIDDEN: lastStatus, state memory, conditional feedback, multi-job tracking
+     */
+    private fun pollIngestJob(
+        jobId: String,
+        apiKey: String,
+        baseUrl: String,
+        onRender: (JSONObject) -> Unit
+    ) {
+        executor.execute {
+            // Loop terminates via: (1) terminal status detection, or (2) exception
+            while (true) {
+                try {
+                    val request = Request.Builder()
+                        .url("$baseUrl/v1/ingest/$jobId")
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .get()
+                        .build()
+
+                    val response = BackendClient.executeWithRetry(request)
+                    val body = response.body?.string()
+                    response.close()
+
+                    if (body != null) {
+                        val json = JSONObject(body)
+
+                        runOnUiThread {
+                            onRender(json)
+                        }
+
+                        val status = json.optString("status")
+                        // Terminates here on terminal status
+                        if (status == "success" || status == "failed") {
+                            break
+                        }
+                    }
+
+                    Thread.sleep(2000)
+
+                } catch (_: Exception) {
+                    // Terminates here on exception
+                    break
+                }
             }
         }
     }
