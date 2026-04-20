@@ -78,12 +78,36 @@ def mock_github_fetch(files=None):
                 return content.encode("utf-8")
         return None
 
-    from unittest.mock import patch
-    return patch.multiple(
-        "backend.app.ingest_pipeline",
-        _fetch_github_tree=mock_fetch_tree,
-        _fetch_raw_file=mock_fetch_file,
-    )
+    async def mock_fetch_repo_file_list(owner, repo, branch, headers):
+        return list(files)
+
+    from contextlib import ExitStack
+    from unittest.mock import patch as _patch
+
+    class _MockContext:
+        def __enter__(self):
+            self._stack = ExitStack()
+            self._stack.enter_context(_patch.multiple(
+                "backend.app.ingest_pipeline",
+                _fetch_github_tree=mock_fetch_tree,
+                _fetch_raw_file=mock_fetch_file,
+            ))
+            self._stack.enter_context(_patch(
+                "backend.app.github_routes._fetch_repo_file_list",
+                new=mock_fetch_repo_file_list,
+            ))
+            return self
+
+        def __exit__(self, *args):
+            return self._stack.__exit__(*args)
+
+    return _MockContext()
+
+
+@pytest.fixture(name="mock_github_fetch")
+def _mock_github_fetch_fixture():
+    """Fixture returning the mock_github_fetch context-manager factory."""
+    return mock_github_fetch
 
 
 # ---------------------------------------------------------------------------

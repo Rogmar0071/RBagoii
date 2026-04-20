@@ -50,7 +50,7 @@ router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 # Configuration
 # ---------------------------------------------------------------------------
 
-MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
+MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 500 * 1024 * 1024))
 
 # MQP-CONTRACT: AIC-v1.1-FINAL-INVARIANT-SEAL
 # All data stored in database blob. No filesystem staging.
@@ -147,8 +147,8 @@ async def ingest_file(
         raise HTTPException(
             status_code=413,
             detail=(
-                f"File size {len(data):,} bytes exceeds the maximum allowed "
-                f"size of {MAX_UPLOAD_BYTES:,} bytes."
+                f"File size {len(data):,} bytes exceeds the maximum allowed size of "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)}MB."
             ),
         )
 

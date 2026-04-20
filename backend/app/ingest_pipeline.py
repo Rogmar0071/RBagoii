@@ -998,8 +998,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
-
-    # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
+    print(f"INGEST START: {job.id}")
     if not job.blob_data:
         logger.error("INGEST_FAIL job_id=%s reason=no_blob_data", job.id)
         raise RuntimeError(
@@ -1060,6 +1059,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
+    print(f"INGEST DONE: {job.id} files={file_count} chunks={chunk_count}")
     return file_count, chunk_count
 
 

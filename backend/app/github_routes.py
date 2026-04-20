@@ -751,40 +751,54 @@ def retry_repo_ingestion(
     session.commit()
     session.refresh(repo)
 
-    # MIGRATION: Create new IngestJob and use unified pipeline
+    # Use unified pipeline: ingest_repo handles fetch, blob storage, and state transitions.
+    from backend.app.ingest_routes import IngestRepoRequest, ingest_repo
     from backend.app.models import IngestJob
 
-    source_key = f"{repo.repo_url}@{repo.branch}"
-    job_id = uuid.uuid4()
-
-    ingest_job = IngestJob(
-        id=job_id,
-        kind="repo",
-        source=source_key,
-        branch=repo.branch,
-        status="created",
-        conversation_id=repo.conversation_id,
+    ingest_req = IngestRepoRequest(
+        repo_url=repo.repo_url,
+        branch=repo.branch or "main",
+        conversation_id=repo.conversation_id or "",
         workspace_id=None,
-        source_path=str(repo.id),  # Store repo_id for legacy coordination
+        force_refresh=True,
     )
-    session.add(ingest_job)
-    session.commit()
 
-    logger.info({
-        "event": "retry_ingest_job_created",
-        "job_id": str(job_id),
-        "repo_id": repo_id,
-        "pipeline": "unified"
-    })
+    try:
+        ingest_response = ingest_repo(ingest_req, session)
+        job_id = uuid.UUID(ingest_response.job_id)
 
-    # Use unified pipeline
-    from backend.app.ingest_pipeline import _transition
-    from backend.app.ingest_routes import _enqueue
+        ingest_job = session.get(IngestJob, job_id)
+        if ingest_job and ingest_job.status in ("success", "failed"):
+            repo.ingestion_status = ingest_job.status
+            repo.total_files = ingest_job.file_count or 0
+            repo.total_chunks = ingest_job.chunk_count or 0
+            session.add(repo)
 
-    _transition(str(job_id), "queued")
-    _enqueue(str(job_id))
+            if ingest_job.status == "success":
+                chunks = session.exec(
+                    select(RepoChunk).where(RepoChunk.ingest_job_id == job_id)
+                ).all()
+                for chunk in chunks:
+                    chunk.repo_id = repo_uuid
+                    session.add(chunk)
 
-    logger.info({"event": "retry_job_enqueued", "job_id": str(job_id), "repo_id": repo_id})
+            session.commit()
+            session.refresh(repo)
+
+    except HTTPException:
+        logger.warning("Retry ingestion failed for repo %s; marking as failed", repo_id)
+        try:
+            repo.ingestion_status = "failed"
+            session.add(repo)
+            session.commit()
+            session.refresh(repo)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.error("Retry ingestion error for repo %s: %s", repo_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    logger.info({"event": "retry_job_completed", "repo_id": repo_id})
 
     return RepoStatusResponse(
         id=str(repo.id),
@@ -981,6 +995,7 @@ def add_repo(
         # Create IngestJob via unified pipeline endpoint
         # This ensures proper blob storage and state transitions
         from backend.app.ingest_routes import IngestRepoRequest, ingest_repo
+        from backend.app.models import IngestJob
 
         ingest_req = IngestRepoRequest(
             repo_url=req.repo_url,
@@ -995,12 +1010,33 @@ def add_repo(
             ingest_response = ingest_repo(ingest_req, session)
             job_id = uuid.UUID(ingest_response.job_id)
 
-            # Update IngestJob to link back to Repo table
-            from backend.app.models import IngestJob
             ingest_job = session.get(IngestJob, job_id)
             if ingest_job:
                 ingest_job.source_path = repo_id_str
                 session.add(ingest_job)
+
+                # MQP-CONTRACT: Sync Repo.ingestion_status with IngestJob terminal state.
+                if ingest_job.status in ("success", "failed"):
+                    repo_obj = session.get(Repo, uuid.UUID(repo_id_str))
+                    if repo_obj:
+                        repo_obj.ingestion_status = ingest_job.status
+                        repo_obj.total_files = ingest_job.file_count or 0
+                        repo_obj.total_chunks = ingest_job.chunk_count or 0
+                        session.add(repo_obj)
+                        current_status = ingest_job.status
+
+                        # Bind RepoChunk.repo_id for chunks created by this IngestJob.
+                        if ingest_job.status == "success":
+                            from sqlmodel import select as _select
+                            chunks = session.exec(
+                                _select(RepoChunk).where(
+                                    RepoChunk.ingest_job_id == job_id
+                                )
+                            ).all()
+                            for chunk in chunks:
+                                chunk.repo_id = uuid.UUID(repo_id_str)
+                                session.add(chunk)
+
                 session.commit()
 
             logger.info({
@@ -1010,8 +1046,19 @@ def add_repo(
             })
 
         except HTTPException:
-            # Ingest endpoint already handles errors properly
-            raise
+            # Ingestion failed — mark repo as failed but return 200 to caller.
+            logger.warning(
+                "Ingestion failed for repo %s; marking repo as failed", repo_id_str
+            )
+            try:
+                repo_obj = session.get(Repo, uuid.UUID(repo_id_str))
+                if repo_obj:
+                    repo_obj.ingestion_status = "failed"
+                    session.add(repo_obj)
+                    session.commit()
+            except Exception:
+                pass
+            current_status = "failed"
         except Exception as exc:
             logger.error("Failed to create ingest job for repo %s: %s", repo_id_str, exc)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
