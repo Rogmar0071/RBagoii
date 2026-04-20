@@ -189,117 +189,84 @@ async def ingest_file(
     """
     Upload a file and queue it for text extraction and chunking.
 
+    MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+    
+    ALL data stored in database as BLOB. NO filesystem usage.
+
     Accepted formats: PDF, DOCX, HTML, CSV, JSON, XML, plain text,
     any source-code file with a recognised extension, ZIP archives.
 
-    The endpoint returns immediately with ``status: "queued"``.
+    The endpoint returns immediately with ``status: "stored"``.
     Poll ``GET /v1/ingest/{job_id}`` to track progress.
+    
+    Flow: created → stored → queued → (worker processes)
     """
+    from backend.app.ingest_pipeline import transition
     from backend.app.models import IngestJob
 
     filename = file.filename or "upload"
-    _, ext = os.path.splitext(filename.lower())
-
     data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
+    
+    # Validate size ≤ 500MB
+    MAX_BLOB_SIZE = 500 * 1024 * 1024
+    if len(data) > MAX_BLOB_SIZE:
         raise HTTPException(
             status_code=413,
             detail=(
                 f"File size {len(data):,} bytes exceeds the maximum allowed "
-                f"upload size of {MAX_UPLOAD_BYTES:,} bytes."
+                f"size of {MAX_BLOB_SIZE:,} bytes (500MB)."
             ),
         )
 
-    # Save to staging area; the worker reads it from here
-    _STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    # MQP-CONTRACT: AIC-v1.1 STATE MACHINE
+    # Flow: created → stored → queued
+
     job_id = uuid.uuid4()
-    staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
-    ready_path = Path(str(staging_path) + ".ready")
 
-    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
-    # State: CREATED → STAGED → READY → QUEUED
-
-    # STATE: CREATED - Create job record before file operations
+    # STATE: CREATED - Create job record
     job = IngestJob(
         id=job_id,
         kind="file",
         source=filename,
-        source_path=str(staging_path),
-        status="created",  # Initial state
+        status="created",
         conversation_id=conversation_id,
         workspace_id=workspace_id,
     )
     session.add(job)
     session.commit()
-
     logger.info("STATE: CREATED job_id=%s", job_id)
 
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §1
-    # Atomic write with explicit READY flag for deterministic handoff
     try:
-        # STEP 1: Write data file with fsync
-        with open(staging_path, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
+        # STEP 1: Store blob in database
+        job.blob_data = data
+        job.blob_mime_type = file.content_type or "application/octet-stream"
+        job.blob_size_bytes = len(data)
+        session.add(job)
+        session.commit()
+        
+        # STEP 2: Validate blob persisted
+        session.refresh(job)
+        if not job.blob_data or len(job.blob_data) != len(data):
+            raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
+        
+        # TRANSITION: CREATED → STORED
+        transition(job_id, "stored", {"progress": 0})
+        logger.info("STATE: STORED job_id=%s size=%d", job_id, len(data))
 
-        # STEP 2: HARD VERIFY file existence
-        if not staging_path.exists():
-            raise RuntimeError(f"STAGING_VIOLATION: missing file {staging_path}")
+        # TRANSITION: STORED → QUEUED
+        transition(job_id, "queued")
+        logger.info("STATE: QUEUED job_id=%s", job_id)
 
-        # STEP 3: HARD VERIFY file size
-        if staging_path.stat().st_size != len(data):
-            staging_path.unlink(missing_ok=True)
-            raise RuntimeError(
-                f"STAGING_VIOLATION: size mismatch {staging_path}. "
-                f"Expected {len(data)}, got {staging_path.stat().st_size}"
-            )
-
-        # TRANSITION: CREATED → STAGED
-        from backend.app.ingest_pipeline import _transition
-        _transition(str(job_id), "staged")
-        logger.info("STATE: STAGED job_id=%s path=%s size=%d", job_id, staging_path, len(data))
-
-        # STEP 4: CREATE READY FLAG (THIS IS THE TRUE SIGNAL)
-        # File existence alone is NOT sufficient - ready flag proves atomicity
-        with open(ready_path, "w") as f:
-            f.write("ok")
-            f.flush()
-            os.fsync(f.fileno())
-
-        # STEP 5: HARD VERIFY ready flag exists
-        if not ready_path.exists():
-            staging_path.unlink(missing_ok=True)
-            raise RuntimeError(f"STAGING_VIOLATION: ready flag missing {ready_path}")
-
-        # TRANSITION: STAGED → READY
-        _transition(str(job_id), "ready")
-        logger.info("STATE: READY job_id=%s", job_id)
-
-    except RuntimeError:
-        # Re-raise our own STAGING_VIOLATION errors
-        staging_path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
-        _transition(str(job_id), "failed", error="Staging failed")
-        raise
     except Exception as exc:
-        # Catch-all for I/O errors, permission issues, disk full, etc.
-        staging_path.unlink(missing_ok=True)
-        ready_path.unlink(missing_ok=True)
-        _transition(str(job_id), "failed", error=str(exc)[:1000])
-        raise RuntimeError(f"STAGING_VIOLATION: Cannot write file: {exc}") from exc
-
-    # TRANSITION: READY → QUEUED (must happen BEFORE enqueue for synchronous execution)
-    _transition(str(job_id), "queued")
-    logger.info("STATE: QUEUED job_id=%s", job_id)
+        logger.error("Failed to store blob for job %s: %s", job_id, exc)
+        transition(job_id, "failed", {"error": str(exc)[:1000]})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     # Enqueue the job (may run synchronously in test mode)
     _enqueue(str(job_id))
 
     # Refresh job to get latest status
     session.refresh(job)
-    # After commit + synchronous enqueue, lazy-load on _to_response(job) reads
-    # the terminal status committed by process_ingest_job.
     return _to_response(job)
 
 
@@ -337,17 +304,72 @@ def ingest_url(
 
     job_id = uuid.uuid4()
 
-    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
-    # For URL/repo jobs: CREATED → QUEUED (no staging phase)
+    # MQP-CONTRACT: AIC-v1.1 STATE MACHINE
+    # Flow: created → stored → queued
     job = IngestJob(
         id=job_id,
         kind="url",
         source=url,
-        status="created",  # Initial state
+        status="created",
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
     )
     session.add(job)
+    session.commit()
+    logger.info("STATE: CREATED job_id=%s kind=url source=%s", job_id, url)
+
+    # Fetch URL content and store as blob
+    try:
+        import httpx
+        
+        response = httpx.get(url, timeout=30.0, follow_redirects=True)
+        response.raise_for_status()
+        
+        blob_data = response.content
+        MAX_BLOB_SIZE = 500 * 1024 * 1024
+        if len(blob_data) > MAX_BLOB_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"URL content size {len(blob_data):,} bytes exceeds 500MB limit"
+            )
+        
+        # Store blob in database
+        from backend.app.ingest_pipeline import transition
+        
+        job.blob_data = blob_data
+        job.blob_mime_type = response.headers.get("content-type", "text/html")
+        job.blob_size_bytes = len(blob_data)
+        session.add(job)
+        session.commit()
+        
+        # Validate blob persisted
+        session.refresh(job)
+        if not job.blob_data or len(job.blob_data) != len(blob_data):
+            raise RuntimeError("BLOB_STORAGE_VIOLATION: Blob not persisted correctly")
+        
+        # TRANSITION: CREATED → STORED
+        transition(job_id, "stored", {"progress": 0})
+        logger.info("STATE: STORED job_id=%s size=%d", job_id, len(blob_data))
+
+        # TRANSITION: STORED → QUEUED
+        transition(job_id, "queued")
+        logger.info("STATE: QUEUED job_id=%s", job_id)
+        
+    except httpx.HTTPError as exc:
+        logger.error("Failed to fetch URL %s: %s", url, exc)
+        from backend.app.ingest_pipeline import transition
+        transition(job_id, "failed", {"error": f"HTTP error: {exc}"})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Failed to store blob for URL job %s: %s", job_id, exc)
+        from backend.app.ingest_pipeline import transition
+        transition(job_id, "failed", {"error": str(exc)[:1000]})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    _enqueue(str(job_id))
+
+    session.refresh(job)
+    return _to_response(job)
     session.commit()
 
     logger.info("STATE: CREATED job_id=%s kind=url", job_id)
@@ -418,37 +440,64 @@ def ingest_repo(
             .where(IngestJob.conversation_id == body.conversation_id)
             .order_by(IngestJob.created_at.desc())
         ).first()
-        # Check for active states (not just queued/running/success)
+        # Check for active states (updated for new state machine)
         active_states = {
-            "created", "staged", "ready", "queued", "running",
-            "processing", "finalizing", "success"
+            "created", "stored", "queued", "running",
+            "processing", "indexing", "finalizing", "success"
         }
         if existing and existing.status in active_states:
             return _to_response(existing)
 
     job_id = uuid.uuid4()
 
-    # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
-    # For repo jobs: CREATED → QUEUED (no staging phase)
+    # MQP-CONTRACT: AIC-v1.1 STATE MACHINE
+    # For repo jobs: created → stored → queued
+    # Repo metadata stored as JSON blob initially
     job = IngestJob(
         id=job_id,
         kind="repo",
         source=source_key,
         branch=body.branch,
-        status="created",  # Initial state
+        status="created",
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
     )
     session.add(job)
     session.commit()
 
-    logger.info("STATE: CREATED job_id=%s kind=repo", job_id)
+    logger.info("STATE: CREATED job_id=%s kind=repo source=%s", job_id, source_key)
 
-    # Repo jobs skip staging/ready states (no file to stage)
-    # TRANSITION: CREATED → QUEUED
-    from backend.app.ingest_pipeline import _transition
-    _transition(str(job_id), "queued")
-    logger.info("STATE: QUEUED job_id=%s", job_id)
+    try:
+        # Store repo metadata as JSON blob (actual files fetched by worker)
+        import json
+        
+        repo_metadata = {
+            "repo_url": body.repo_url,
+            "branch": body.branch,
+            "source_key": source_key
+        }
+        
+        from backend.app.ingest_pipeline import transition
+        
+        job.blob_data = json.dumps(repo_metadata).encode("utf-8")
+        job.blob_mime_type = "application/json"
+        job.blob_size_bytes = len(job.blob_data)
+        session.add(job)
+        session.commit()
+        
+        # TRANSITION: CREATED → STORED
+        transition(job_id, "stored", {"progress": 0})
+        logger.info("STATE: STORED job_id=%s", job_id)
+
+        # TRANSITION: STORED → QUEUED
+        transition(job_id, "queued")
+        logger.info("STATE: QUEUED job_id=%s", job_id)
+        
+    except Exception as exc:
+        logger.error("Failed to store repo metadata for job %s: %s", job_id, exc)
+        from backend.app.ingest_pipeline import transition
+        transition(job_id, "failed", {"error": str(exc)[:1000]})
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     _enqueue(str(job_id))
 
