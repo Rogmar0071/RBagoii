@@ -516,9 +516,11 @@ class ChatActivity : AppCompatActivity(), ChatMessageAdapter.MessageActionListen
                         .get()
                         .build()
 
-                    BackendClient.executeWithRetry(request).use { response ->
-                        if (!response.isSuccessful) return@use
-                        val body = response.body?.string() ?: return@use
+                    val response = BackendClient.executeWithRetry(request)
+                    val body = response.body?.string()
+                    response.close()
+
+                    if (body != null) {
                         val json = JSONObject(body)
 
                         runOnUiThread {

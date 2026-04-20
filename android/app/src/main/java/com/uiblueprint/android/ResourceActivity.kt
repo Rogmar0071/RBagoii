@@ -140,8 +140,6 @@ class ResourceActivity : AppCompatActivity() {
         // Reload files when returning to this activity
         if (conversationId != null) {
             loadChatFiles()
-            // REPO_CONTEXT_FINALIZATION_V1: also refresh backend repo status
-            loadActiveRepos()
         }
     }
 
@@ -682,9 +680,11 @@ class ResourceActivity : AppCompatActivity() {
                         .get()
                         .build()
 
-                    BackendClient.executeWithRetry(request).use { response ->
-                        if (!response.isSuccessful) return@use
-                        val body = response.body?.string() ?: return@use
+                    val response = BackendClient.executeWithRetry(request)
+                    val body = response.body?.string()
+                    response.close()
+
+                    if (body != null) {
                         val json = JSONObject(body)
 
                         runOnUiThread {
