@@ -638,3 +638,254 @@ class TestCompliance:
                 job = session.get(IngestJob, uuid.UUID(job_id))
                 assert job.blob_data == content
                 assert len(job.blob_data) == len(content)
+
+
+# ---------------------------------------------------------------------------
+# Test: MQP-CONTRACT WORKER-EXECUTION-CLOSURE — Terminal State Enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerTerminalStateEnforcement:
+    """
+    MQP-CONTRACT: WORKER-EXECUTION-CLOSURE v1.1
+
+    Verifies that process_ingest_job enforces the execution boundary:
+        execution_allowed(job) = job.status == queued
+    """
+
+    def _make_job(self, status: str, blob_data: bytes = b"hello world") -> str:
+        """Create an IngestJob directly in DB with the given status. Returns str(job_id)."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        job_id = uuid.uuid4()
+        with Session(get_engine()) as session:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="test.txt",
+                status=status,
+                blob_data=blob_data,
+                blob_mime_type="text/plain",
+                blob_size_bytes=len(blob_data),
+            )
+            session.add(job)
+            session.commit()
+        return str(job_id)
+
+    def _get_status(self, job_id: str) -> str:
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        with Session(get_engine()) as session:
+            job = session.get(IngestJob, uuid.UUID(job_id))
+            return job.status
+
+    def test_worker_skips_failed_job(self):
+        """
+        TEST 1 — Terminal Execution Block (failed)
+
+        GIVEN  job.status = failed
+        WHEN   process_ingest_job(job_id)
+        THEN   no transition occurs, no exception raised
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("failed")
+        process_ingest_job(job_id)  # must not raise
+        assert self._get_status(job_id) == "failed"
+
+    def test_worker_skips_success_job(self):
+        """
+        TEST 2 — Terminal Execution Block (success)
+
+        GIVEN  job.status = success
+        WHEN   process_ingest_job(job_id)
+        THEN   no execution, no transition
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("success")
+        process_ingest_job(job_id)  # must not raise
+        assert self._get_status(job_id) == "success"
+
+    def test_worker_rejects_non_queued(self):
+        """
+        TEST 3 — Invalid State Block (non-queued, non-terminal)
+
+        GIVEN  job.status = created
+        WHEN   process_ingest_job(job_id)
+        THEN   exits immediately, no transition
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("created")
+        process_ingest_job(job_id)  # must not raise
+        assert self._get_status(job_id) == "created"
+
+    def test_worker_executes_only_queued(self):
+        """
+        TEST 4 — Valid Execution
+
+        GIVEN  job.status = queued
+        WHEN   process_ingest_job(job_id)
+        THEN   pipeline runs and job reaches success
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_job("queued")
+        process_ingest_job(job_id)
+        assert self._get_status(job_id) == "success"
+
+    def test_no_double_failure_transition(self):
+        """
+        TEST 5 — No Double-Failure Transition
+
+        GIVEN  job.status = failed
+        WHEN   _transition(job_id, failed) is attempted
+        THEN   raises RuntimeError with STATE_MACHINE_VIOLATION
+        """
+        from backend.app.ingest_pipeline import _transition
+
+        job_id = self._make_job("failed")
+        with pytest.raises(RuntimeError, match="STATE_MACHINE_VIOLATION"):
+            _transition(job_id, "failed", error="test")
+
+
+# ---------------------------------------------------------------------------
+# Test: MQP-CONTRACT PURE EXECUTION PIPELINE — Pipeline Purity Enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestPipelinePurity:
+    """
+    MQP-CONTRACT: PURE EXECUTION PIPELINE
+
+    Verifies that:
+    - Blob validation happens INSIDE the pipeline (after RUNNING)
+    - All failures produce exactly one transition to FAILED
+    - Full success sequence follows RUNNING → PROCESSING → INDEXING → FINALIZING → SUCCESS
+    """
+
+    def _make_queued_job(self, blob_data: bytes | None = b"hello world",
+                         blob_size_bytes: int | None = None) -> str:
+        """Create an IngestJob in QUEUED state. Returns str(job_id)."""
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        job_id = uuid.uuid4()
+        size = blob_size_bytes if blob_size_bytes is not None else (
+            len(blob_data) if blob_data is not None else 0
+        )
+        with Session(get_engine()) as session:
+            job = IngestJob(
+                id=job_id,
+                kind="file",
+                source="test.txt",
+                status="queued",
+                blob_data=blob_data,
+                blob_mime_type="text/plain" if blob_data else None,
+                blob_size_bytes=size,
+            )
+            session.add(job)
+            session.commit()
+        return str(job_id)
+
+    def _get_job(self, job_id: str):
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        with Session(get_engine()) as session:
+            return session.get(IngestJob, uuid.UUID(job_id))
+
+    def test_pipeline_fails_on_missing_blob_after_running(self):
+        """
+        TEST_pipeline_fails_on_missing_blob_after_running
+
+        GIVEN  job.status = queued, blob_data = None
+        WHEN   process_ingest_job runs
+        THEN   state goes queued → running → failed (PIPELINE_VALIDATION_FAIL)
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_queued_job(blob_data=None)
+        process_ingest_job(job_id)  # must not raise
+
+        job = self._get_job(job_id)
+        assert job.status == "failed"
+        assert job.error and "PIPELINE_VALIDATION_FAIL" in job.error
+
+    def test_pipeline_fails_on_empty_blob(self):
+        """
+        TEST_pipeline_fails_on_empty_blob
+
+        GIVEN  job.status = queued, blob_data present but blob_size_bytes = 0
+        WHEN   process_ingest_job runs
+        THEN   state reaches failed with PIPELINE_VALIDATION_FAIL
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_queued_job(blob_data=b"x", blob_size_bytes=0)
+        process_ingest_job(job_id)  # must not raise
+
+        job = self._get_job(job_id)
+        assert job.status == "failed"
+        assert job.error and "PIPELINE_VALIDATION_FAIL" in job.error
+
+    def test_pipeline_success_full_sequence(self):
+        """
+        TEST_pipeline_success_full_sequence
+
+        GIVEN  job.status = queued, valid blob_data
+        WHEN   process_ingest_job runs
+        THEN   job ends in success
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        job_id = self._make_queued_job(blob_data=b"line one\nline two\nline three\n")
+        process_ingest_job(job_id)
+
+        job = self._get_job(job_id)
+        assert job.status == "success"
+        assert job.progress == 100
+
+    def test_pipeline_single_failure_transition(self):
+        """
+        TEST_pipeline_single_failure_transition
+
+        GIVEN  job.status = queued, blob_data = None (forces PIPELINE_VALIDATION_FAIL)
+        WHEN   process_ingest_job runs
+        THEN   exactly ONE transition to failed occurs (no STATE_MACHINE_VIOLATION)
+        """
+        from backend.app.ingest_pipeline import process_ingest_job
+
+        transitions: list[tuple[str, str]] = []
+
+        import backend.app.ingest_pipeline as pipeline_mod
+
+        original = pipeline_mod._transition
+
+        def recording_transition(job_id, next_state, **payload):
+            transitions.append((str(job_id), next_state))
+            return original(job_id, next_state, **payload)
+
+        pipeline_mod._transition = recording_transition
+        try:
+            job_id = self._make_queued_job(blob_data=None)
+            process_ingest_job(job_id)
+        finally:
+            pipeline_mod._transition = original
+
+        failed_transitions = [t for t in transitions if t[1] == "failed"]
+        assert len(failed_transitions) == 1, (
+            f"Expected exactly 1 failed transition, got {failed_transitions}"
+        )
+

@@ -746,7 +746,7 @@ class TestInvariantEnforcement:
         # Worker must handle this gracefully — no unhandled exception
         process_ingest_job(str(job_id))
 
-        # Job must be in FAILED state with WORKER_ENTRY_VIOLATION error
+        # Job must be in FAILED state with PIPELINE_VALIDATION_FAIL error
         with Session(db_module.get_engine()) as s:
             job = s.get(IngestJob, job_id)
             assert job is not None
@@ -754,8 +754,8 @@ class TestInvariantEnforcement:
                 f"INVARIANT_VIOLATION: worker must transition to 'failed' "
                 f"when blob_data is missing, got {job.status!r}"
             )
-            assert job.error and "WORKER_ENTRY_VIOLATION" in job.error, (
-                f"INVARIANT_VIOLATION: error must contain 'WORKER_ENTRY_VIOLATION', "
+            assert job.error and "PIPELINE_VALIDATION_FAIL" in job.error, (
+                f"INVARIANT_VIOLATION: error must contain 'PIPELINE_VALIDATION_FAIL', "
                 f"got {job.error!r}"
             )
 

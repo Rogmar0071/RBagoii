@@ -1070,44 +1070,37 @@ def process_ingest_job(job_id: str) -> None:
 
     Designed to run in an RQ worker or background thread.
 
-    LAW: ALWAYS_UPDATE_TERMINAL
-        A terminal status (``success`` or ``failed``) is written
-        unconditionally — even when an unexpected exception is raised.
-        Callers never need to handle partial or stuck state.
+    MQP-CONTRACT: WORKER-EXECUTION-CLOSURE
+        execution_allowed(job) = job.status == queued
+        ALL other states → NO-OP (no transition, no retry, no correction)
 
     AIC-v2: TRANSITION AUTHORITY
         ALL state changes via _transition() ONLY.
         NO direct job.status mutations.
     """
-    # MQP-CONTRACT: WORKER_ENTRY_VALIDATION — validate state and data before any transition.
-    # Effect: transitions job to FAILED if invariants violated; returns immediately.
     job = _get_ingest_job(job_id)
     if job is None:
-        logger.error("WORKER_ENTRY_VIOLATION: Job %s not found in DB", job_id)
+        logger.error("WORKER_MISSING_JOB: job=%s", job_id)
         return
+
+    # TERMINAL STATES — HARD STOP
+    if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
+        logger.error(
+            "WORKER_TERMINAL_VIOLATION: job=%s state=%s",
+            job_id, job.status,
+        )
+        return
+
+    # NON-QUEUED — HARD STOP
     if job.status != IngestJobState.QUEUED:
         logger.error(
-            "WORKER_ENTRY_VIOLATION: Job %s in state %r, expected %r",
-            job_id, job.status, IngestJobState.QUEUED,
+            "WORKER_ENTRY_VIOLATION: job=%s state=%s expected=queued",
+            job_id, job.status,
         )
-        _transition(job_id, IngestJobState.FAILED,
-                    error=f"WORKER_ENTRY_VIOLATION: state={job.status!r}")
         return
-    if job.kind in ("file", "url", "repo"):
-        if not job.blob_data:
-            logger.error("WORKER_ENTRY_VIOLATION: Job %s has no blob_data", job_id)
-            _transition(job_id, IngestJobState.FAILED,
-                        error="WORKER_ENTRY_VIOLATION: blob_data missing")
-            return
-        if job.blob_size_bytes == 0:
-            logger.error("WORKER_ENTRY_VIOLATION: Job %s has empty blob_data", job_id)
-            _transition(job_id, IngestJobState.FAILED,
-                        error="WORKER_ENTRY_VIOLATION: blob_data empty")
-            return
 
-    # TRANSITION: QUEUED → RUNNING
     logger.info("IngestJob %s: starting", job_id)
-    _transition(job_id, IngestJobState.RUNNING, progress=0)
+    _transition(job_id, IngestJobState.RUNNING)
 
     try:
         from sqlmodel import Session
@@ -1118,8 +1111,23 @@ def process_ingest_job(job_id: str) -> None:
         with Session(get_engine()) as session:
             job = session.get(IngestJob, uuid.UUID(job_id))
             if job is None:
-                logger.error("IngestJob %s not found in DB — aborting", job_id)
+                logger.error("PIPELINE_EXECUTION_FAIL: job=%s not found after RUNNING", job_id)
+                _transition(job_id, IngestJobState.FAILED,
+                            error="PIPELINE_EXECUTION_FAIL: job not found after RUNNING")
                 return
+
+            # PIPELINE VALIDATION — blob integrity, after RUNNING
+            if job.kind in ("file", "url", "repo"):
+                if not job.blob_data:
+                    logger.error("PIPELINE_VALIDATION_FAIL: job=%s blob_data missing", job_id)
+                    _transition(job_id, IngestJobState.FAILED,
+                                error="PIPELINE_VALIDATION_FAIL: blob_data missing")
+                    return
+                if job.blob_size_bytes == 0:
+                    logger.error("PIPELINE_VALIDATION_FAIL: job=%s blob_data empty", job_id)
+                    _transition(job_id, IngestJobState.FAILED,
+                                error="PIPELINE_VALIDATION_FAIL: blob_data empty")
+                    return
 
             # TRANSITION: RUNNING → PROCESSING
             _transition(job_id, IngestJobState.PROCESSING, progress=5)
@@ -1160,8 +1168,7 @@ def process_ingest_job(job_id: str) -> None:
             )
 
     except Exception as exc:
-        logger.exception("IngestJob %s: failed — %s", job_id, exc)
+        logger.error("PIPELINE_EXECUTION_FAIL: job=%s error=%s", job_id, str(exc)[:200])
 
         # TRANSITION: ANY → FAILED (terminal state, can transition from anywhere)
         _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
-        logger.error("STATE: FAILED job_id=%s error=%s", job_id, str(exc)[:200])
