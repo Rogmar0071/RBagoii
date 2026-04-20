@@ -222,7 +222,7 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
     The queue ALWAYS stores the string path "backend.app.job_runner.execute_job"
     rather than a pickled function object.  This prevents DeserializationError
     when functions are renamed or moved across deployments.
-    
+
     CONTRACT: MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2
     This is the ONLY function that should enqueue jobs. All other code must use this entry point.
     """
@@ -256,7 +256,7 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
         # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §3 — Hard assert queue name
         if q.name != "default":
             raise RuntimeError("QUEUE_VIOLATION")
-        
+
         # Enqueue by stable STRING PATH — never by function object.
         # The worker resolves the function at execution time via execute_job.
         enqueue_kwargs = {
@@ -265,7 +265,7 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
         }
         if rq_job_id is not None:
             enqueue_kwargs["job_id"] = rq_job_id
-            
+
         rq_job = q.enqueue(
             "backend.app.job_runner.execute_job",
             job_type,

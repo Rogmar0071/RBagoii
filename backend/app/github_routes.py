@@ -557,7 +557,7 @@ def _enqueue_repo_ingestion(repo_id: str) -> None:
 
         # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
         from backend.app.worker import enqueue_job
-        
+
         enqueue_job(repo_id, "run_repo_ingestion", rq_job_id=job_id)
         logger.info({"event": "job_enqueued", "repo_id": repo_id, "job_id": job_id})
         return

@@ -77,7 +77,7 @@ def _enqueue_analysis_job(job_id: str, file_path: str) -> None:
         try:
             # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
             from backend.app.worker import enqueue_job
-            
+
             enqueue_job(job_id, "process_analysis_job")
             return
         except Exception as exc:

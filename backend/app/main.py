@@ -461,7 +461,7 @@ def _enqueue_extraction(session_id: str, clip_path: str) -> None:
         try:
             # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
             from backend.app.worker import enqueue_job
-            
+
             enqueue_job(session_id, "run_extraction_job")
             return
         except Exception as exc:

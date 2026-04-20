@@ -621,11 +621,11 @@ class IngestJob(SQLModel, table=True):
     status values (MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1)
     ---------------------------------------------------------------------
     Linear progression (strict state machine):
-    
+
     created → staged → ready → queued → running → processing → finalizing → success
-    
+
     Any state can transition to: failed
-    
+
     State definitions:
     - created: Job record exists, no processing yet
     - staged: File written to disk (file uploads only)

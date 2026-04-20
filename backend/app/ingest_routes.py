@@ -82,7 +82,7 @@ def _enqueue(job_id: str) -> None:
         RULE A1 — SINGLE QUEUE: All jobs enqueued to Queue("default")
         RULE A2 — DIRECT ENQUEUE ONLY: Using q.enqueue() directly
         RULE A3 — VALIDATION CHECK: Assert queue name is "rq:queue:default"
-    
+
     MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2
         Updated to use enqueue_job() single entry point instead of direct q.enqueue()
     """
@@ -103,7 +103,7 @@ def _enqueue(job_id: str) -> None:
 
             # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
             from backend.app.worker import enqueue_job
-            
+
             enqueue_job(job_id, "process_ingest_job")
             logger.info("IngestJob %s enqueued via RQ", job_id)
 
@@ -215,10 +215,10 @@ async def ingest_file(
     job_id = uuid.uuid4()
     staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
     ready_path = Path(str(staging_path) + ".ready")
-    
+
     # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
     # State: CREATED → STAGED → READY → QUEUED
-    
+
     # STATE: CREATED - Create job record before file operations
     job = IngestJob(
         id=job_id,
@@ -231,9 +231,9 @@ async def ingest_file(
     )
     session.add(job)
     session.commit()
-    
+
     logger.info("STATE: CREATED job_id=%s", job_id)
-    
+
     # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §1
     # Atomic write with explicit READY flag for deterministic handoff
     try:
@@ -242,11 +242,11 @@ async def ingest_file(
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        
+
         # STEP 2: HARD VERIFY file existence
         if not staging_path.exists():
             raise RuntimeError(f"STAGING_VIOLATION: missing file {staging_path}")
-        
+
         # STEP 3: HARD VERIFY file size
         if staging_path.stat().st_size != len(data):
             staging_path.unlink(missing_ok=True)
@@ -254,28 +254,28 @@ async def ingest_file(
                 f"STAGING_VIOLATION: size mismatch {staging_path}. "
                 f"Expected {len(data)}, got {staging_path.stat().st_size}"
             )
-        
+
         # TRANSITION: CREATED → STAGED
         from backend.app.ingest_pipeline import _transition
         _transition(str(job_id), "staged")
         logger.info("STATE: STAGED job_id=%s path=%s size=%d", job_id, staging_path, len(data))
-        
+
         # STEP 4: CREATE READY FLAG (THIS IS THE TRUE SIGNAL)
         # File existence alone is NOT sufficient - ready flag proves atomicity
         with open(ready_path, "w") as f:
             f.write("ok")
             f.flush()
             os.fsync(f.fileno())
-        
+
         # STEP 5: HARD VERIFY ready flag exists
         if not ready_path.exists():
             staging_path.unlink(missing_ok=True)
             raise RuntimeError(f"STAGING_VIOLATION: ready flag missing {ready_path}")
-        
+
         # TRANSITION: STAGED → READY
         _transition(str(job_id), "ready")
         logger.info("STATE: READY job_id=%s", job_id)
-        
+
     except RuntimeError:
         # Re-raise our own STAGING_VIOLATION errors
         staging_path.unlink(missing_ok=True)
@@ -292,10 +292,10 @@ async def ingest_file(
     # TRANSITION: READY → QUEUED (must happen BEFORE enqueue for synchronous execution)
     _transition(str(job_id), "queued")
     logger.info("STATE: QUEUED job_id=%s", job_id)
-    
+
     # Enqueue the job (may run synchronously in test mode)
     _enqueue(str(job_id))
-    
+
     # Refresh job to get latest status
     session.refresh(job)
     # After commit + synchronous enqueue, lazy-load on _to_response(job) reads
@@ -336,7 +336,7 @@ def ingest_url(
         )
 
     job_id = uuid.uuid4()
-    
+
     # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
     # For URL/repo jobs: CREATED → QUEUED (no staging phase)
     job = IngestJob(
@@ -349,17 +349,17 @@ def ingest_url(
     )
     session.add(job)
     session.commit()
-    
+
     logger.info("STATE: CREATED job_id=%s kind=url", job_id)
-    
+
     # URL jobs skip staging/ready states (no file to stage)
     # TRANSITION: CREATED → QUEUED
     from backend.app.ingest_pipeline import _transition
     _transition(str(job_id), "queued")
     logger.info("STATE: QUEUED job_id=%s", job_id)
-    
+
     _enqueue(str(job_id))
-    
+
     # Refresh to get latest status
     session.refresh(job)
     return _to_response(job)
@@ -419,12 +419,15 @@ def ingest_repo(
             .order_by(IngestJob.created_at.desc())
         ).first()
         # Check for active states (not just queued/running/success)
-        active_states = {"created", "staged", "ready", "queued", "running", "processing", "finalizing", "success"}
+        active_states = {
+            "created", "staged", "ready", "queued", "running",
+            "processing", "finalizing", "success"
+        }
         if existing and existing.status in active_states:
             return _to_response(existing)
 
     job_id = uuid.uuid4()
-    
+
     # MQP-CONTRACT: INGESTION_STATE_MACHINE_ENFORCEMENT_V1
     # For repo jobs: CREATED → QUEUED (no staging phase)
     job = IngestJob(
@@ -438,17 +441,17 @@ def ingest_repo(
     )
     session.add(job)
     session.commit()
-    
+
     logger.info("STATE: CREATED job_id=%s kind=repo", job_id)
-    
+
     # Repo jobs skip staging/ready states (no file to stage)
     # TRANSITION: CREATED → QUEUED
     from backend.app.ingest_pipeline import _transition
     _transition(str(job_id), "queued")
     logger.info("STATE: QUEUED job_id=%s", job_id)
-    
+
     _enqueue(str(job_id))
-    
+
     # Refresh to get latest status
     session.refresh(job)
     return _to_response(job)
