@@ -215,6 +215,24 @@ async def ingest_file(
     job_id = uuid.uuid4()
     staging_path = _STAGING_DIR / f"{job_id}{ext or '.bin'}"
     staging_path.write_bytes(data)
+    
+    # MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §1
+    # Ensure file is physically present and readable before proceeding
+    if not staging_path.exists():
+        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: File write failed: {staging_path}")
+    if staging_path.stat().st_size != len(data):
+        raise RuntimeError(
+            f"STAGING_INVARIANT_VIOLATION: File size mismatch. "
+            f"Expected {len(data)}, got {staging_path.stat().st_size}"
+        )
+    
+    # Force flush to disk to ensure atomic handoff
+    try:
+        with open(staging_path, "rb") as f:
+            os.fsync(f.fileno())
+    except Exception as exc:
+        staging_path.unlink(missing_ok=True)
+        raise RuntimeError(f"STAGING_INVARIANT_VIOLATION: fsync failed: {exc}") from exc
 
     job = IngestJob(
         id=job_id,

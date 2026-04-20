@@ -465,15 +465,42 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     Ingest a file that was previously saved to *job.source_path*.
 
     Returns ``(file_count, chunk_count)``.
+    
+    MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §2
+    This function MUST NOT be called unless the staged file is physically present.
+    The caller is responsible for ensuring the file exists before enqueuing.
     """
     from backend.app.models import RepoChunk
     from backend.app.repo_chunk_extractor import extract_structure
 
     _update_ingest_job(str(job.id), progress=10)
 
+    # MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §3
+    # Hard assertion: file MUST exist when pipeline runs
+    if not job.source_path:
+        raise RuntimeError(
+            f"STAGING_INVARIANT_VIOLATION: IngestJob {job.id} has no source_path. "
+            f"This indicates a programming error in the upload handler."
+        )
+    
     path = Path(job.source_path)
     if not path.exists():
-        raise FileNotFoundError(f"Staged file not found: {path}")
+        raise FileNotFoundError(
+            f"STAGING_INVARIANT_VIOLATION: Staged file not found: {path}. "
+            f"Job {job.id} was enqueued but the file is missing. "
+            f"This should be impossible if the upload handler is correct."
+        )
+    
+    # Verify file is readable before proceeding
+    try:
+        file_size = path.stat().st_size
+        if file_size == 0:
+            logger.warning("Staged file is empty: %s (job %s)", path, job.id)
+            return 0, 0
+    except Exception as exc:
+        raise RuntimeError(
+            f"STAGING_INVARIANT_VIOLATION: Cannot access staged file {path}: {exc}"
+        ) from exc
 
     data = path.read_bytes()
     mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -699,6 +726,11 @@ def process_ingest_job(job_id: str) -> None:
         A terminal status (``success`` or ``failed``) is written
         unconditionally — even when an unexpected exception is raised.
         Callers never need to handle partial or stuck state.
+    
+    MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §4
+        For kind="file", the staged file MUST be physically present before
+        this function is called. The upload handler is responsible for
+        ensuring atomic handoff.
     """
     logger.info("IngestJob %s: starting", job_id)
     _update_ingest_job(job_id, status="running", progress=0)
@@ -714,6 +746,22 @@ def process_ingest_job(job_id: str) -> None:
             if job is None:
                 logger.error("IngestJob %s not found in DB — aborting", job_id)
                 return
+
+            # MQP-CONTRACT:FILE_STAGING_INVARIANT_ENFORCEMENT_V1 §5
+            # Pre-flight check for file uploads
+            if job.kind == "file":
+                if not job.source_path:
+                    raise RuntimeError(
+                        f"STAGING_INVARIANT_VIOLATION: IngestJob {job.id} is kind='file' "
+                        f"but has no source_path. Upload handler failed to set source_path."
+                    )
+                from pathlib import Path
+                if not Path(job.source_path).exists():
+                    raise FileNotFoundError(
+                        f"STAGING_INVARIANT_VIOLATION: Job {job.id} is kind='file' "
+                        f"but staged file missing: {job.source_path}. "
+                        f"This indicates the file was not properly staged before enqueue."
+                    )
 
             if job.kind == "file":
                 file_count, chunk_count = _ingest_file(session, job)
