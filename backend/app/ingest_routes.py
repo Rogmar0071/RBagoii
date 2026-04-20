@@ -48,9 +48,8 @@ router = APIRouter(prefix="/v1/ingest", tags=["ingest"])
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
 
-# Staging directory: uploaded files are saved here before the background
-# worker picks them up.  Cleaned up by the main-process cleanup daemon.
-_STAGING_DIR = Path(os.environ.get("INGEST_STAGING_DIR", "/tmp/ingest_staging"))
+# MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+# Filesystem staging removed - all data stored in database blob
 
 
 # ---------------------------------------------------------------------------
@@ -679,22 +678,14 @@ def delete_ingest_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Ingestion job not found")
 
+    # MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+    # No filesystem cleanup needed - all data in database
+
     # Remove associated chunks first
     for chunk in session.exec(
         select(RepoChunk).where(RepoChunk.ingest_job_id == job_uuid)
     ).all():
         session.delete(chunk)
-
-    # Clean up the staged file and ready flag from disk
-    # MQP-CONTRACT:FILE_STAGING_FINAL_INVARIANT_V2 §6 - Cleanup both files
-    if job.source_path:
-        try:
-            staging_path = Path(job.source_path)
-            ready_path = Path(str(staging_path) + ".ready")
-            staging_path.unlink(missing_ok=True)
-            ready_path.unlink(missing_ok=True)
-        except Exception as exc:
-            logger.warning("Could not delete staged files %s: %s", job.source_path, exc)
 
     session.delete(job)
     session.commit()
