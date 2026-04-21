@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import sqlalchemy as sa
-from sqlmodel import Column, Field, SQLModel
+from sqlmodel import Column, Field, SQLModel, UniqueConstraint
 
 
 def _utcnow() -> datetime:
@@ -710,3 +710,136 @@ class IngestJob(SQLModel, table=True):
         if "updated_at" not in data or data["updated_at"] is None:
             data["updated_at"] = _utcnow()
         super().__init__(**data)
+
+
+
+# ---------------------------------------------------------------------------
+# GRAPH-LAYER-CORRECTION v1.1
+# repo_files / code_symbols / file_dependencies / symbol_call_edges / entry_points
+#
+# MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1
+#
+# SINGLE GRAPH AUTHORITY.  ONE ENTITY = ONE TABLE.
+# FileNode, SymbolNode, FileEdge have been DELETED and replaced by:
+#   RepoFile     — canonical file identity
+#   CodeSymbol   — canonical symbol identity
+#   FileDependency   — resolved file→file edges (NEVER NULL target)
+#   SymbolCallEdge   — symbol→symbol call edges (source always valid FK)
+#   EntryPoint       — detected execution entry points
+# ---------------------------------------------------------------------------
+
+
+class RepoFile(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1 — Section 2
+
+    Canonical file identity within an ingestion job.
+    ONE ENTITY = ONE TABLE — SOLE authority for file identity.
+
+    Replaces the deleted FileNode / file_nodes table.
+    """
+
+    __tablename__ = "repo_files"
+    __table_args__ = (
+        UniqueConstraint("repo_id", "path", name="uq_repo_files_path"),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # repo_id maps to IngestJob.id for unified-pipeline jobs
+    repo_id: uuid.UUID = Field(sa_column=Column(sa.Uuid, nullable=False, index=True))
+    path: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    language: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    size_bytes: int = Field(default=0)
+    content_hash: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+
+class CodeSymbol(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1 — Section 5
+
+    Canonical symbol (function / class) extracted from a RepoFile.
+    file_id is NEVER NULL — orphan symbols are forbidden.
+
+    Replaces the deleted SymbolNode / symbol_nodes table.
+    """
+
+    __tablename__ = "code_symbols"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    name: str = Field(sa_column=Column(sa.Text, nullable=False))
+    # function | class
+    symbol_type: str = Field(sa_column=Column(sa.Text, nullable=False))
+    start_line: int
+    end_line: int
+
+
+class FileDependency(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1 — Section 4
+
+    A RESOLVED file-to-file dependency edge.  Both FKs are non-nullable.
+    Rows are ONLY inserted when the target path resolves to a known RepoFile.
+    Unresolved imports are silently dropped — never stored.
+
+    INVARIANT: target_file_id IS NEVER NULL.
+    """
+
+    __tablename__ = "file_dependencies"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    source_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    target_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+
+
+class SymbolCallEdge(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1 — Section 6
+
+    A directed call edge FROM a known CodeSymbol to another.
+    source_symbol_id is always a valid FK (NOT NULL) — orphan call edges are
+    forbidden.  target_symbol_id is nullable: the callee may be external.
+    """
+
+    __tablename__ = "symbol_call_edges"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # Caller — must be a persisted CodeSymbol
+    source_symbol_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("code_symbols.id"), nullable=False, index=True)
+    )
+    # Raw callee name as it appears in the source
+    callee_name: str = Field(sa_column=Column(sa.Text, nullable=False))
+    # Resolved target (nullable — callee may be an external symbol)
+    target_symbol_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(
+            sa.Uuid, sa.ForeignKey("code_symbols.id"), nullable=True, index=True
+        ),
+    )
+
+
+class EntryPoint(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1 — Section 7
+
+    Detected execution entry point within a RepoFile.
+    entry_type is one of: "main" | "server" | "framework".
+    file_id is NEVER NULL.
+    """
+
+    __tablename__ = "entry_points"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    # main | server | framework
+    entry_type: str = Field(sa_column=Column(sa.Text, nullable=False))
+    line: int

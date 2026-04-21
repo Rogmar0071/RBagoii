@@ -831,16 +831,33 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     Ingest a file from blob_data stored in the database.
 
     MQP-CONTRACT: AIC-v1.1-ENFORCEMENT-COMPLETE — DB-BACKED INGESTION
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1
+
+    Six-phase graph-aware ingestion for a single uploaded file:
+      Phase 1 — File registration (RepoFile)
+      Phase 2 — Symbol extraction (CodeSymbol)
+      Phase 3 — Dependency resolution (N/A for single-file; no cross-file refs)
+      Phase 4 — Call graph (SymbolCallEdge, intra-file)
+      Phase 5 — Entry points (EntryPoint)
+      Phase 6 — Chunking (RepoChunk, unchanged)
 
     Returns ``(file_count, chunk_count)``.
-
-    Worker MUST read from database ONLY. NO filesystem access.
     """
-    from backend.app.models import RepoChunk
+    from backend.app.graph_extractor import (
+        extract_graph,
+        extract_symbol_calls,
+        hash_content,
+    )
+    from backend.app.models import (
+        CodeSymbol,
+        EntryPoint,
+        RepoChunk,
+        RepoFile,
+        SymbolCallEdge,
+    )
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=file", job.id)
-
 
     # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
     if not job.blob_data:
@@ -869,7 +886,6 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     text = extract_text(data, mime_type, filename)
 
     if not text or not text.strip():
-        # Binary file with content but no extractable text
         logger.info(
             "No extractable text in blob: job=%s size=%d",
             job.id, job.blob_size_bytes
@@ -877,7 +893,63 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         logger.info("INGEST_SUCCESS job_id=%s chunks=0", job.id)
         return 0, 0
 
+    graph = extract_graph(filename, data)
 
+    # PHASE 1 — File registration
+    repo_file = RepoFile(
+        repo_id=job.id,
+        path=filename,
+        language=graph["language"],
+        size_bytes=len(data),
+        content_hash=hash_content(data),
+    )
+    session.add(repo_file)
+    session.flush()  # materialise id before FK children
+
+    # PHASE 2 — Symbol extraction
+    symbols_map: dict[str, Any] = {}  # name → CodeSymbol
+    for name, sym_type, line in graph["symbols"]:
+        sym = CodeSymbol(
+            file_id=repo_file.id,
+            name=name,
+            symbol_type=sym_type,
+            start_line=line,
+            end_line=line,
+        )
+        session.add(sym)
+        symbols_map[name] = sym
+    if symbols_map:
+        session.flush()  # materialise CodeSymbol ids before call-edge FKs
+
+    # PHASE 3 — Dependency resolution (single-file: no cross-file refs possible)
+
+    # PHASE 4 — Call graph (intra-file)
+    # STRICT EDGE POLICY: only create edge when target is also a persisted symbol.
+    if symbols_map:
+        calls = extract_symbol_calls(text, list(symbols_map.keys()))
+        for caller_name, callee_names in calls.items():
+            caller_sym = symbols_map.get(caller_name)
+            if caller_sym is None:
+                continue
+            for callee_name in callee_names:
+                target_sym = symbols_map.get(callee_name)
+                if target_sym is None:
+                    continue  # DROP EDGE — intra-file callee not persisted
+                session.add(SymbolCallEdge(
+                    source_symbol_id=caller_sym.id,
+                    callee_name=callee_name,
+                    target_symbol_id=target_sym.id,
+                ))
+
+    # PHASE 5 — Entry points
+    for entry_type, line in graph.get("entry_points", []):
+        session.add(EntryPoint(
+            file_id=repo_file.id,
+            entry_type=entry_type,
+            line=line,
+        ))
+
+    # PHASE 6 — Chunking (unchanged)
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
@@ -897,12 +969,9 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             )
         )
 
-    # Commit chunks to database
     session.commit()
 
-
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
-
     return 1, len(chunks)
 
 
@@ -986,6 +1055,15 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     Ingest a GitHub repository from blob manifest stored in database.
 
     MQP-CONTRACT: AIC-v1.1-REPO-DB-UNIFICATION-FINAL
+    MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1
+
+    Six-phase graph-aware ingestion:
+      Phase 1 — File registration   (RepoFile — ALL files persisted first)
+      Phase 2 — Symbol extraction   (CodeSymbol)
+      Phase 3 — Dependency resolution (FileDependency — resolved only)
+      Phase 4 — Call graph          (SymbolCallEdge)
+      Phase 5 — Entry points        (EntryPoint)
+      Phase 6 — Chunking            (RepoChunk, unchanged)
 
     Worker is PURE: reads ONLY from blob_data (no network, no filesystem).
     Blob contains complete repo manifest with all file contents pre-fetched.
@@ -994,7 +1072,20 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     """
     import json
 
-    from backend.app.models import RepoChunk
+    from backend.app.graph_extractor import (
+        extract_graph,
+        extract_symbol_calls,
+        hash_content,
+        resolve_import,
+    )
+    from backend.app.models import (
+        CodeSymbol,
+        EntryPoint,
+        FileDependency,
+        RepoChunk,
+        RepoFile,
+        SymbolCallEdge,
+    )
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
@@ -1020,10 +1111,21 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         job.id, repo_url, branch, len(files)
     )
 
-    file_count = 0
-    chunk_count = 0
+    # -----------------------------------------------------------------------
+    # PHASE 1 — File registration.
+    #
+    # MQP-STEERING-CONTRACT: GRAPH-LAYER-CORRECTION v1.1 — Section 3
+    # ALL RepoFile rows MUST be persisted (flushed) before graph resolution
+    # begins. Resolution operates only on committed/flushed file state.
+    # -----------------------------------------------------------------------
 
-    # Process each file from the manifest
+    # In-memory maps for phases 2-5
+    repo_files_by_path: dict[str, Any] = {}           # path → RepoFile
+    raw_imports_by_path: dict[str, list[str]] = {}    # path → raw import list
+    entry_points_by_path: dict[str, list[tuple]] = {} # path → [(type, line)]
+    file_contents_by_path: dict[str, str] = {}        # path → text content
+    symbols_by_path: dict[str, list[tuple]] = {}      # path → [(name, sym_type, line, CodeSymbol)]
+
     for file_entry in files:
         file_path = file_entry["path"]
         content = file_entry["content"]
@@ -1031,7 +1133,181 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         if not content or not content.strip():
             continue
 
-        # Chunk the content
+        content_bytes = content.encode("utf-8")
+        graph = extract_graph(file_path, content_bytes)
+
+        repo_file = RepoFile(
+            repo_id=job.id,
+            path=file_path,
+            language=graph["language"],
+            size_bytes=len(content_bytes),
+            content_hash=hash_content(content_bytes),
+        )
+        session.add(repo_file)
+
+        repo_files_by_path[file_path] = repo_file
+        raw_imports_by_path[file_path] = graph["imports"]
+        entry_points_by_path[file_path] = graph.get("entry_points", [])
+        file_contents_by_path[file_path] = content
+
+    # Flush all RepoFile rows so their IDs are valid before CodeSymbol FKs.
+    session.flush()
+
+    # -----------------------------------------------------------------------
+    # PHASE 2 — Symbol extraction.
+    # All CodeSymbol rows are created after RepoFile IDs are available.
+    # -----------------------------------------------------------------------
+
+    global_symbol_map: dict[str, list[Any]] = {}  # name → [CodeSymbol, ...]
+
+    for file_path, repo_file in repo_files_by_path.items():
+        content_bytes = file_contents_by_path[file_path].encode("utf-8")
+        graph = extract_graph(file_path, content_bytes)
+
+        path_symbols: list[tuple] = []
+        for name, sym_type, line in graph["symbols"]:
+            sym = CodeSymbol(
+                file_id=repo_file.id,
+                name=name,
+                symbol_type=sym_type,
+                start_line=line,
+                end_line=line,
+            )
+            session.add(sym)
+            path_symbols.append((name, sym_type, line, sym))
+            global_symbol_map.setdefault(name, []).append(sym)
+
+        symbols_by_path[file_path] = path_symbols
+
+    # Flush all CodeSymbol rows so IDs are valid for SymbolCallEdge FKs.
+    session.flush()
+
+    # -----------------------------------------------------------------------
+    # PHASE 3 — Dependency resolution.
+    #
+    # Only resolved edges are stored.  Unresolved imports are dropped.
+    # INVARIANT: FileDependency.target_file_id IS NEVER NULL.
+    # -----------------------------------------------------------------------
+
+    all_paths: frozenset[str] = frozenset(repo_files_by_path.keys())
+
+    # file_dependency_map is built here (in-memory) alongside the FileDependency
+    # rows so Phase 4 can use it for import-context symbol resolution without an
+    # extra DB round-trip.
+    file_dependency_map: dict[Any, list[Any]] = {}  # source_file_id → [target_file_ids]
+
+    for file_path, repo_file in repo_files_by_path.items():
+        for imp in raw_imports_by_path[file_path]:
+            resolved = resolve_import(imp, file_path, all_paths)
+            if resolved and resolved in repo_files_by_path:
+                target_file = repo_files_by_path[resolved]
+                session.add(FileDependency(
+                    source_file_id=repo_file.id,
+                    target_file_id=target_file.id,
+                ))
+                file_dependency_map.setdefault(repo_file.id, []).append(target_file.id)
+
+    # -----------------------------------------------------------------------
+    # PHASE 4 — Call graph.
+    #
+    # MQP-CONTRACT: SYMBOL-RESOLUTION-HARDENING v1.0
+    #
+    # Resolution priority (per callee name):
+    #   1. Same file as caller
+    #   2. File directly imported by the caller's file (FileDependency graph)
+    #   3. Globally unique (exactly one symbol with that name in the whole repo)
+    #   4. DROP EDGE — ambiguous or unresolvable
+    #
+    # STRICT EDGE POLICY:
+    #   source_symbol_id is ALWAYS a valid FK (CodeSymbol must exist).
+    #   target_symbol_id is NEVER NULL — partial edges are forbidden.
+    # -----------------------------------------------------------------------
+
+    # Build file_symbol_map: file_id → {name → CodeSymbol}
+    file_symbol_map: dict[Any, dict[str, Any]] = {}
+    for file_path, path_symbols in symbols_by_path.items():
+        rf = repo_files_by_path[file_path]
+        file_symbol_map[rf.id] = {name: sym for name, _, _, sym in path_symbols}
+
+    def _resolve_symbol(caller_file_id: Any, callee_name: str) -> Any:
+        """
+        Resolve *callee_name* to a unique CodeSymbol using import-context priority.
+
+        Returns the CodeSymbol, or None if the callee is ambiguous / unknown.
+        """
+        # 1. Same file
+        local = file_symbol_map.get(caller_file_id, {})
+        if callee_name in local:
+            return local[callee_name]
+
+        # 2. Import graph — files directly imported by the caller's file
+        for dep_file_id in file_dependency_map.get(caller_file_id, []):
+            dep_syms = file_symbol_map.get(dep_file_id, {})
+            if callee_name in dep_syms:
+                return dep_syms[callee_name]
+
+        # 3. Globally unique — only if exactly ONE symbol carries this name
+        candidates = global_symbol_map.get(callee_name, [])
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Ambiguous or unknown — drop the edge
+        return None
+
+    for file_path, path_symbols in symbols_by_path.items():
+        if not path_symbols:
+            continue
+
+        local_sym_map = {name: sym for name, _, _, sym in path_symbols}
+
+        # Pass all globally-known symbol names so cross-file callees are
+        # detected in caller bodies (symbol_starts is still bounded to
+        # symbols defined in *this* file — no orphan bodies are scanned).
+        all_known_names = list(global_symbol_map.keys())
+        calls = extract_symbol_calls(file_contents_by_path[file_path], all_known_names)
+
+        for caller_name, callee_names in calls.items():
+            caller_sym = local_sym_map.get(caller_name)
+            if caller_sym is None:
+                continue  # caller not persisted — edge forbidden
+
+            for callee_name in callee_names:
+                target_sym = _resolve_symbol(caller_sym.file_id, callee_name)
+                if target_sym is None:
+                    continue  # DROP EDGE — ambiguous or unresolvable
+
+                session.add(SymbolCallEdge(
+                    source_symbol_id=caller_sym.id,
+                    callee_name=callee_name,
+                    target_symbol_id=target_sym.id,
+                ))
+
+    # -----------------------------------------------------------------------
+    # PHASE 5 — Entry points.
+    # -----------------------------------------------------------------------
+
+    for file_path, repo_file in repo_files_by_path.items():
+        for entry_type, line in entry_points_by_path[file_path]:
+            session.add(EntryPoint(
+                file_id=repo_file.id,
+                entry_type=entry_type,
+                line=line,
+            ))
+
+    # -----------------------------------------------------------------------
+    # PHASE 6 — Chunking (existing behaviour, unchanged).
+    # -----------------------------------------------------------------------
+
+    file_count = 0
+    chunk_count = 0
+
+    for file_entry in files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
+
+        if not content or not content.strip():
+            continue
+
         chunks = split_with_overlap(content)
 
         for idx, chunk_text in enumerate(chunks):
@@ -1055,7 +1331,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
 
         file_count += 1
 
-    # Commit all chunks to database
+    # Commit all graph rows + chunks atomically
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
