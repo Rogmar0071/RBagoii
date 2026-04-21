@@ -22,6 +22,8 @@ data class GithubRepo(
     val progress: Int = 0,  // 0-100
     val totalFiles: Int = 0,
     val totalChunks: Int = 0,
+    val indexed: Boolean = false,
+    val lastRetrievedCount: Int = 0,
     val errorMessage: String? = null,  // Set when status == failed
     // IngestJob ID for polling
     val ingestJobId: String? = null,
@@ -86,6 +88,8 @@ class GithubRepoAdapter(
             binding.tvRepoDescription.text = repo.description.ifEmpty { "No description" }
             binding.tvRepoLanguage.text = repo.language.ifEmpty { "Unknown" }
             binding.tvRepoStars.text = "⭐ ${repo.stars}"
+            binding.tvRepoIndexDebug.text =
+                "Files: ${repo.totalFiles}  Chunks: ${repo.totalChunks}  Indexed: ${repo.indexed}  Retrieved: ${repo.lastRetrievedCount}"
 
             when (repo.ingestionStatus) {
                 "queued" -> {

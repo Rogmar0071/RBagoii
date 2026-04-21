@@ -68,6 +68,15 @@
                 android:textSize="11sp"
                 android:text="⭐ 123" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/tvRepoIndexDebug"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp"
+            android:layout_marginTop="4dp"
+            android:text="Files: 0  Chunks: 0  Indexed: false  Retrieved: 0" />
     </LinearLayout>
 
     <!-- Status pill badge -->
