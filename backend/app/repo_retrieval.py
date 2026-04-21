@@ -365,9 +365,7 @@ def retrieve_relevant_chunks(
         return []
 
     if not keywords:
-        fallback_scored = [(0, c) for c in all_chunks]
-        selected = _apply_diversity(fallback_scored, max_total=max_chunks)
-        return _apply_token_budget(selected, max_tokens=max_tokens)
+        return []
 
     scored: list[tuple[int, RepoChunk]] = []
     for chunk in all_chunks:
@@ -388,6 +386,4 @@ def retrieve_relevant_chunks(
         selected = _apply_diversity(scored, max_total=max_chunks)
         return _apply_token_budget(selected, max_tokens=max_tokens)
 
-    fallback_scored = [(0, c) for c in all_chunks]
-    selected = _apply_diversity(fallback_scored, max_total=max_chunks)
-    return _apply_token_budget(selected, max_tokens=max_tokens)
+    return []

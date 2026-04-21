@@ -45,7 +45,7 @@ from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
-from backend.app.models import ChatFile, Repo  # Import ChatFile and Repo models
+from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo
 from backend.app.repo_retrieval import retrieve_relevant_chunks
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
@@ -287,7 +287,10 @@ class ChatPostResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: str = SCHEMA_VERSION
+    conversation_id: str
     reply: str
+    error_code: str | None = None
+    retrieved_count: int = 0
     tools_available: list[str]
     user_message: ChatMessageResponse
     assistant_message: ChatMessageResponse
@@ -540,6 +543,28 @@ def _persist_message(
     db.commit()
     db.refresh(message)
     return _message_to_response(message)
+
+
+def _ensure_conversation(db: Session | None, conversation_id: str) -> Conversation | None:
+    if db is None:
+        return None
+    conv = db.get(Conversation, conversation_id)
+    if conv is not None:
+        return conv
+    conv = Conversation(id=conversation_id)
+    db.add(conv)
+    db.commit()
+    db.refresh(conv)
+    return conv
+
+
+def _conversation_repo_ids(db: Session | None, conversation_id: str) -> list[uuid.UUID]:
+    if db is None:
+        return []
+    rows = db.exec(
+        select(ConversationRepo).where(ConversationRepo.conversation_id == conversation_id)
+    ).all()
+    return sorted((row.repo_id for row in rows), key=str)
 
 
 def _call_openai_chat(
@@ -877,10 +902,15 @@ def create_conversation() -> JSONResponse:
 
         { "conversation_id": "<uuid4>" }
     """
-    return JSONResponse(
-        status_code=200,
-        content={"conversation_id": str(uuid.uuid4())},
-    )
+    conversation_id = str(uuid.uuid4())
+    db = _db_session()
+    if db is not None:
+        try:
+            db.add(Conversation(id=conversation_id))
+            db.commit()
+        finally:
+            db.close()
+    return JSONResponse(status_code=200, content={"conversation_id": conversation_id})
 
 
 # ---------------------------------------------------------------------------
@@ -959,6 +989,18 @@ def delete_conversation(
 
             # Delete from database
             db.delete(file)
+
+        # Remove repo bindings for the conversation.
+        bindings = db.exec(
+            select(ConversationRepo).where(ConversationRepo.conversation_id == conversation_id)
+        ).all()
+        for b in bindings:
+            db.delete(b)
+
+        # Remove conversation record if present.
+        conv = db.get(Conversation, conversation_id)
+        if conv is not None:
+            db.delete(conv)
 
         db.commit()
         # Return counts - maintain backward compatibility with "deleted" field
@@ -1072,7 +1114,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         active_conversation_id = request.conversation_id
 
         db = _db_session()
+        retrieved_count = 0
         try:
+            _ensure_conversation(db, active_conversation_id)
+            if db is not None and context.repos:
+                for rid_str in context.repos:
+                    try:
+                        repo_uuid = uuid.UUID(rid_str)
+                    except ValueError:
+                        continue
+                    if db.get(Repo, repo_uuid) is None:
+                        continue
+                    existing = db.exec(
+                        select(ConversationRepo).where(
+                            ConversationRepo.conversation_id == active_conversation_id,
+                            ConversationRepo.repo_id == repo_uuid,
+                        )
+                    ).first()
+                    if existing is None:
+                        db.add(
+                            ConversationRepo(
+                                conversation_id=active_conversation_id,
+                                repo_id=repo_uuid,
+                            )
+                        )
+                db.commit()
+            conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
             # RULE 5: always persist messages, regardless of force_new_session.
             # force_new_session=True skips history READ only (debug/testing override).
             user_message = _persist_message(
@@ -1096,6 +1163,39 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             # to eliminate 502 errors and ensure structured error responses.
             try:
                 if not openai_api_key:
+                    if conversation_repo_ids and db is not None:
+                        repo_chunks = retrieve_relevant_chunks(
+                            user_query=message,
+                            db=db,
+                            repo_ids=conversation_repo_ids,
+                        )
+                        retrieved_count = len(repo_chunks)
+                        if not repo_chunks:
+                            reply = "REPO_CONTEXT_EMPTY"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            logger.info(
+                                "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                                active_conversation_id,
+                                retrieved_count,
+                                "REPO_CONTEXT_EMPTY",
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="REPO_CONTEXT_EMPTY",
+                                    retrieved_count=retrieved_count,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                )
+                            )
                     # No OpenAI key — the stub reply still flows through mode_engine_gateway
                     # so that pre-generation constraints, all four validation stages, and
                     # mandatory audit logging run.  The stub path is NOT a bypass.
@@ -1173,19 +1273,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # -------------------------------------------------------
                     repo_chunks = []
                     no_index_data = False
-                    has_explicit_repo_context = bool(context.repos)
-                    if context.repos and db is not None:
-                        active_repo_ids: list[uuid.UUID] = []
-                        for rid_str in context.repos:
-                            try:
-                                active_repo_ids.append(uuid.UUID(rid_str))
-                            except ValueError:
-                                pass
-
+                    has_explicit_repo_context = bool(conversation_repo_ids)
+                    if conversation_repo_ids and db is not None:
+                        active_repo_ids = conversation_repo_ids
                         print("CTX_REPOS:", active_repo_ids)
-
-                        if not active_repo_ids:
-                            no_index_data = True
 
                         if active_repo_ids:
                             _RUNNING_TIMEOUT = timedelta(minutes=15)
@@ -1243,6 +1334,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         db=db,
                                         repo_ids=[r.id for r in loaded_repos],
                                     )
+                                    retrieved_count = len(repo_chunks)
 
                                 print("REPO_CHUNKS:", len(repo_chunks))
 
@@ -1259,7 +1351,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     base_system_prompt += repo_block
 
                     if has_explicit_repo_context and no_index_data:
-                        reply = "NO_INDEX_DATA"
+                        reply = "REPO_CONTEXT_EMPTY"
                         assistant_message = _persist_message(
                             db,
                             "assistant",
@@ -1267,9 +1359,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             context,
                             conversation_id=active_conversation_id,
                         )
+                        logger.info(
+                            "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                            active_conversation_id,
+                            retrieved_count,
+                            "REPO_CONTEXT_EMPTY",
+                        )
                         return _json_response(
                             ChatPostResponse(
+                                conversation_id=active_conversation_id,
                                 reply=reply,
+                                error_code="REPO_CONTEXT_EMPTY",
+                                retrieved_count=retrieved_count,
                                 tools_available=_TOOLS_AVAILABLE,
                                 user_message=user_message,
                                 assistant_message=assistant_message,
@@ -1374,9 +1475,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 assistant_message = _persist_message(
                     db, "assistant", reply, context, conversation_id=active_conversation_id
                 )
+                logger.info(
+                    "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                    active_conversation_id,
+                    retrieved_count,
+                    None,
+                )
                 return _json_response(
                     ChatPostResponse(
+                        conversation_id=active_conversation_id,
                         reply=reply,
+                        retrieved_count=retrieved_count,
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
@@ -1404,9 +1513,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 assistant_message = _persist_message(
                     db, "assistant", error_reply, context, conversation_id=active_conversation_id
                 )
+                logger.info(
+                    "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                    active_conversation_id,
+                    retrieved_count,
+                    "SYSTEM_FAILURE",
+                )
                 return _json_response(
                     ChatPostResponse(
+                        conversation_id=active_conversation_id,
                         reply=error_reply,
+                        error_code="SYSTEM_FAILURE",
+                        retrieved_count=retrieved_count,
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
@@ -1428,9 +1546,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 assistant_message = _persist_message(
                     db, "assistant", error_reply, context, conversation_id=active_conversation_id
                 )
+                logger.info(
+                    "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                    active_conversation_id,
+                    retrieved_count,
+                    "SYSTEM_FAILURE",
+                )
                 return _json_response(
                     ChatPostResponse(
+                        conversation_id=active_conversation_id,
                         reply=error_reply,
+                        error_code="SYSTEM_FAILURE",
+                        retrieved_count=retrieved_count,
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
@@ -1474,9 +1601,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             )
             if db is not None:
                 db.close()
+            logger.info(
+                "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                active_conversation_id,
+                0,
+                "SYSTEM_FAILURE",
+            )
             return _json_response(
                 ChatPostResponse(
+                    conversation_id=active_conversation_id,
                     reply=error_reply,
+                    error_code="SYSTEM_FAILURE",
+                    retrieved_count=0,
                     tools_available=_TOOLS_AVAILABLE,
                     user_message=user_message,
                     assistant_message=assistant_message,
@@ -1491,6 +1627,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     "error": "SYSTEM_FAILURE",
                     "detail": "An unexpected error occurred. Please try again later.",
                     "retry_count": 0,
+                    "retrieved_count": 0,
+                    "conversation_id": (body or {}).get("conversation_id", "unknown"),
                 },
             )
 

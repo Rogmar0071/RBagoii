@@ -137,6 +137,7 @@ class TestConversationIsolation:
         cid = _new_conversation(client)
         resp = _post_chat(client, "Hello", conversation_id=cid)
 
+        assert resp["conversation_id"] == cid
         assert resp["user_message"]["conversation_id"] == cid
         assert resp["assistant_message"]["conversation_id"] == cid
 

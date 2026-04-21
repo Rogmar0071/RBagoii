@@ -618,7 +618,7 @@ class TestRepoStatusBlock:
     def test_failed_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A failed repo now returns NO_INDEX_DATA without calling OpenAI."""
+        """A failed repo now returns REPO_CONTEXT_EMPTY without calling OpenAI."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -663,13 +663,14 @@ class TestRepoStatusBlock:
             )
 
         assert resp.status_code == 200
-        assert resp.json().get("reply") == "NO_INDEX_DATA"
+        assert resp.json().get("reply") == "REPO_CONTEXT_EMPTY"
+        assert resp.json().get("error_code") == "REPO_CONTEXT_EMPTY"
         assert fake_openai.call_count == 0
 
     def test_processing_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A pending/running repo now returns NO_INDEX_DATA without calling OpenAI."""
+        """A pending/running repo now returns REPO_CONTEXT_EMPTY without calling OpenAI."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -714,7 +715,8 @@ class TestRepoStatusBlock:
             )
 
         assert resp.status_code == 200
-        assert resp.json().get("reply") == "NO_INDEX_DATA"
+        assert resp.json().get("reply") == "REPO_CONTEXT_EMPTY"
+        assert resp.json().get("error_code") == "REPO_CONTEXT_EMPTY"
         assert fake_openai.call_count == 0
 
 
@@ -774,9 +776,10 @@ class TestTimeoutSafety:
                 headers=AUTH,
             )
 
-        # Timeout flips repo to failed and returns NO_INDEX_DATA.
+        # Timeout flips repo to failed and returns REPO_CONTEXT_EMPTY.
         assert resp.status_code == 200
-        assert resp.json().get("reply") == "NO_INDEX_DATA"
+        assert resp.json().get("reply") == "REPO_CONTEXT_EMPTY"
+        assert resp.json().get("error_code") == "REPO_CONTEXT_EMPTY"
         assert fake_openai.call_count == 0
 
         # Verify DB was updated to failed
