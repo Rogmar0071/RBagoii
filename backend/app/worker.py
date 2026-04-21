@@ -323,8 +323,6 @@ def _update_job(job_id: str, **kwargs) -> None:
             kwargs["execution_locked"] = True
         for k, v in kwargs.items():
             setattr(job, k, v)
-        if job.execution_locked:
-            job.execution_locked = True
         session.add(job)
         session.commit()
 
