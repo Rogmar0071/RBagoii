@@ -1151,6 +1151,12 @@ def _build_execution_graph(
 
     # ------------------------------------------------------------------
     # Phase 1: Create RepoFile rows
+    #
+    # MQP-CONTRACT: PIPELINE_ORDER_LOCK
+    # RepoFile rows MUST be committed to the database BEFORE any graph
+    # resolution begins.  All subsequent phases read from file_id_map
+    # (populated here) to build FK references — the commit ensures those
+    # rows are durable regardless of subsequent session state.
     # ------------------------------------------------------------------
     file_id_map: dict[str, Any] = {}  # path → RepoFile.id
     for file_entry in active_files:
@@ -1158,6 +1164,9 @@ def _build_execution_graph(
         session.add(repo_file)
         session.flush()
         file_id_map[file_entry["path"]] = repo_file.id
+
+    # Commit RepoFile rows before graph resolution starts (ORDER LOCK)
+    session.commit()
 
     # ------------------------------------------------------------------
     # Phase 2: Create CodeSymbol rows
@@ -1182,6 +1191,9 @@ def _build_execution_graph(
             session.flush()
             symbol_id_map[(file_path, sym_name)] = code_sym.id
             symbol_to_files.setdefault(sym_name, []).append(file_path)
+
+    # Commit CodeSymbol rows before dependency / call-edge phases
+    session.commit()
 
     # ------------------------------------------------------------------
     # Phase 3: Resolve imports → FileDependency rows

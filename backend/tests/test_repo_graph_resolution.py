@@ -830,3 +830,388 @@ class TestMigration0026:
         assert {"id", "ingest_job_id", "file_id", "entry_type"}.issubset(ep_cols)
 
         engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Graph integrity invariant tests (MQP-STEERING-CONTRACT v1.0)
+# ---------------------------------------------------------------------------
+
+
+class TestNoUnresolvedDependencies:
+    """
+    TEST_no_unresolved_dependencies:
+        ASSERT COUNT(file_dependencies WHERE target_file_id IS NULL) == 0
+    """
+
+    def test_no_null_target_file_ids(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import FileDependency
+
+        job_id = _create_ingest_job()
+        files = [
+            (
+                "src/main.py",
+                "from .utils import helper\nimport os\nimport sys\n\ndef main(): pass\n",
+            ),
+            ("src/utils.py", "def helper(): pass\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            all_deps = s.exec(select(FileDependency)).all()
+            # Every stored dependency must have a non-null target_file_id
+            for dep in all_deps:
+                assert dep.target_file_id is not None, (
+                    f"FileDependency {dep.id} has NULL target_file_id — graph pollution"
+                )
+            # Unresolvable imports (os, sys) must not appear at all
+            assert len(all_deps) == 1, (
+                f"Expected 1 resolved dep (only .utils resolves), got {len(all_deps)}"
+            )
+
+    def test_no_unresolved_edges_multi_file(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import FileDependency
+
+        job_id = _create_ingest_job()
+        files = [
+            (
+                "app/routes.py",
+                "from .models import User\nfrom .db import get_session\nimport flask\n\n"
+                "def get_users(): pass\n",
+            ),
+            ("app/models.py", "class User:\n    pass\n"),
+            ("app/db.py", "def get_session(): pass\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            all_deps = s.exec(select(FileDependency)).all()
+            for dep in all_deps:
+                assert dep.target_file_id is not None
+            # flask is not in the repo → only 2 resolved deps
+            assert len(all_deps) == 2
+
+
+class TestSymbolIntegrity:
+    """
+    TEST_symbol_integrity:
+        ASSERT ALL symbol_call_edges.source_symbol_id EXISTS in code_symbols
+    """
+
+    def test_all_call_edges_have_valid_source_symbol(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import CodeSymbol, SymbolCallEdge
+
+        job_id = _create_ingest_job()
+        files = [
+            ("main.py", "def main():\n    helper()\n    process(42)\n"),
+            ("lib.py", "def helper(): pass\ndef process(x): return x\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            valid_symbol_ids = {sym.id for sym in s.exec(select(CodeSymbol)).all()}
+            edges = s.exec(select(SymbolCallEdge)).all()
+
+            assert len(edges) > 0, "Expected call edges to be created"
+            for edge in edges:
+                assert edge.source_symbol_id in valid_symbol_ids, (
+                    f"SymbolCallEdge {edge.id} references non-existent "
+                    f"CodeSymbol {edge.source_symbol_id}"
+                )
+
+    def test_no_orphan_call_edges(self):
+        """Call edges must only be created for files that have at least one symbol."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import CodeSymbol, SymbolCallEdge
+
+        job_id = _create_ingest_job()
+        # A file with no extractable symbols (pure comments/config)
+        files = [
+            ("config.ini", "[section]\nkey = value\n"),
+            ("logic.py", "def compute():\n    return 42\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            edges = s.exec(select(SymbolCallEdge)).all()
+            valid_symbol_ids = {sym.id for sym in s.exec(select(CodeSymbol)).all()}
+            for edge in edges:
+                assert edge.source_symbol_id in valid_symbol_ids
+
+
+class TestFileSymbolLink:
+    """
+    TEST_file_symbol_link:
+        ASSERT ALL code_symbols.file_id IS NOT NULL
+    """
+
+    def test_all_symbols_have_file_id(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import CodeSymbol
+
+        job_id = _create_ingest_job()
+        files = [
+            ("a.py", "def alpha(): pass\nclass Beta: pass\n"),
+            ("b.py", "def gamma(): pass\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            symbols = s.exec(select(CodeSymbol)).all()
+            assert len(symbols) > 0
+            for sym in symbols:
+                assert sym.file_id is not None, (
+                    f"CodeSymbol '{sym.name}' has NULL file_id — orphan symbol"
+                )
+
+    def test_symbols_linked_to_correct_files(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import CodeSymbol, RepoFile
+
+        job_id = _create_ingest_job()
+        files = [
+            ("models.py", "class User: pass\nclass Post: pass\n"),
+            ("utils.py", "def helper(): pass\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            repo_files = {
+                rf.file_path: rf.id
+                for rf in s.exec(
+                    select(RepoFile).where(RepoFile.ingest_job_id == job_id)
+                ).all()
+            }
+            symbols = s.exec(select(CodeSymbol)).all()
+
+            sym_map = {sym.name: sym.file_id for sym in symbols}
+            assert sym_map.get("User") == repo_files["models.py"]
+            assert sym_map.get("Post") == repo_files["models.py"]
+            assert sym_map.get("helper") == repo_files["utils.py"]
+
+
+class TestEntryPointPresence:
+    """
+    TEST_entry_point_presence:
+        GIVEN executable repo
+        ASSERT entry_points count > 0
+    """
+
+    def test_fastapi_app_detected(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import EntryPoint
+
+        job_id = _create_ingest_job()
+        files = [
+            (
+                "api.py",
+                "from fastapi import FastAPI\napp = FastAPI()\n\n"
+                "@app.get('/')\ndef root(): return {}\n",
+            ),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            eps = s.exec(
+                select(EntryPoint).where(EntryPoint.ingest_job_id == job_id)
+            ).all()
+            assert len(eps) > 0, "FastAPI app must be detected as entry point"
+            assert any(ep.entry_type == "framework" for ep in eps)
+
+    def test_flask_app_detected(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import EntryPoint
+
+        job_id = _create_ingest_job()
+        files = [
+            (
+                "web.py",
+                "from flask import Flask\napp = Flask(__name__)\n\n"
+                "@app.route('/')\ndef index(): return 'Hello'\n",
+            ),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            eps = s.exec(
+                select(EntryPoint).where(EntryPoint.ingest_job_id == job_id)
+            ).all()
+            assert len(eps) > 0, "Flask app must be detected as entry point"
+            assert any(ep.entry_type == "server" for ep in eps)
+
+    def test_express_listen_detected(self):
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import EntryPoint
+
+        job_id = _create_ingest_job()
+        files = [
+            (
+                "app.js",
+                "const express = require('express')\n"
+                "const app = express()\n"
+                "app.listen(3000)\n",
+            ),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            eps = s.exec(
+                select(EntryPoint).where(EntryPoint.ingest_job_id == job_id)
+            ).all()
+            assert len(eps) > 0, "Express app must be detected as entry point"
+            assert any(ep.entry_type in ("server", "main") for ep in eps)
+
+    def test_runnable_repo_has_entry_points(self):
+        """A repo with main.py + utilities must have at least one entry point."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import EntryPoint
+
+        job_id = _create_ingest_job()
+        files = [
+            ("main.py", "from src.app import run\n\ndef main():\n    run()\n"),
+            ("src/app.py", "def run(): print('running')\n"),
+            ("src/utils.py", "def helper(): pass\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            eps = s.exec(
+                select(EntryPoint).where(EntryPoint.ingest_job_id == job_id)
+            ).all()
+            assert len(eps) > 0, "Runnable repo must have at least one entry point"
+
+
+class TestGraphTraversability:
+    """
+    TEST_graph_traversability:
+        GIVEN entry point
+        ASSERT traversal reaches at least one downstream symbol
+    """
+
+    def test_entry_point_reaches_downstream_symbol(self):
+        """
+        Start at an EntryPoint, walk:
+            EntryPoint → RepoFile → CodeSymbol → SymbolCallEdge → target_symbol_name
+        Assert we reach at least one callable downstream.
+        """
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import (
+            CodeSymbol,
+            EntryPoint,
+            RepoFile,
+            SymbolCallEdge,
+        )
+
+        job_id = _create_ingest_job()
+        files = [
+            (
+                "main.py",
+                "from .services import process_data\n\n"
+                "def main():\n"
+                "    result = process_data([])\n"
+                "    return result\n",
+            ),
+            (
+                "services.py",
+                "def process_data(items):\n"
+                "    return [transform(i) for i in items]\n",
+            ),
+            (
+                "transforms.py",
+                "def transform(item):\n"
+                "    return item\n",
+            ),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            # Step 1: Find entry points
+            eps = s.exec(
+                select(EntryPoint).where(EntryPoint.ingest_job_id == job_id)
+            ).all()
+            assert len(eps) > 0, "Expected at least one entry point"
+
+            # Step 2: Walk entry_point → file → symbols
+            entry_file_id = eps[0].file_id
+            entry_file = s.get(RepoFile, entry_file_id)
+            assert entry_file is not None
+
+            symbols_in_entry = s.exec(
+                select(CodeSymbol).where(CodeSymbol.file_id == entry_file_id)
+            ).all()
+            assert len(symbols_in_entry) > 0, (
+                "Entry point file must have at least one symbol"
+            )
+
+            # Step 3: Follow call edges from any symbol in the entry file
+            all_downstream: set[str] = set()
+            for sym in symbols_in_entry:
+                edges = s.exec(
+                    select(SymbolCallEdge).where(
+                        SymbolCallEdge.source_symbol_id == sym.id
+                    )
+                ).all()
+                for edge in edges:
+                    all_downstream.add(edge.target_symbol_name)
+
+            assert len(all_downstream) > 0, (
+                "Entry point must have at least one outgoing call edge — "
+                "graph is not traversable"
+            )
+
+    def test_graph_chain_completeness(self):
+        """
+        RepoFile → CodeSymbol → SymbolCallEdge chain must be intact:
+        every SymbolCallEdge must trace back to a RepoFile via CodeSymbol.
+        """
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import CodeSymbol, RepoFile, SymbolCallEdge
+
+        job_id = _create_ingest_job()
+        files = [
+            ("app.py", "def start():\n    connect()\n    listen()\n"),
+            ("net.py", "def connect(): pass\ndef listen(): pass\n"),
+        ]
+        _run_repo_ingest(None, job_id, files)
+
+        with Session(db_module.get_engine()) as s:
+            edges = s.exec(select(SymbolCallEdge)).all()
+            assert len(edges) > 0
+
+            # Every edge → symbol → file must resolve without gaps
+            for edge in edges:
+                sym = s.get(CodeSymbol, edge.source_symbol_id)
+                assert sym is not None, (
+                    f"SymbolCallEdge {edge.id} source_symbol_id points to "
+                    "non-existent CodeSymbol"
+                )
+                repo_file = s.get(RepoFile, sym.file_id)
+                assert repo_file is not None, (
+                    f"CodeSymbol {sym.id} file_id points to non-existent RepoFile"
+                )

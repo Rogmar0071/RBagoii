@@ -278,6 +278,21 @@ _ENTRY_PREFIX_PATTERNS: dict[str, str] = {
     "test_": "test",
     "tests_": "test",
 }
+
+# Content-based entry point patterns (checked in order; first match wins)
+# Each entry is (compiled_pattern, entry_type)
+_CONTENT_ENTRY_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # Python __main__ guard
+    (re.compile(r'if\s+__name__\s*==\s*["\']__main__["\']'), "main"),
+    # FastAPI application instantiation
+    (re.compile(r'\bapp\s*=\s*FastAPI\s*\('), "framework"),
+    # Flask application instantiation
+    (re.compile(r'\bapp\s*=\s*Flask\s*\('), "server"),
+    # Express.js: const app = express()
+    (re.compile(r'\bexpress\s*\(\s*\)'), "server"),
+    # Express.js: app.listen(
+    (re.compile(r'\bapp\s*\.\s*listen\s*\('), "server"),
+]
 # Symbol patterns to extract ALL symbols (not just the first one per chunk)
 _ALL_CLASS_PATTERNS = _CLASS_PATTERNS
 _ALL_FUNC_PATTERNS = _FUNC_PATTERNS
@@ -473,14 +488,19 @@ def detect_entry_type(path: str, content: str) -> str | None:
     """
     Detect whether *path* is a repo entry point and return its type.
 
-    Returns one of ``"main"``, ``"cli"``, ``"server"``, ``"test"``,
-    or ``None`` if the file is not an entry point.
+    Returns one of ``"main"``, ``"cli"``, ``"server"``, ``"framework"``,
+    ``"test"``, or ``None`` if the file is not an entry point.
 
-    Detection rules
-    ---------------
-    1. Filename match (main.py, app.py, index.ts, index.js, …)
+    Detection rules (in precedence order)
+    --------------------------------------
+    1. Exact filename match (main.py, app.py, index.ts, index.js, …)
     2. Basename prefix match (server.*, cli.*, test_*, tests_*)
-    3. Python ``if __name__ == "__main__"`` guard
+    3. Content-based detection:
+       - Python ``if __name__ == "__main__"`` guard  → "main"
+       - FastAPI  ``app = FastAPI()``                → "framework"
+       - Flask    ``app = Flask(__name__)``           → "server"
+       - Express  ``express()``                       → "server"
+       - Express  ``app.listen(``                     → "server"
     """
     basename = posixpath.basename(path).lower()
 
@@ -493,12 +513,9 @@ def detect_entry_type(path: str, content: str) -> str | None:
         if basename.startswith(prefix):
             return etype
 
-    # Python __main__ guard
-    if '__name__' in content and '__main__' in content:
-        main_guard = re.search(
-            r'if\s+__name__\s*==\s*["\']__main__["\']', content
-        )
-        if main_guard:
-            return "main"
+    # Content-based detection
+    for pattern, etype in _CONTENT_ENTRY_PATTERNS:
+        if pattern.search(content):
+            return etype
 
     return None
