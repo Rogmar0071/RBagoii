@@ -191,7 +191,7 @@ class TestExecutionReconstructionBasic:
 
         from backend.app.database import get_engine
         from backend.app.execution_reconstruction import reconstruct_execution
-        from backend.app.models import EntryPoint, RepoFile
+        from backend.app.models import EntryPoint
 
         _make_repo_job(
             lambda: Session(get_engine()),

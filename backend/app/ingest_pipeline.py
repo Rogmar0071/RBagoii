@@ -924,6 +924,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     # PHASE 3 — Dependency resolution (single-file: no cross-file refs possible)
 
     # PHASE 4 — Call graph (intra-file)
+    # STRICT EDGE POLICY: only create edge when target is also a persisted symbol.
     if symbols_map:
         calls = extract_symbol_calls(text, list(symbols_map.keys()))
         for caller_name, callee_names in calls.items():
@@ -932,10 +933,12 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
                 continue
             for callee_name in callee_names:
                 target_sym = symbols_map.get(callee_name)
+                if target_sym is None:
+                    continue  # DROP EDGE — intra-file callee not persisted
                 session.add(SymbolCallEdge(
                     source_symbol_id=caller_sym.id,
                     callee_name=callee_name,
-                    target_symbol_id=target_sym.id if target_sym is not None else None,
+                    target_symbol_id=target_sym.id,
                 ))
 
     # PHASE 5 — Entry points
@@ -1188,33 +1191,78 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
 
     all_paths: frozenset[str] = frozenset(repo_files_by_path.keys())
 
+    # file_dependency_map is built here (in-memory) alongside the FileDependency
+    # rows so Phase 4 can use it for import-context symbol resolution without an
+    # extra DB round-trip.
+    file_dependency_map: dict[Any, list[Any]] = {}  # source_file_id → [target_file_ids]
+
     for file_path, repo_file in repo_files_by_path.items():
         for imp in raw_imports_by_path[file_path]:
             resolved = resolve_import(imp, file_path, all_paths)
             if resolved and resolved in repo_files_by_path:
+                target_file = repo_files_by_path[resolved]
                 session.add(FileDependency(
                     source_file_id=repo_file.id,
-                    target_file_id=repo_files_by_path[resolved].id,
+                    target_file_id=target_file.id,
                 ))
+                file_dependency_map.setdefault(repo_file.id, []).append(target_file.id)
 
     # -----------------------------------------------------------------------
     # PHASE 4 — Call graph.
     #
-    # source_symbol_id is ALWAYS a valid FK (CodeSymbol must exist).
-    # Orphan call edges are forbidden.
+    # MQP-CONTRACT: SYMBOL-RESOLUTION-HARDENING v1.0
+    #
+    # Resolution priority (per callee name):
+    #   1. Same file as caller
+    #   2. File directly imported by the caller's file (FileDependency graph)
+    #   3. Globally unique (exactly one symbol with that name in the whole repo)
+    #   4. DROP EDGE — ambiguous or unresolvable
+    #
+    # STRICT EDGE POLICY:
+    #   source_symbol_id is ALWAYS a valid FK (CodeSymbol must exist).
+    #   target_symbol_id is NEVER NULL — partial edges are forbidden.
     # -----------------------------------------------------------------------
+
+    # Build file_symbol_map: file_id → {name → CodeSymbol}
+    file_symbol_map: dict[Any, dict[str, Any]] = {}
+    for file_path, path_symbols in symbols_by_path.items():
+        rf = repo_files_by_path[file_path]
+        file_symbol_map[rf.id] = {name: sym for name, _, _, sym in path_symbols}
+
+    def _resolve_symbol(caller_file_id: Any, callee_name: str) -> Any:
+        """
+        Resolve *callee_name* to a unique CodeSymbol using import-context priority.
+
+        Returns the CodeSymbol, or None if the callee is ambiguous / unknown.
+        """
+        # 1. Same file
+        local = file_symbol_map.get(caller_file_id, {})
+        if callee_name in local:
+            return local[callee_name]
+
+        # 2. Import graph — files directly imported by the caller's file
+        for dep_file_id in file_dependency_map.get(caller_file_id, []):
+            dep_syms = file_symbol_map.get(dep_file_id, {})
+            if callee_name in dep_syms:
+                return dep_syms[callee_name]
+
+        # 3. Globally unique — only if exactly ONE symbol carries this name
+        candidates = global_symbol_map.get(callee_name, [])
+        if len(candidates) == 1:
+            return candidates[0]
+
+        # Ambiguous or unknown — drop the edge
+        return None
 
     for file_path, path_symbols in symbols_by_path.items():
         if not path_symbols:
             continue
 
-        symbol_names = [name for name, _, _, _ in path_symbols]
         local_sym_map = {name: sym for name, _, _, sym in path_symbols}
 
-        # Pass all globally-known symbol names so cross-file callees are also
-        # detected (e.g. run() in main.py calling process_data() from utils.py).
-        # symbol_starts inside extract_symbol_calls is still bounded to symbols
-        # whose definitions appear in *this* file, so no orphan bodies are scanned.
+        # Pass all globally-known symbol names so cross-file callees are
+        # detected in caller bodies (symbol_starts is still bounded to
+        # symbols defined in *this* file — no orphan bodies are scanned).
         all_known_names = list(global_symbol_map.keys())
         calls = extract_symbol_calls(file_contents_by_path[file_path], all_known_names)
 
@@ -1224,16 +1272,14 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 continue  # caller not persisted — edge forbidden
 
             for callee_name in callee_names:
-                # Prefer same-file resolution, then cross-file
-                target_sym = local_sym_map.get(callee_name)
+                target_sym = _resolve_symbol(caller_sym.file_id, callee_name)
                 if target_sym is None:
-                    candidates = global_symbol_map.get(callee_name, [])
-                    target_sym = candidates[0] if candidates else None
+                    continue  # DROP EDGE — ambiguous or unresolvable
 
                 session.add(SymbolCallEdge(
                     source_symbol_id=caller_sym.id,
                     callee_name=callee_name,
-                    target_symbol_id=target_sym.id if target_sym is not None else None,
+                    target_symbol_id=target_sym.id,
                 ))
 
     # -----------------------------------------------------------------------
