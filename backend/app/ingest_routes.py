@@ -82,6 +82,7 @@ class IngestJobResponse(BaseModel):
     kind: str
     source: str
     status: str
+    execution_locked: bool = False
     progress: int = 0
     file_count: int
     chunk_count: int
@@ -98,6 +99,7 @@ def _to_response(job: object) -> IngestJobResponse:
         kind=job.kind,  # type: ignore[attr-defined]
         source=job.source,  # type: ignore[attr-defined]
         status=job.status,  # type: ignore[attr-defined]
+        execution_locked=bool(getattr(job, "execution_locked", False)),
         progress=getattr(job, "progress", 0),  # type: ignore[attr-defined]
         file_count=job.file_count,  # type: ignore[attr-defined]
         chunk_count=job.chunk_count,  # type: ignore[attr-defined]

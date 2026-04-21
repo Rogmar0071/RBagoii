@@ -78,6 +78,7 @@ from backend.app.domain_routes import router as _domain_router  # noqa: E402
 from backend.app.folder_routes import router as _folder_router  # noqa: E402
 from backend.app.github_routes import router as _github_router  # noqa: E402
 from backend.app.ingest_routes import router as _ingest_router  # noqa: E402
+from backend.app.job_state_routes import router as _job_state_router  # noqa: E402
 from backend.app.mutation_routes import router as _mutation_router  # noqa: E402
 from backend.app.ops_routes import router as _ops_router  # noqa: E402
 from backend.app.simulation_routes import router as _simulation_router  # noqa: E402
@@ -95,6 +96,7 @@ app.include_router(_mutation_router)
 app.include_router(_simulation_router)
 app.include_router(_bridge_router)
 app.include_router(_ingest_router)
+app.include_router(_job_state_router)
 
 
 # ---------------------------------------------------------------------------

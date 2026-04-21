@@ -127,6 +127,7 @@ class ResourceActivity : AppCompatActivity() {
 
         // Load files for the current conversation
         loadChatFiles()
+        loadActiveRepos()
     }
 
     override fun onDestroy() {
@@ -140,6 +141,7 @@ class ResourceActivity : AppCompatActivity() {
         // Reload files when returning to this activity
         if (conversationId != null) {
             loadChatFiles()
+            loadActiveRepos()
         }
     }
 
@@ -677,12 +679,27 @@ class ResourceActivity : AppCompatActivity() {
             while (true) {
                 try {
                     val request = Request.Builder()
-                        .url("$baseUrl/v1/ingest/$jobId")
+                        .url("$baseUrl/v1/jobs/$jobId")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .get()
                         .build()
 
                     val response = BackendClient.executeWithRetry(request)
+                    if (response.code == 404) {
+                        runOnUiThread {
+                            onRender(JSONObject().put("job_id", jobId).put("status", "job_not_found"))
+                        }
+                        response.close()
+                        break
+                    }
+                    if (!response.isSuccessful) {
+                        response.close()
+                        runOnUiThread {
+                            onRender(JSONObject().put("job_id", jobId).put("status", "sync_error"))
+                        }
+                        Thread.sleep(2000)
+                        continue
+                    }
                     val body = response.body?.string()
                     response.close()
 
@@ -703,8 +720,10 @@ class ResourceActivity : AppCompatActivity() {
                     Thread.sleep(2000)
 
                 } catch (_: Exception) {
-                    // Terminates here on exception
-                    break
+                    runOnUiThread {
+                        onRender(JSONObject().put("job_id", jobId).put("status", "sync_error"))
+                    }
+                    Thread.sleep(2000)
                 }
             }
         }
@@ -762,7 +781,7 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = apiKey()
                 val baseUrl = baseUrl()
                 val request = Request.Builder()
-                    .url("$baseUrl/v1/ingest/jobs?conversation_id=$convId&kind=repo")
+                    .url("$baseUrl/v1/chat/$convId/jobs?kind=repo")
                     .addHeader("Authorization", "Bearer $apiKey")
                     .get()
                     .build()
@@ -781,10 +800,10 @@ class ResourceActivity : AppCompatActivity() {
                         kind = obj.getString("kind"),
                         source = obj.getString("source"),
                         status = obj.getString("status"),
-                        progress = obj.getInt("progress"),
-                        file_count = obj.getInt("file_count"),
-                        chunk_count = obj.getInt("chunk_count"),
-                        error = if (obj.isNull("error")) null else obj.getString("error"),
+                        progress = 0,
+                        file_count = 0,
+                        chunk_count = 0,
+                        error = null,
                         conversation_id = if (obj.isNull("conversation_id")) null else obj.getString("conversation_id"),
                         workspace_id = if (obj.isNull("workspace_id")) null else obj.getString("workspace_id"),
                         created_at = obj.getString("created_at"),
@@ -795,43 +814,42 @@ class ResourceActivity : AppCompatActivity() {
                     jobMap[repoUrl] = job
                 }
                 
-                // Overlay status onto displayed repos
-                if (jobMap.isNotEmpty()) {
-                    runOnUiThread {
-                        val updatedRepos = githubRepos.map { repo ->
-                            val job = jobMap[repo.htmlUrl]
-                            if (job != null) {
-                                repo.copy(
-                                    ingestionStatus = job.status,
-                                    progress = job.progress,
-                                    totalFiles = job.file_count,
-                                    totalChunks = job.chunk_count,
-                                    errorMessage = job.error,
-                                    ingestJobId = job.job_id
-                                )
-                            } else repo
+                runOnUiThread {
+                    val updatedRepos = githubRepos.map { repo ->
+                        val job = jobMap[repo.htmlUrl]
+                        if (job != null) {
+                            repo.copy(
+                                ingestionStatus = job.status,
+                                progress = 0,
+                                totalFiles = 0,
+                                totalChunks = 0,
+                                errorMessage = null,
+                                ingestJobId = job.job_id
+                            )
+                        } else {
+                            repo.copy(
+                                ingestionStatus = "",
+                                progress = 0,
+                                totalFiles = 0,
+                                totalChunks = 0,
+                                errorMessage = null,
+                                ingestJobId = null
+                            )
                         }
-                        githubRepos.clear()
-                        githubRepos.addAll(updatedRepos)
-                        repoAdapter.submitList(updatedRepos)
-                        
-                        // STEP 5: CALL SITE RULE — Each job = one independent loop
-                        val apiKey = apiKey()
-                        val baseUrl = baseUrl()
-                        for (job in jobMap.values) {
-                            if (job.status == "queued" || job.status == "running") {
-                                pollIngestJob(job.job_id, apiKey, baseUrl) { json ->
-                                    // STEP 3: RENDER = PURE BINDING
-                                    val status = json.optString("status")
-                                    val progress = json.optInt("progress")
-                                    val fileCount = json.optInt("file_count")
-                                    val chunkCount = json.optInt("chunk_count")
-                                    val error = json.optString("error")
-                                    val source = json.optString("source")
-                                    
-                                    // Bind directly to UI (adapter update)
-                                    updateRepoStatus(source, status, progress, fileCount, chunkCount, error, job.job_id)
-                                }
+                    }
+                    githubRepos.clear()
+                    githubRepos.addAll(updatedRepos)
+                    repoAdapter.submitList(updatedRepos)
+                    
+                    // STEP 5: CALL SITE RULE — Each job = one independent loop
+                    val apiKey = apiKey()
+                    val baseUrl = baseUrl()
+                    for (job in jobMap.values) {
+                        if (job.status == "queued" || job.status == "running") {
+                            pollIngestJob(job.job_id, apiKey, baseUrl) { json ->
+                                val status = json.optString("status")
+                                val source = json.optString("source", job.source)
+                                updateRepoStatus(source, status, 0, 0, 0, null, job.job_id)
                             }
                         }
                     }
