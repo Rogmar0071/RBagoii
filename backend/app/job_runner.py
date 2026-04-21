@@ -25,6 +25,10 @@ def try_load_job(job_id: str):
     record, or ``None`` when *job_id* does not correspond to any
     governed job (non-UUID strings are silently ignored).
 
+    The returned object has at minimum a ``status`` attribute that is
+    guaranteed to be loaded (read within the session) so it remains
+    accessible after the session closes.
+
     Extending to new job types: add a lookup block below following the
     same pattern — no other changes are required.
 
@@ -48,6 +52,9 @@ def try_load_job(job_id: str):
         with Session(get_engine()) as session:
             record = session.get(IngestJob, uid)
             if record is not None:
+                # Read status inside the session so the attribute is guaranteed
+                # to be loaded and accessible after the session is closed.
+                _ = record.status
                 return record
     except Exception as exc:
         print(f"WORKER:try_load_job:ingest_error job_id={job_id} err={repr(exc)}")
