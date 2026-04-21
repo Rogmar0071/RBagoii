@@ -1309,3 +1309,126 @@ class TestInvalidPathPrevention:
             "INVARIANT_VIOLATION: jobs without blob_data observed at dispatch time — "
             f"found: {blobless}"
         )
+
+
+class TestDeterministicStateLayer:
+    @staticmethod
+    def _create_job(status: str, conversation_id: str | None = None) -> str:
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        job = IngestJob(
+            id=uuid.uuid4(),
+            kind="repo",
+            source="https://github.com/example/repo@main",
+            status=status,
+            blob_data=b"repo-manifest",
+            blob_size_bytes=13,
+            conversation_id=conversation_id,
+        )
+        with Session(get_engine()) as s:
+            s.add(job)
+            s.commit()
+            s.refresh(job)
+            assert job.status == status
+        return str(job.id)
+
+    @staticmethod
+    def _set_status(job_id: str, status: str, execution_locked: bool | None = None) -> None:
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        with Session(get_engine()) as s:
+            job = s.get(IngestJob, uuid.UUID(job_id))
+            assert job is not None
+            job.status = status
+            if execution_locked is not None:
+                job.execution_locked = execution_locked
+            s.add(job)
+            s.commit()
+
+    def test_rehydrate_on_screen_entry(self, client):
+        conv_id = str(uuid.uuid4())
+        job_id = self._create_job("running", conv_id)
+
+        first = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
+        assert first.status_code == 200
+        first_job = next(j for j in first.json() if j["job_id"] == job_id)
+        assert first_job["status"] == "running"
+
+        self._set_status(job_id, "success", execution_locked=True)
+
+        second = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
+        assert second.status_code == 200
+        second_job = next(j for j in second.json() if j["job_id"] == job_id)
+        assert second_job["status"] == "success"
+        assert second_job["execution_locked"] is True
+
+    def test_poll_until_completion(self, client):
+        job_id = self._create_job("running")
+
+        first = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert first.status_code == 200
+        assert first.json()["status"] == "running"
+
+        self._set_status(job_id, "success", execution_locked=True)
+
+        second = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert second.status_code == 200
+        assert second.json()["status"] == "success"
+
+    def test_navigation_independence(self, client):
+        job_id = self._create_job("processing")
+
+        initial = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert initial.status_code == 200
+        assert initial.json()["status"] == "running"
+
+        self._set_status(job_id, "finalizing")
+        resumed = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert resumed.status_code == 200
+        assert resumed.json()["status"] == "running"
+
+        self._set_status(job_id, "failed", execution_locked=True)
+        terminal = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert terminal.status_code == 200
+        assert terminal.json()["status"] == "failed"
+
+    def test_no_local_state_dependency(self, client):
+        job_id = self._create_job("stored")
+
+        first = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert first.status_code == 200
+        assert first.json()["status"] == "queued"
+
+        second = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert second.status_code == 200
+        assert second.json()["status"] == "queued"
+
+    def test_terminal_state_persistence(self, client):
+        conv_id = str(uuid.uuid4())
+        job_id = self._create_job("success", conv_id)
+        self._set_status(job_id, "success", execution_locked=True)
+
+        detail = client.get(f"/jobs/{job_id}", headers=_AUTH)
+        assert detail.status_code == 200
+        detail_body = detail.json()
+        assert detail_body["status"] == "success"
+        assert detail_body["execution_locked"] is True
+        assert set(detail_body) >= {
+            "job_id",
+            "status",
+            "execution_locked",
+            "created_at",
+            "updated_at",
+        }
+
+        listing = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
+        assert listing.status_code == 200
+        listed = next(j for j in listing.json() if j["job_id"] == job_id)
+        assert listed["status"] == "success"
+        assert listed["execution_locked"] is True

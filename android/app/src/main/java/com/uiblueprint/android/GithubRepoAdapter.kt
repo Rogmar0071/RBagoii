@@ -1,7 +1,9 @@
 package com.uiblueprint.android
 
 import android.view.LayoutInflater
+import android.view.View
 import android.view.ViewGroup
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.RecyclerView
 import com.uiblueprint.android.databinding.ItemGithubRepoBinding
 
@@ -56,6 +58,10 @@ class GithubRepoAdapter(
         notifyDataSetChanged()
     }
 
+    fun currentRepos(): List<GithubRepo> = repos.toList()
+
+    fun selectedRepos(): List<GithubRepo> = repos.filter { it.selected }.map { it.copy() }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RepoViewHolder {
         val binding = ItemGithubRepoBinding.inflate(
             LayoutInflater.from(parent.context),
@@ -81,13 +87,43 @@ class GithubRepoAdapter(
             binding.tvRepoLanguage.text = repo.language.ifEmpty { "Unknown" }
             binding.tvRepoStars.text = "⭐ ${repo.stars}"
 
-            // Status pill — map backend status to IngestStatus and bind the badge
-            val ingestStatus = if (repo.ingestionStatus.isNotEmpty()) {
-                IngestStatus.fromBackendStatus(repo.ingestionStatus)
-            } else {
-                null
+            when (repo.ingestionStatus) {
+                "queued" -> {
+                    binding.tvIngestStatus.visibility = View.VISIBLE
+                    binding.tvIngestStatus.setBackgroundResource(R.drawable.bg_status_pill_uploading)
+                    binding.tvIngestStatus.setTextColor(
+                        ContextCompat.getColor(binding.root.context, android.R.color.white),
+                    )
+                    binding.tvIngestStatus.text = "queued"
+                }
+                "running" -> {
+                    binding.tvIngestStatus.visibility = View.VISIBLE
+                    binding.tvIngestStatus.setBackgroundResource(R.drawable.bg_status_pill_analyzing)
+                    binding.tvIngestStatus.setTextColor(
+                        ContextCompat.getColor(binding.root.context, R.color.status_pill_text_dark),
+                    )
+                    binding.tvIngestStatus.text = "running"
+                }
+                "success" -> {
+                    binding.tvIngestStatus.visibility = View.VISIBLE
+                    binding.tvIngestStatus.setBackgroundResource(R.drawable.bg_status_pill_available)
+                    binding.tvIngestStatus.setTextColor(
+                        ContextCompat.getColor(binding.root.context, R.color.status_pill_text_muted),
+                    )
+                    binding.tvIngestStatus.text = "success"
+                }
+                "failed" -> {
+                    binding.tvIngestStatus.visibility = View.VISIBLE
+                    binding.tvIngestStatus.setBackgroundResource(R.drawable.bg_status_pill_failed)
+                    binding.tvIngestStatus.setTextColor(
+                        ContextCompat.getColor(binding.root.context, android.R.color.white),
+                    )
+                    binding.tvIngestStatus.text = "failed"
+                }
+                else -> {
+                    binding.tvIngestStatus.visibility = View.GONE
+                }
             }
-            binding.tvIngestStatus.bindIngestStatus(ingestStatus)
 
             // Remove listener before setting checked state to avoid triggering callback
             binding.cbSelected.setOnCheckedChangeListener(null)

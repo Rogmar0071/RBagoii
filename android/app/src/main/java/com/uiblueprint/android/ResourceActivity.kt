@@ -24,6 +24,7 @@ import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
@@ -39,12 +40,11 @@ class ResourceActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityResourceBinding
     private lateinit var prefs: SharedPreferences
-    private val executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
+    private var executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
 
     private lateinit var repoAdapter: GithubRepoAdapter
     private lateinit var fileAdapter: ChatFileAdapter
 
-    private val githubRepos = mutableListOf<GithubRepo>()
     private val chatFiles = mutableListOf<ChatFile>()
     // Track whether selections have been committed to the backend in this session.
     private var selectionsCommitted = false
@@ -64,6 +64,8 @@ class ResourceActivity : AppCompatActivity() {
         private const val PREFS_NAME = "chat_prefs"
         private const val PREF_SELECTED_REPOS = "selected_repos"
         const val EXTRA_CONVERSATION_ID = "conversation_id"
+        private val pollingExecutor = Executors.newCachedThreadPool { Thread(it, "IngestPolling-worker") }
+        private val activePollingJobs = ConcurrentHashMap.newKeySet<String>()
 
         fun start(context: Context, conversationId: String?) {
             val intent = Intent(context, ResourceActivity::class.java)
@@ -125,21 +127,20 @@ class ResourceActivity : AppCompatActivity() {
             }
         }
 
-        // Load files for the current conversation
-        loadChatFiles()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        // Cancel any active polling to prevent memory leaks
-        executor.shutdownNow()
     }
 
     override fun onResume() {
         super.onResume()
-        // Reload files when returning to this activity
+        ensureExecutor()
         if (conversationId != null) {
             loadChatFiles()
+            loadActiveRepos()
+        }
+    }
+
+    private fun ensureExecutor() {
+        if (executor.isShutdown || executor.isTerminated) {
+            executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
         }
     }
 
@@ -155,7 +156,7 @@ class ResourceActivity : AppCompatActivity() {
     // back navigation, activity destruction, and process death.
     private fun persistSelections() {
         val array = JSONArray()
-        for (repo in githubRepos.filter { it.selected }) {
+        for (repo in repoAdapter.selectedRepos()) {
             val obj = JSONObject().apply {
                 put("repo_url", repo.htmlUrl)
                 put("branch", repo.defaultBranch)
@@ -166,20 +167,22 @@ class ResourceActivity : AppCompatActivity() {
         prefs.edit().putString(PREF_SELECTED_REPOS, array.toString()).apply()
     }
 
-    // Restore saved selections onto the freshly loaded repo list.
-    private fun restoreSelections() {
+    private fun selectedRepoUrls(): Set<String> {
         val raw = prefs.getString(PREF_SELECTED_REPOS, "[]") ?: "[]"
-        val savedUrls = try {
+        return try {
             val arr = JSONArray(raw)
             (0 until arr.length()).map { arr.getJSONObject(it).getString("repo_url") }.toSet()
         } catch (e: Exception) {
             emptySet()
         }
-        if (savedUrls.isEmpty()) return
-        for (repo in githubRepos) {
-            if (repo.htmlUrl in savedUrls) {
-                repo.selected = true
-            }
+    }
+
+    // Restore saved selections onto the freshly loaded repo list.
+    private fun restoreSelections(repos: List<GithubRepo>): List<GithubRepo> {
+        val savedUrls = selectedRepoUrls()
+        if (savedUrls.isEmpty()) return repos
+        return repos.map { repo ->
+            if (repo.htmlUrl in savedUrls) repo.copy(selected = true) else repo
         }
     }
 
@@ -284,11 +287,8 @@ class ResourceActivity : AppCompatActivity() {
                     }
 
                     runOnUiThread {
-                        githubRepos.clear()
-                        githubRepos.addAll(repos)
-                        // PHASE 1: restore persisted selections onto the newly loaded list
-                        restoreSelections()
-                        repoAdapter.submitList(githubRepos)
+                        val projectedRepos = restoreSelections(repos)
+                        repoAdapter.submitList(projectedRepos)
                         binding.rvGithubRepos.visibility = if (repos.isEmpty()) View.GONE else View.VISIBLE
                         binding.tvNoRepos.visibility = if (repos.isEmpty()) View.VISIBLE else View.GONE
                         binding.btnLoadRepos.isEnabled = true
@@ -472,26 +472,7 @@ class ResourceActivity : AppCompatActivity() {
                         Toast.makeText(this, "File upload initiated — processing…", Toast.LENGTH_SHORT).show()
                     }
                     
-                    // STEP 5: CALL SITE RULE — Each job = one independent loop
-                    pollIngestJob(jobId, apiKey, baseUrl) { json ->
-                        // STEP 3: RENDER = PURE BINDING
-                        val status = json.optString("status")
-                        val error = json.optString("error")
-                        
-                        // STEP 4: EVENT FEEDBACK — On final failure ONLY
-                        if (status == "failed") {
-                            Toast.makeText(
-                                this,
-                                "File ingestion failed: $error",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        
-                        // Reload on terminal success (action, not feedback)
-                        if (status == "success") {
-                            loadChatFiles()
-                        }
-                    }
+                    startPolling(jobId)
                 } else {
                     runOnUiThread {
                         Toast.makeText(this, "Failed to upload file", Toast.LENGTH_SHORT).show()
@@ -527,7 +508,7 @@ class ResourceActivity : AppCompatActivity() {
             return
         }
 
-        val selectedRepos = githubRepos.filter { it.selected }
+        val selectedRepos = repoAdapter.selectedRepos()
         val modifiedFiles = chatFiles.filter { file ->
             // Check if the file's inclusion state has been modified
             // For now, we'll update all files since we track their state
@@ -545,9 +526,7 @@ class ResourceActivity : AppCompatActivity() {
                 val baseUrl = baseUrl()
 
                 var successCount = 0
-                var blockedCount = 0
                 var failureCount = 0
-                val jobIds = mutableListOf<String>()
 
                 // Add selected GitHub repos via the new unified ingestion endpoint.
                 for (repo in selectedRepos) {
@@ -574,7 +553,6 @@ class ResourceActivity : AppCompatActivity() {
                                 val responseBody = response.body?.string() ?: "{}"
                                 val responseJson = JSONObject(responseBody)
                                 val jobId = responseJson.getString("job_id")
-                                jobIds.add(jobId)
                                 successCount++
                                 Log.d("ResourceActivity", "Repo ${repo.fullName} queued with job_id=$jobId")
                             }
@@ -620,22 +598,7 @@ class ResourceActivity : AppCompatActivity() {
                         selectionsCommitted = true
                         Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
                         
-                        // STEP 5: CALL SITE RULE — Each job = one independent loop
-                        for (jobId in jobIds) {
-                            pollIngestJob(jobId, apiKey, baseUrl) { json ->
-                                // STEP 3: RENDER = PURE BINDING
-                                val status = json.optString("status")
-                                val progress = json.optInt("progress")
-                                val fileCount = json.optInt("file_count")
-                                val chunkCount = json.optInt("chunk_count")
-                                val error = json.optString("error")
-                                val source = json.optString("source")  // "{repo_url}@{branch}"
-                                
-                                // STEP 3: Bind directly to UI (adapter update)
-                                updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
-                            }
-                        }
-                        
+                        loadActiveRepos()
                         finish()
                     } else {
                         Toast.makeText(
@@ -655,99 +618,65 @@ class ResourceActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * MQP-CONTRACT: INGESTION_UI_PASSIVITY_FINAL_V1 — UNIFIED POLLING
-     * 
-     * Single polling function used by ALL ingestion types.
-     * UI is a pure projection surface with ZERO memory.
-     * 
-     * STEP 2: SINGLE POLLING FUNCTION (SHARED PATTERN)
-     * STEP 7: UNIFICATION — Same function for file and repo ingestion.
-     * 
-     * FORBIDDEN: lastStatus, state memory, conditional feedback, multi-job tracking
-     */
-    private fun pollIngestJob(
-        jobId: String,
-        apiKey: String,
-        baseUrl: String,
-        onRender: (JSONObject) -> Unit
-    ) {
-        executor.execute {
-            // Loop terminates via: (1) terminal status detection, or (2) exception
-            while (true) {
-                try {
-                    val request = Request.Builder()
-                        .url("$baseUrl/v1/ingest/$jobId")
-                        .addHeader("Authorization", "Bearer $apiKey")
-                        .get()
-                        .build()
+    private fun startPolling(jobId: String) {
+        if (!activePollingJobs.add(jobId)) return
+        val apiKey = apiKey()
+        val baseUrl = baseUrl()
+        pollingExecutor.execute {
+            try {
+                while (true) {
+                    try {
+                        val request = Request.Builder()
+                            .url("$baseUrl/jobs/$jobId")
+                            .addHeader("Authorization", "Bearer $apiKey")
+                            .get()
+                            .build()
 
-                    val response = BackendClient.executeWithRetry(request)
-                    val body = response.body?.string()
-                    response.close()
-
-                    if (body != null) {
-                        val json = JSONObject(body)
-
-                        runOnUiThread {
-                            onRender(json)
+                        val response = BackendClient.executeWithRetry(request)
+                        if (!response.isSuccessful) {
+                            response.close()
+                            Thread.sleep(2000)
+                            continue
                         }
-
-                        val status = json.optString("status")
-                        // Terminates here on terminal status
-                        if (status == "success" || status == "failed") {
-                            break
+                        val body = response.body?.string()
+                        response.close()
+                        if (body != null) {
+                            val json = JSONObject(body)
+                            runOnUiThread { renderPolledJob(json) }
+                            val status = json.optString("status")
+                            if (status == "success" || status == "failed") {
+                                break
+                            }
                         }
+                        Thread.sleep(2000)
+                    } catch (_: Exception) {
+                        Log.w("ResourceActivity", "Polling fetch failed for job_id=$jobId; retrying")
+                        Thread.sleep(2000)
                     }
-
-                    Thread.sleep(2000)
-
-                } catch (_: Exception) {
-                    // Terminates here on exception
-                    break
                 }
+            } finally {
+                activePollingJobs.remove(jobId)
             }
         }
     }
-    
-    /**
-     * Update a repo's ingestion status in the UI based on IngestJob data.
-     * SOURCE OF TRUTH: All state comes from IngestJob fields.
-     * 
-     * @param source Expected format: "{repo_url}@{branch}" where repo_url is the HTTPS URL
-     *               (e.g., "https://github.com/owner/repo@main"). The backend constructs
-     *               this in ingest_routes.py by concatenating repo_url and branch.
-     */
-    private fun updateRepoStatus(
-        source: String,  // "{repo_url}@{branch}"
-        status: String,
-        progress: Int,
-        fileCount: Int,
-        chunkCount: Int,
-        error: String?,
-        jobId: String
-    ) {
-        // Extract repo_url from source (format: "url@branch")
-        // Uses substringBeforeLast to handle the last @ as the separator
-        val repoUrl = source.substringBeforeLast("@")
-        
-        // Find and update the matching repo
-        val updatedRepos = githubRepos.map { repo ->
-            if (repo.htmlUrl == repoUrl) {
-                repo.copy(
-                    ingestionStatus = status,
-                    progress = progress,
-                    totalFiles = fileCount,
-                    totalChunks = chunkCount,
-                    errorMessage = error,
-                    ingestJobId = jobId
-                )
-            } else repo
+
+    private fun renderPolledJob(jobJson: JSONObject) {
+        if (jobJson.optString("kind") == "repo") {
+            loadActiveRepos()
+        } else {
+            val status = jobJson.optString("status")
+            if (status == "failed") {
+                val error = jobJson.optString("error")
+                Toast.makeText(
+                    this,
+                    "File ingestion failed: $error",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            if (status == "success") {
+                loadChatFiles()
+            }
         }
-        
-        githubRepos.clear()
-        githubRepos.addAll(updatedRepos)
-        repoAdapter.submitList(updatedRepos)
     }
 
     /**
@@ -762,7 +691,7 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = apiKey()
                 val baseUrl = baseUrl()
                 val request = Request.Builder()
-                    .url("$baseUrl/v1/ingest/jobs?conversation_id=$convId&kind=repo")
+                    .url("$baseUrl/chat/$convId/jobs?kind=repo")
                     .addHeader("Authorization", "Bearer $apiKey")
                     .get()
                     .build()
@@ -771,7 +700,7 @@ class ResourceActivity : AppCompatActivity() {
                 
                 val body = response.body?.string() ?: "[]"
                 val arr = JSONArray(body)
-                val jobMap = mutableMapOf<String, IngestJobResponse>()
+                val jobs = mutableListOf<IngestJobResponse>()
                 
                 // Parse IngestJob responses
                 for (i in 0 until arr.length()) {
@@ -781,58 +710,47 @@ class ResourceActivity : AppCompatActivity() {
                         kind = obj.getString("kind"),
                         source = obj.getString("source"),
                         status = obj.getString("status"),
-                        progress = obj.getInt("progress"),
-                        file_count = obj.getInt("file_count"),
-                        chunk_count = obj.getInt("chunk_count"),
-                        error = if (obj.isNull("error")) null else obj.getString("error"),
+                        // Deterministic state layer endpoint only returns contract
+                        // fields; progress/count/error are intentionally ignored.
+                        progress = 0,
+                        file_count = 0,
+                        chunk_count = 0,
+                        error = null,
                         conversation_id = if (obj.isNull("conversation_id")) null else obj.getString("conversation_id"),
                         workspace_id = if (obj.isNull("workspace_id")) null else obj.getString("workspace_id"),
                         created_at = obj.getString("created_at"),
                         updated_at = obj.getString("updated_at")
                     )
-                    // Map by repo_url (extract from source which is "url@branch")
-                    val repoUrl = job.source.substringBeforeLast("@")
-                    jobMap[repoUrl] = job
+                    jobs.add(job)
                 }
                 
-                // Overlay status onto displayed repos
-                if (jobMap.isNotEmpty()) {
-                    runOnUiThread {
-                        val updatedRepos = githubRepos.map { repo ->
-                            val job = jobMap[repo.htmlUrl]
-                            if (job != null) {
-                                repo.copy(
-                                    ingestionStatus = job.status,
-                                    progress = job.progress,
-                                    totalFiles = job.file_count,
-                                    totalChunks = job.chunk_count,
-                                    errorMessage = job.error,
-                                    ingestJobId = job.job_id
-                                )
-                            } else repo
-                        }
-                        githubRepos.clear()
-                        githubRepos.addAll(updatedRepos)
-                        repoAdapter.submitList(updatedRepos)
-                        
-                        // STEP 5: CALL SITE RULE — Each job = one independent loop
-                        val apiKey = apiKey()
-                        val baseUrl = baseUrl()
-                        for (job in jobMap.values) {
-                            if (job.status == "queued" || job.status == "running") {
-                                pollIngestJob(job.job_id, apiKey, baseUrl) { json ->
-                                    // STEP 3: RENDER = PURE BINDING
-                                    val status = json.optString("status")
-                                    val progress = json.optInt("progress")
-                                    val fileCount = json.optInt("file_count")
-                                    val chunkCount = json.optInt("chunk_count")
-                                    val error = json.optString("error")
-                                    val source = json.optString("source")
-                                    
-                                    // Bind directly to UI (adapter update)
-                                    updateRepoStatus(source, status, progress, fileCount, chunkCount, error, job.job_id)
-                                }
-                            }
+                runOnUiThread {
+                    val projectedRepos = jobs.map { job ->
+                        val repoUrl = job.source.substringBeforeLast("@")
+                        val name = repoUrl.substringAfterLast("/")
+                        GithubRepo(
+                            name = name,
+                            fullName = repoUrl.removePrefix("https://github.com/"),
+                            description = "",
+                            htmlUrl = repoUrl,
+                            defaultBranch = "main",
+                            language = "",
+                            stars = 0,
+                            isPrivate = false,
+                            selected = false,
+                            ingestionStatus = job.status,
+                            progress = 0,
+                            totalFiles = 0,
+                            totalChunks = 0,
+                            errorMessage = null,
+                            ingestJobId = job.job_id
+                        )
+                    }
+                    repoAdapter.submitList(projectedRepos)
+                    
+                    for (job in jobs.distinctBy { it.job_id }) {
+                        if (job.status == "queued" || job.status == "running") {
+                            startPolling(job.job_id)
                         }
                     }
                 }
