@@ -1078,8 +1078,13 @@ def process_ingest_job(job_id: str) -> None:
         ALL state changes via _transition() ONLY.
         NO direct job.status mutations.
     """
+    logger.error("TRACE_ENTRY: job=%s", job_id)
+
     job = _get_ingest_job(job_id)
+    logger.error("TRACE_STATUS: job=%s status=%s", job_id, getattr(job, "status", None))
+
     if job is None:
+        logger.error("TRACE_EXIT: MISSING_JOB job=%s", job_id)
         logger.error("WORKER_MISSING_JOB: job=%s", job_id)
         return
 
@@ -1089,6 +1094,7 @@ def process_ingest_job(job_id: str) -> None:
             "WORKER_TERMINAL_VIOLATION: job=%s state=%s",
             job_id, job.status,
         )
+        logger.error("TRACE_EXIT: TERMINAL_BLOCK job=%s", job_id)
         return
 
     # NON-QUEUED — HARD STOP
@@ -1097,11 +1103,13 @@ def process_ingest_job(job_id: str) -> None:
             "WORKER_ENTRY_VIOLATION: job=%s state=%s expected=queued",
             job_id, job.status,
         )
+        logger.error("TRACE_EXIT: NON_QUEUED_BLOCK job=%s", job_id)
         return
 
     logger.info("IngestJob %s: starting", job_id)
 
     try:
+        logger.error("TRACE_EXECUTION_ALLOWED: job=%s", job_id)
         _transition(job_id, IngestJobState.RUNNING)
 
         from sqlmodel import Session
@@ -1113,6 +1121,7 @@ def process_ingest_job(job_id: str) -> None:
             job = session.get(IngestJob, uuid.UUID(job_id))
             if job is None:
                 logger.error("PIPELINE_EXECUTION_FAIL: job=%s not found after RUNNING", job_id)
+                logger.error("TRACE_FAILED_TRANSITION: job=%s LOCATION=LINE_1124", job_id)
                 _transition(job_id, IngestJobState.FAILED,
                             error="PIPELINE_EXECUTION_FAIL: job not found after RUNNING")
                 return
@@ -1121,11 +1130,13 @@ def process_ingest_job(job_id: str) -> None:
             if job.kind in ("file", "url", "repo"):
                 if not job.blob_data:
                     logger.error("PIPELINE_VALIDATION_FAIL: job=%s blob_data missing", job_id)
+                    logger.error("TRACE_FAILED_TRANSITION: job=%s LOCATION=LINE_1133", job_id)
                     _transition(job_id, IngestJobState.FAILED,
                                 error="PIPELINE_VALIDATION_FAIL: blob_data missing")
                     return
                 if job.blob_size_bytes == 0:
                     logger.error("PIPELINE_VALIDATION_FAIL: job=%s blob_data empty", job_id)
+                    logger.error("TRACE_FAILED_TRANSITION: job=%s LOCATION=LINE_1139", job_id)
                     _transition(job_id, IngestJobState.FAILED,
                                 error="PIPELINE_VALIDATION_FAIL: blob_data empty")
                     return
@@ -1178,6 +1189,7 @@ def process_ingest_job(job_id: str) -> None:
         # error so it does NOT propagate to RQ — propagation would trigger a retry
         # and an infinite STATE_MACHINE_VIOLATION loop.
         try:
+            logger.error("TRACE_FAILED_TRANSITION: job=%s LOCATION=LINE_1189", job_id)
             _transition(job_id, IngestJobState.FAILED, error=str(exc)[:1000], progress=0)
         except Exception as fail_exc:
             logger.error(
