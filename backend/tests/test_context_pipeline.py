@@ -533,21 +533,18 @@ class TestNoActivationWithoutAlignment:
     def test_activate_blocks_invalid_contract(self):
         from backend.app.context_pipeline import (
             AlignedIntentContract,
-            ContextGaps,
             ContextGraph,
             EnrichedGraph,
             FinalContext,
             StructuralGraph,
             _PipelineToken,
             _stage_activate,
-            _stage_finalize,
         )
 
         # Build a minimal FinalContext with confirmed=True (valid)
         sg = StructuralGraph(job_id="test-job")
         eg = EnrichedGraph(structural_graph=sg)
         cg = ContextGraph(enriched_graph=eg, user_intent="test")
-        gaps = ContextGaps()  # no gaps
         contract = AlignedIntentContract(
             job_id="test-job",
             user_intent="test",
@@ -818,7 +815,7 @@ class TestContextGraphIntegrity:
 
         from backend.app.context_pipeline import run_context_pipeline
         from backend.app.database import get_engine
-        from backend.app.models import EntryPoint, RepoFile
+        from backend.app.models import EntryPoint
 
         job_id = _make_repo_job(
             lambda: Session(get_engine()),
@@ -1045,7 +1042,7 @@ class TestStageActivateDirectCallBlocked:
     No token → ACTIVATION_BLOCKED.
     """
 
-    def _make_final_context(self, confirmed: bool = True) -> "FinalContext":
+    def _make_final_context(self, confirmed: bool = True):
         from backend.app.context_pipeline import (
             AlignedIntentContract,
             ContextGraph,
@@ -1107,7 +1104,11 @@ class TestStageActivateDirectCallBlocked:
 
     def test_valid_token_and_confirmed_contract_succeeds(self):
         """_stage_activate with a real _PipelineToken and valid contract must succeed."""
-        from backend.app.context_pipeline import ActiveContextSession, _PipelineToken, _stage_activate
+        from backend.app.context_pipeline import (
+            ActiveContextSession,
+            _PipelineToken,
+            _stage_activate,
+        )
 
         fc = self._make_final_context(confirmed=True)
         token = _PipelineToken()

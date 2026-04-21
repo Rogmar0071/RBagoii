@@ -76,7 +76,7 @@ class _PipelineToken:
         return self._value
 
     def __repr__(self) -> str:
-        return f"_PipelineToken(valid=True)"
+        return "_PipelineToken(valid=True)"
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +404,6 @@ def _stage_normalize(job_id: str, session: Any) -> NormalizedArtifactSet:
         EntryPoint,
         FileDependency,
         RepoFile,
-        SymbolCallEdge,
     )
 
     repo_uuid = uuid.UUID(job_id)
