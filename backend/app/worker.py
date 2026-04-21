@@ -234,6 +234,7 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
     This is the ONLY function that should enqueue jobs. All other code must use this entry point.
     """
     # Lazy import avoids circular-import issues at module load time.
+    from backend.app.execution_spine import is_execute_job_route
     from backend.app.job_lifecycle import prepare_governed_job_for_enqueue
     from backend.app.job_registry import JOB_REGISTRY
 
@@ -260,6 +261,9 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
         raise ValueError(f"Unknown job type: {job_type!r}")
 
     prepare_governed_job_for_enqueue(job_id)
+    if is_execute_job_route(job_type):
+        logger.info("INLINE_CONTINUATION_SUPPRESSED: job_type=%s job_id=%s", job_type, job_id)
+        return None
 
     q = _redis_queue()
     if q is not None:
@@ -1635,63 +1639,94 @@ def run_analyze_optional_step(job_id: str) -> None:
     optional analyses (keyframes, ocr, transcript, events, segment_summaries)
     up to the configured step time budget and then re-enqueues.
     """
-    job = _get_job(job_id)
-    if job is None:
-        logger.error("run_analyze_optional_step: job %s not found", job_id)
-        _log_event(
-            source="worker",
-            level="error",
-            event_type="worker.abandoned",
-            message=f"run_analyze_optional_step: job {job_id} not found",
-            job_id=job_id,
-        )
-        return
+    from backend.app.execution_spine import is_execute_job_route, require_execute_job_route
 
-    folder_id = str(job.folder_id)
+    require_execute_job_route("analyze_optional")
+    inline_mode = is_execute_job_route("analyze_optional")
 
-    if job.status in ("succeeded", "failed"):
-        logger.info("run_analyze_optional_step: job %s already %s, skipping", job_id, job.status)
-        return
-
-    if not job.analyze_stage:
-        _update_job(
-            job_id,
-            status="running",
-            progress=5,
-            analyze_stage="segments",
-            analyze_cursor_segment_index=0,
-        )
-        _log_event(
-            source="worker",
-            level="info",
-            event_type="jobs.start",
-            message=f"Job analyze_optional started: {job_id}",
-            folder_id=folder_id,
-            job_id=job_id,
-        )
-        # Re-read to get updated state.
+    while True:
         job = _get_job(job_id)
+        if job is None:
+            logger.error("run_analyze_optional_step: job %s not found", job_id)
+            _log_event(
+                source="worker",
+                level="error",
+                event_type="worker.abandoned",
+                message=f"run_analyze_optional_step: job {job_id} not found",
+                job_id=job_id,
+            )
+            return
 
-    try:
-        stage = job.analyze_stage or "segments"
-        if stage == "segments":
-            _analyze_optional_segments(job_id, folder_id, job)
-        else:
-            raise RuntimeError(f"Unknown analyze_optional stage: {stage!r}")
+        folder_id = str(job.folder_id)
 
-    except Exception as exc:
-        logger.exception("run_analyze_optional_step failed for job %s", job_id)
-        _update_job(job_id, status="failed", error=str(exc))
-        _log_event(
-            source="worker",
-            level="error",
-            event_type="jobs.failed",
-            message=f"Job analyze_optional failed: {job_id}: {exc}",
-            folder_id=folder_id,
-            job_id=job_id,
-            error_type=type(exc).__name__,
-            error_detail=str(exc)[:2000],
+        if job.status in ("succeeded", "failed"):
+            logger.info(
+                "run_analyze_optional_step: job %s already %s, skipping",
+                job_id,
+                job.status,
+            )
+            return
+
+        if not job.analyze_stage:
+            _update_job(
+                job_id,
+                status="running",
+                progress=5,
+                analyze_stage="segments",
+                analyze_cursor_segment_index=0,
+            )
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="jobs.start",
+                message=f"Job analyze_optional started: {job_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+            )
+            job = _get_job(job_id)
+
+        snapshot = (
+            job.status,
+            job.analyze_stage,
+            job.analyze_cursor_segment_index,
+            job.progress,
         )
+        try:
+            stage = job.analyze_stage or "segments"
+            if stage == "segments":
+                _analyze_optional_segments(job_id, folder_id, job)
+            else:
+                raise RuntimeError(f"Unknown analyze_optional stage: {stage!r}")
+
+        except Exception as exc:
+            logger.exception("run_analyze_optional_step failed for job %s", job_id)
+            _update_job(job_id, status="failed", error=str(exc))
+            _log_event(
+                source="worker",
+                level="error",
+                event_type="jobs.failed",
+                message=f"Job analyze_optional failed: {job_id}: {exc}",
+                folder_id=folder_id,
+                job_id=job_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc)[:2000],
+            )
+            return
+
+        if not inline_mode:
+            return
+
+        refreshed = _get_job(job_id)
+        if refreshed is None or refreshed.status in ("succeeded", "failed"):
+            return
+        refreshed_snapshot = (
+            refreshed.status,
+            refreshed.analyze_stage,
+            refreshed.analyze_cursor_segment_index,
+            refreshed.progress,
+        )
+        if refreshed_snapshot == snapshot:
+            return
 
 
 # ---------------------------------------------------------------------------
@@ -1814,88 +1849,118 @@ def run_analyze_step(job_id: str) -> None:
     Killing the worker mid-step and restarting will resume from the last
     committed checkpoint.
     """
-    job = _get_job(job_id)
-    if job is None:
-        logger.error("run_analyze_step: job %s not found", job_id)
-        _log_event(
-            source="worker",
-            level="error",
-            event_type="worker.abandoned",
-            message=f"run_analyze_step: job {job_id} not found in DB",
-            job_id=job_id,
+    from backend.app.execution_spine import is_execute_job_route, require_execute_job_route
+
+    require_execute_job_route("analyze")
+    inline_mode = is_execute_job_route("analyze")
+
+    while True:
+        job = _get_job(job_id)
+        if job is None:
+            logger.error("run_analyze_step: job %s not found", job_id)
+            _log_event(
+                source="worker",
+                level="error",
+                event_type="worker.abandoned",
+                message=f"run_analyze_step: job {job_id} not found in DB",
+                job_id=job_id,
+            )
+            return
+
+        folder_id = str(job.folder_id)
+        stage = job.analyze_stage or "manifest"
+
+        if job.status in ("succeeded", "failed"):
+            logger.info("run_analyze_step: job %s already %s, skipping", job_id, job.status)
+            return
+
+        if stage in ("manifest", "prepare"):
+            _update_job(job_id, status="running", progress=5)
+            _update_folder_status(folder_id, "running")
+            _log_event(
+                source="worker",
+                level="info",
+                event_type="jobs.start",
+                message=f"Job analyze started (stage={stage}): {job_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+                rq_job_id=job.rq_job_id,
+            )
+            job = _get_job(job_id) or job
+            stage = job.analyze_stage or "manifest"
+
+        snapshot = (
+            job.status,
+            job.analyze_stage,
+            job.analyze_cursor_frame_index,
+            job.analyze_cursor_segment_index,
+            job.progress,
         )
-        return
+        try:
+            if stage == "manifest":
+                _analyze_manifest(job_id, folder_id, job)
+            elif stage == "baseline_segments":
+                _analyze_baseline_segments(job_id, folder_id, job)
+            elif stage == "aggregate":
+                _analyze_aggregate(job_id, folder_id, job)
+            elif stage == "prepare":
+                _analyze_prepare(job_id, folder_id)
+            elif stage == "frames":
+                _analyze_frames(job_id, folder_id, job)
+            elif stage == "optional_keyframes":
+                _analyze_optional_keyframes(job_id, folder_id, job)
+            elif stage == "summarize":
+                _analyze_summarize(job_id, folder_id, job)
+            else:
+                raise RuntimeError(f"Unknown analyze_stage: {stage!r}")
 
-    folder_id = str(job.folder_id)
-    stage = job.analyze_stage or "manifest"
+        except subprocess.TimeoutExpired as exc:
+            logger.exception("run_analyze_step timed out for job %s (stage=%s)", job_id, stage)
+            _update_job(job_id, status="failed", error=str(exc))
+            _update_folder_status(folder_id, "failed")
+            _log_event(
+                source="worker",
+                level="error",
+                event_type="jobs.failed",
+                message=f"Job analyze timed out at stage={stage}: {job_id}",
+                folder_id=folder_id,
+                job_id=job_id,
+                error_type="timeout",
+                error_detail=str(exc)[:2000],
+            )
+            return
 
-    # Guard: if job is already succeeded/failed, do not re-run.
-    if job.status in ("succeeded", "failed"):
-        logger.info("run_analyze_step: job %s already %s, skipping", job_id, job.status)
-        return
+        except Exception as exc:
+            logger.exception("run_analyze_step failed for job %s (stage=%s)", job_id, stage)
+            _update_job(job_id, status="failed", error=str(exc))
+            _update_folder_status(folder_id, "failed")
+            _log_event(
+                source="worker",
+                level="error",
+                event_type="jobs.failed",
+                message=f"Job analyze failed at stage={stage}: {job_id}: {exc}",
+                folder_id=folder_id,
+                job_id=job_id,
+                error_type=type(exc).__name__,
+                error_detail=str(exc)[:2000],
+            )
+            return
 
-    if stage in ("manifest", "prepare"):
-        _update_job(job_id, status="running", progress=5)
-        _update_folder_status(folder_id, "running")
-        _log_event(
-            source="worker",
-            level="info",
-            event_type="jobs.start",
-            message=f"Job analyze started (stage={stage}): {job_id}",
-            folder_id=folder_id,
-            job_id=job_id,
-            rq_job_id=job.rq_job_id,
+        if not inline_mode:
+            return
+
+        refreshed = _get_job(job_id)
+        if refreshed is None or refreshed.status in ("succeeded", "failed"):
+            return
+        refreshed_snapshot = (
+            refreshed.status,
+            refreshed.analyze_stage,
+            refreshed.analyze_cursor_frame_index,
+            refreshed.analyze_cursor_segment_index,
+            refreshed.progress,
         )
-
-    try:
-        # Segment-based pipeline (current).
-        if stage == "manifest":
-            _analyze_manifest(job_id, folder_id, job)
-        elif stage == "baseline_segments":
-            _analyze_baseline_segments(job_id, folder_id, job)
-        elif stage == "aggregate":
-            _analyze_aggregate(job_id, folder_id, job)
-        # Legacy frame-based pipeline (backward compat for old checkpoints).
-        elif stage == "prepare":
-            _analyze_prepare(job_id, folder_id)
-        elif stage == "frames":
-            _analyze_frames(job_id, folder_id, job)
-        elif stage == "optional_keyframes":
-            _analyze_optional_keyframes(job_id, folder_id, job)
-        elif stage == "summarize":
-            _analyze_summarize(job_id, folder_id, job)
-        else:
-            raise RuntimeError(f"Unknown analyze_stage: {stage!r}")
-
-    except subprocess.TimeoutExpired as exc:
-        logger.exception("run_analyze_step timed out for job %s (stage=%s)", job_id, stage)
-        _update_job(job_id, status="failed", error=str(exc))
-        _update_folder_status(folder_id, "failed")
-        _log_event(
-            source="worker",
-            level="error",
-            event_type="jobs.failed",
-            message=f"Job analyze timed out at stage={stage}: {job_id}",
-            folder_id=folder_id,
-            job_id=job_id,
-            error_type="timeout",
-            error_detail=str(exc)[:2000],
-        )
-
-    except Exception as exc:
-        logger.exception("run_analyze_step failed for job %s (stage=%s)", job_id, stage)
-        _update_job(job_id, status="failed", error=str(exc))
-        _update_folder_status(folder_id, "failed")
-        _log_event(
-            source="worker",
-            level="error",
-            event_type="jobs.failed",
-            message=f"Job analyze failed at stage={stage}: {job_id}: {exc}",
-            folder_id=folder_id,
-            job_id=job_id,
-            error_type=type(exc).__name__,
-            error_detail=str(exc)[:2000],
-        )
+        if refreshed_snapshot == snapshot:
+            return
 
 
 def run_analyze(job_id: str) -> None:
@@ -2087,6 +2152,9 @@ def run_blueprint(job_id: str) -> None:
     analysis JSON as ``blueprint.json`` and generates a Markdown summary
     as ``blueprint.md`` (``blueprint_json`` / ``blueprint_md`` artifacts).
     """
+    from backend.app.execution_spine import require_execute_job_route
+
+    require_execute_job_route("blueprint")
     job = _get_job(job_id)
     if job is None:
         logger.error("run_blueprint: job %s not found", job_id)

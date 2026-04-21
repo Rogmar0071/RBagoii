@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from time import sleep
 from unittest.mock import MagicMock
 
 import pytest
@@ -109,6 +111,40 @@ def test_queue_violation_hard_stop(monkeypatch: pytest.MonkeyPatch) -> None:
         worker_module.enqueue_job(str(job_id), "analyze")
 
 
+def test_atomic_claim_allows_single_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.job_registry import JOB_REGISTRY
+    from backend.app.job_runner import execute_job
+    from backend.app.models import Job
+
+    job_id = uuid.uuid4()
+    with _session() as session:
+        session.add(Job(id=job_id, folder_id=uuid.uuid4(), type="analyze", status="queued"))
+        session.commit()
+
+    calls: list[str] = []
+
+    def _claimed_once(job_id_str: str) -> None:
+        sleep(0.1)
+        calls.append(job_id_str)
+
+    monkeypatch.setitem(JOB_REGISTRY, "execution_lock_atomic", _claimed_once)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(execute_job, "execution_lock_atomic", str(job_id)),
+            executor.submit(execute_job, "execution_lock_atomic", str(job_id)),
+        ]
+        for future in futures:
+            future.result()
+
+    with _session() as session:
+        job = session.get(Job, job_id)
+        assert job is not None
+        assert job.execution_attempts == 1
+        assert job.status == "running"
+    assert calls == [str(job_id)]
+
+
 def test_multiple_worker_replay(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.job_registry import JOB_REGISTRY
     from backend.app.job_runner import execute_job
@@ -135,3 +171,12 @@ def test_multiple_worker_replay(monkeypatch: pytest.MonkeyPatch) -> None:
         assert job.status == "running"
         assert job.execution_attempts == 1
     assert calls == [str(job_id)]
+
+
+def test_direct_execution_blocked(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.worker import run_analyze_step
+
+    monkeypatch.setenv("BACKEND_DISABLE_JOBS", "0")
+
+    with pytest.raises(RuntimeError, match="DIRECT_EXECUTION_BLOCKED"):
+        run_analyze_step(str(uuid.uuid4()))

@@ -86,17 +86,19 @@ def execute_job(job_name: str, *args) -> object:
     # log so that no blocked job can reach fn(*args) under any path.
     # -----------------------------------------------------------------------
     job_id = args[0] if args else None
+    job = try_load_job(job_id)
+    if job is not None and getattr(job, "execution_locked", False):
+        print(f"REPLAY_BLOCKED: job_id={job_id}")
+        return None
+
     from backend.app.job_lifecycle import claim_governed_job_execution
 
     gate = claim_governed_job_execution(job_id)
     if gate["state"] == "blocked_locked":
         print(f"REPLAY_BLOCKED: job_id={job_id}")
         return None
-    if gate["state"] == "blocked_terminal":
-        print(f"SKIPPED_TERMINAL: job_id={job_id} status={gate.get('status')}")
-        return None
-    if gate["state"] == "blocked_state":
-        print(f"SKIPPED_INVALID_STATE: job_id={job_id} status={gate.get('status')}")
+    if gate["state"] == "claim_rejected":
+        print(f"CLAIM_REJECTED: job_id={job_id}")
         return None
     if gate["state"] == "not_found":
         print(f"NON_GOVERNED_JOB: job_name={job_name}")
@@ -111,8 +113,11 @@ def execute_job(job_name: str, *args) -> object:
         raise RuntimeError("INVALID_JOB_NAME")
 
     print(f"WORKER:executing job_name={job_name} job_id={job_id}")
+    from backend.app.execution_spine import execution_route
+
     try:
-        result = fn(*args)
+        with execution_route(job_name):
+            result = fn(*args)
     except Exception as e:
         import traceback
         print(f"WORKER:error job_name={job_name} err={repr(e)}")

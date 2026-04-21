@@ -258,9 +258,9 @@ def _dispatch_job(job_id: str) -> None:
     """
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
-        # Tests: run synchronously so DB is fully updated before test assertions
-        # and to avoid SQLite concurrency issues with background threads.
-        process_ingest_job(job_id)
+        from backend.app.job_runner import execute_job
+
+        execute_job("process_ingest_job", job_id)
         return
 
     from backend.app.worker import enqueue_job
@@ -1328,6 +1328,9 @@ def process_ingest_job(job_id: str) -> None:
         ALL state changes via _transition() ONLY.
         NO direct job.status mutations.
     """
+    from backend.app.execution_spine import require_execute_job_route
+
+    require_execute_job_route("process_ingest_job")
     logger.error("TRACE_ENTRY: job=%s", job_id)
 
     job = _get_ingest_job(job_id)

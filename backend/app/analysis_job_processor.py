@@ -338,6 +338,9 @@ def process_analysis_job(job_id: str) -> None:
     thread.  It persists partial results and errors after every stage so that
     the REST API can return interim state.
     """
+    from backend.app.execution_spine import require_execute_job_route
+
+    require_execute_job_route("process_analysis_job")
     logger.info("Analysis job %s starting", job_id)
     _update_analysis_job(job_id, status="running")
 

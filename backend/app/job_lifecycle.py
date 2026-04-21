@@ -19,7 +19,6 @@ class GovernedJobSpec:
     queued_state: str = "queued"
     running_state: str = "running"
     terminal_states: frozenset[str] = frozenset()
-    allow_enqueue_reset: bool = False
 
 
 def _governed_specs() -> tuple[GovernedJobSpec, ...]:
@@ -30,7 +29,6 @@ def _governed_specs() -> tuple[GovernedJobSpec, ...]:
             model=Job,
             model_name="Job",
             terminal_states=frozenset({"succeeded", "failed"}),
-            allow_enqueue_reset=True,
         ),
         GovernedJobSpec(
             model=AnalysisJob,
@@ -84,39 +82,6 @@ def claim_governed_job_execution(job_id: str | None) -> dict[str, object]:
             if record is None:
                 continue
 
-            status = str(record.status)
-            locked = bool(getattr(record, "execution_locked", False))
-
-            if locked:
-                return {
-                    "state": "blocked_locked",
-                    "job_id": job_id,
-                    "status": status,
-                    "model_name": spec.model_name,
-                }
-
-            if status in spec.terminal_states:
-                if not locked:
-                    setattr(record, "execution_locked", True)
-                    if hasattr(record, "updated_at"):
-                        setattr(record, "updated_at", _utcnow())
-                    session.add(record)
-                    session.commit()
-                return {
-                    "state": "blocked_terminal",
-                    "job_id": job_id,
-                    "status": status,
-                    "model_name": spec.model_name,
-                }
-
-            if status != spec.queued_state:
-                return {
-                    "state": "blocked_state",
-                    "job_id": job_id,
-                    "status": status,
-                    "model_name": spec.model_name,
-                }
-
             now = _utcnow()
             values: dict[object, object] = {
                 spec.model.status: spec.running_state,
@@ -145,30 +110,19 @@ def claim_governed_job_execution(job_id: str | None) -> dict[str, object]:
                 }
 
             refreshed = session.get(spec.model, job_uuid)
-            refreshed_status = (
-                getattr(refreshed, "status", status) if refreshed is not None else status
-            )
-            refreshed_locked = bool(
-                getattr(refreshed, "execution_locked", locked) if refreshed is not None else locked
-            )
-            if refreshed_locked:
+            if refreshed is None:
+                return {"state": "claim_rejected", "job_id": job_id, "model_name": spec.model_name}
+            if bool(getattr(refreshed, "execution_locked", False)):
                 return {
                     "state": "blocked_locked",
                     "job_id": job_id,
-                    "status": refreshed_status,
-                    "model_name": spec.model_name,
-                }
-            if refreshed_status in spec.terminal_states:
-                return {
-                    "state": "blocked_terminal",
-                    "job_id": job_id,
-                    "status": refreshed_status,
+                    "status": getattr(refreshed, "status", None),
                     "model_name": spec.model_name,
                 }
             return {
-                "state": "blocked_state",
+                "state": "claim_rejected",
                 "job_id": job_id,
-                "status": refreshed_status,
+                "status": getattr(refreshed, "status", None),
                 "model_name": spec.model_name,
             }
 
@@ -199,13 +153,6 @@ def prepare_governed_job_for_enqueue(job_id: str | None) -> dict[str, object]:
                     session.add(record)
                     session.commit()
                 raise RuntimeError("ENQUEUE_BLOCKED_TERMINAL_JOB")
-
-            if spec.allow_enqueue_reset and status != spec.queued_state:
-                setattr(record, "status", spec.queued_state)
-                if hasattr(record, "updated_at"):
-                    setattr(record, "updated_at", _utcnow())
-                session.add(record)
-                session.commit()
 
             return {
                 "state": "governed",
