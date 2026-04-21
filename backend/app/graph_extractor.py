@@ -37,12 +37,23 @@ def extract_python_symbols(content: str) -> List[Tuple[str, str, int]]:
 
     for i, line in enumerate(lines):
         if line.startswith("def "):
-            name = line.split("def ")[1].split("(")[0]
-            symbols.append((name, "function", i + 1))
+            parts = line.split("def ", 1)
+            if len(parts) > 1:
+                name = parts[1].split("(")[0].strip()
+                if name:
+                    symbols.append((name, "function", i + 1))
 
         if line.startswith("class "):
-            name = line.split("class ")[1].split("(")[0].replace(":", "")
-            symbols.append((name, "class", i + 1))
+            parts = line.split("class ", 1)
+            if len(parts) > 1:
+                raw = parts[1].strip()
+                # Handle both `class Foo:` and `class Foo(Base):`
+                if "(" in raw:
+                    name = raw.split("(")[0].strip()
+                else:
+                    name = raw.split(":")[0].strip()
+                if name:
+                    symbols.append((name, "class", i + 1))
 
     return symbols
 
@@ -52,13 +63,17 @@ def extract_imports(content: str) -> List[str]:
     lines = content.splitlines()
 
     for line in lines:
-        line = line.strip()
+        stripped = line.strip()
 
-        if line.startswith("import "):
-            imports.append(line.replace("import ", "").strip())
+        # Skip comment lines
+        if stripped.startswith("#"):
+            continue
 
-        if line.startswith("from "):
-            parts = line.split(" ")
+        if stripped.startswith("import "):
+            imports.append(stripped.replace("import ", "", 1).strip())
+
+        if stripped.startswith("from "):
+            parts = stripped.split(" ")
             if len(parts) > 1:
                 imports.append(parts[1])
 
@@ -74,8 +89,7 @@ def extract_graph(path: str, content: bytes) -> dict:
 
     if language == "python":
         symbols = extract_python_symbols(text)
-
-    imports = extract_imports(text)
+        imports = extract_imports(text)
 
     return {
         "language": language,
