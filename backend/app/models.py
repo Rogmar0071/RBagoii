@@ -843,3 +843,136 @@ class EntryPoint(SQLModel, table=True):
     # main | server | framework
     entry_type: str = Field(sa_column=Column(sa.Text, nullable=False))
     line: int
+
+
+# ---------------------------------------------------------------------------
+# PHASE 3 — Context Pipeline persistence
+#
+# MQP-CONTRACT: RBOII-PHASE1-SEAL + PHASE3-PIPELINE-SPINE v1.0
+#
+# Three tables persist the Phase 3 pipeline state:
+#   context_pipeline_runs   — one record per run_context_pipeline invocation
+#   context_gap_records     — one row per ContextGap detected
+#   context_alignment_records — one row per confirmed AlignedIntentContract
+# ---------------------------------------------------------------------------
+
+
+class ContextPipelineRun(SQLModel, table=True):
+    """
+    Tracks a single run_context_pipeline execution.
+
+    status values
+    -------------
+    pending_alignment  — pipeline halted at Stage 6 (AlignmentRequiredError raised)
+    aligned            — user confirmed; pipeline reached Stage 7 (FinalContext built)
+    active             — Stage 8 completed; ActiveContextSession live
+    failed             — pipeline terminated with RuntimeError
+    """
+
+    __tablename__ = "context_pipeline_runs"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    # Phase 1 IngestJob this run is anchored to
+    ingest_job_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, nullable=False, index=True)
+    )
+
+    # Free-form intent text provided by the user
+    user_intent: str = Field(default="", sa_column=Column(sa.Text))
+
+    # pending_alignment | aligned | active | failed
+    status: str = Field(default="pending_alignment", sa_column=Column(sa.Text, index=True))
+
+    # UUID of the ActiveContextSession produced at Stage 8 (NULL until activated)
+    active_session_id: Optional[uuid.UUID] = Field(
+        default=None, sa_column=Column(sa.Uuid, nullable=True)
+    )
+
+    # Error message (set on failure)
+    error: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    activated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+class ContextGapRecord(SQLModel, table=True):
+    """
+    Persisted record of a ContextGap detected during Stage 5 gap detection.
+
+    gap_type values: no_entry_points | unresolved_calls |
+                     ambiguous_intent | missing_execution_path
+    severity values: critical | warning
+    """
+
+    __tablename__ = "context_gap_records"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    pipeline_run_id: uuid.UUID = Field(
+        sa_column=Column(
+            sa.Uuid, sa.ForeignKey("context_pipeline_runs.id"), nullable=False, index=True
+        )
+    )
+
+    gap_type: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    severity: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    description: str = Field(sa_column=Column(sa.Text, nullable=False))
+
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+class ContextAlignmentRecord(SQLModel, table=True):
+    """
+    Persisted record of a confirmed AlignedIntentContract (Stage 6 output).
+
+    One record per run where alignment_confirmed=True was provided.
+    """
+
+    __tablename__ = "context_alignment_records"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+
+    pipeline_run_id: uuid.UUID = Field(
+        sa_column=Column(
+            sa.Uuid, sa.ForeignKey("context_pipeline_runs.id"), nullable=False, index=True
+        )
+    )
+
+    user_intent: str = Field(sa_column=Column(sa.Text, nullable=False))
+    refinement: Optional[str] = Field(
+        default=None, sa_column=Column(sa.Text, nullable=True)
+    )
+    # JSON blob of the full system_summary returned to the user
+    system_summary: Optional[Any] = Field(
+        default=None, sa_column=Column(sa.JSON, nullable=True)
+    )
+
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
