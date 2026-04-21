@@ -2,6 +2,7 @@
 backend.app.graph_reality_validator
 =====================================
 MQP-CONTRACT: GRAPH-REALITY-VALIDATION v1.0
+MQP-CONTRACT: GRAPH-ADVERSARIAL-VALIDATION v1.0
 
 Validates graph correctness for a fully-ingested repository.
 
@@ -10,6 +11,12 @@ Produces a structured stats report covering:
   • import resolution stats (resolved / dropped)
   • symbol resolution stats (resolved / dropped / ambiguous)
   • execution-path validation (reachable paths / broken paths)
+  • failure analysis (adversarial contract extension):
+      - lost_valid_edges  : dropped calls where the callee IS a known repo symbol
+      - alias_failures    : alias imports (import X as Y) where X resolves but
+                            resolution fails because of the " as Y" suffix
+      - ambiguous_drops   : calls dropped due to same-name symbol collision
+      - missing_entry_points : files with undetected entry-point patterns
 
 NO silent drops — every failure is recorded with its reason.
 """
@@ -70,6 +77,14 @@ def validate_repo_graph(
                 "broken_paths": int,    # entry-points whose chain is empty
             },
 
+            "failure_analysis": {
+                "lost_valid_edges": int,   # dropped calls where callee IS a known repo symbol
+                "alias_failures": int,     # alias imports (X as Y) whose module resolves
+                                           # but the " as Y" suffix breaks resolution
+                "ambiguous_drops": int,    # calls dropped due to multi-candidate collision
+                "missing_entry_points": int,  # files with entry-point patterns not in DB
+            },
+
             "drop_log": [               # one entry per dropped import
                 {"file": str, "import": str, "reason": str}
             ],
@@ -78,6 +93,12 @@ def validate_repo_graph(
             ],
             "broken_path_log": [        # one entry per empty execution chain
                 {"entry_point_id": str, "file": str, "reason": str}
+            ],
+            "alias_failure_log": [      # one entry per detected alias import failure
+                {"file": str, "import": str, "alias": str, "module": str}
+            ],
+            "missing_entry_point_log": [  # one entry per file with undetected entry point
+                {"file": str, "pattern": str}
             ],
         }
     """
@@ -141,6 +162,10 @@ def validate_repo_graph(
     dropped_imports = 0
     drop_log: List[Dict[str, str]] = []
 
+    # Adversarial: track alias imports whose module resolves but ` as Y` breaks it
+    alias_failures = 0
+    alias_failure_log: List[Dict[str, str]] = []
+
     for file_entry in manifest_files:
         file_path = file_entry.get("path", "")
         content = file_entry.get("content", "")
@@ -169,6 +194,27 @@ def validate_repo_graph(
                     file_path, imp, reason,
                 )
 
+                # Adversarial: check if this is an alias import where the
+                # module part alone WOULD resolve but the " as alias" suffix
+                # prevented resolution.
+                if " as " in imp:
+                    module_part = imp.split(" as ")[0].strip()
+                    alias_part = imp.split(" as ", 1)[1].strip()
+                    module_resolved = resolve_import(module_part, file_path, all_paths)
+                    if module_resolved and module_resolved in file_by_path:
+                        alias_failures += 1
+                        alias_failure_log.append({
+                            "file": file_path,
+                            "import": imp,
+                            "alias": alias_part,
+                            "module": module_part,
+                        })
+                        logger.warning(
+                            "ALIAS_FAILURE file=%s import=%r alias=%r "
+                            "module_resolves_to=%s",
+                            file_path, imp, alias_part, module_resolved,
+                        )
+
     # ------------------------------------------------------------------
     # 3. Symbol-call ambiguity stats
     #    Walk every file's symbols and re-run the resolver to count how
@@ -190,6 +236,7 @@ def validate_repo_graph(
     all_known_names = list(global_symbol_map.keys())
 
     ambiguous_count = 0
+    lost_valid_edges = 0
     ambiguity_log: List[Dict[str, Any]] = []
 
     for file_entry in manifest_files:
@@ -237,6 +284,10 @@ def validate_repo_graph(
                         "SYMBOL_AMBIGUOUS caller_file=%s callee=%r candidates=%d",
                         file_path, callee_name, len(candidates),
                     )
+                    # Adversarial: any dropped call where the callee IS a real
+                    # repo symbol (even if ambiguous) counts as a lost valid edge.
+                    if candidates:
+                        lost_valid_edges += 1
 
     # ------------------------------------------------------------------
     # 4. Execution path validation
@@ -275,6 +326,64 @@ def validate_repo_graph(
                 ep.id, result.get("entry_file"),
             )
 
+    # ------------------------------------------------------------------
+    # 5. Missing entry points (adversarial: patterns extractor doesn't cover)
+    #
+    # Patterns the current extractor handles:
+    #   Python: if __name__ == "__main__", FastAPI(, Flask(
+    #   JS/TS:  express(), app.listen(
+    #
+    # Patterns the extractor does NOT handle (measured as "missing"):
+    #   uvicorn.run(    — FastAPI deployment
+    #   @app.route(     — Flask route decorator
+    #   @app.get(       — FastAPI route decorator
+    #   @app.post(      — FastAPI route decorator
+    #   @router.get(    — FastAPI APIRouter
+    #   @router.post(   — FastAPI APIRouter
+    #   @click.command  — click CLI entry point
+    # ------------------------------------------------------------------
+    _UNDETECTED_PATTERNS = [
+        "uvicorn.run(",
+        "@app.route(",
+        "@app.get(",
+        "@app.post(",
+        "@app.put(",
+        "@app.delete(",
+        "@router.get(",
+        "@router.post(",
+        "@router.put(",
+        "@router.delete(",
+        "@click.command",
+    ]
+
+    files_with_ep = {ep.file_id for ep in eps}
+    missing_entry_points = 0
+    missing_entry_point_log: List[Dict[str, str]] = []
+
+    for file_entry in manifest_files:
+        file_path = file_entry.get("path", "")
+        content = file_entry.get("content", "")
+        if not content or not content.strip():
+            continue
+        rf = file_by_path.get(file_path)
+        if rf is None:
+            continue
+        # Only flag files that have NO entry point already detected
+        if rf.id in files_with_ep:
+            continue
+        for pattern in _UNDETECTED_PATTERNS:
+            if pattern in content:
+                missing_entry_points += 1
+                missing_entry_point_log.append({
+                    "file": file_path,
+                    "pattern": pattern,
+                })
+                logger.warning(
+                    "MISSING_ENTRY_POINT file=%s pattern=%r",
+                    file_path, pattern,
+                )
+                break  # one entry per file
+
     return {
         "repo": repo_id,
         "files": len(repo_files),
@@ -291,9 +400,17 @@ def validate_repo_graph(
             "paths_found": paths_found,
             "broken_paths": broken_paths,
         },
+        "failure_analysis": {
+            "lost_valid_edges": lost_valid_edges,
+            "alias_failures": alias_failures,
+            "ambiguous_drops": ambiguous_count,
+            "missing_entry_points": missing_entry_points,
+        },
         "drop_log": drop_log,
         "ambiguity_log": ambiguity_log,
         "broken_path_log": broken_path_log,
+        "alias_failure_log": alias_failure_log,
+        "missing_entry_point_log": missing_entry_point_log,
     }
 
 
