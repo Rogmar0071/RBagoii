@@ -193,7 +193,7 @@ class TestDependencyResolutionStrict:
         from backend.app.database import get_engine
         from backend.app.models import FileDependency
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("main.py", _MAIN_PY),
@@ -215,10 +215,10 @@ class TestDependencyResolutionStrict:
         from sqlmodel import Session, select
 
         from backend.app.database import get_engine
-        from backend.app.models import FileDependency, RepoFile
+        from backend.app.models import FileDependency
 
         code = "import os\nimport sys\nimport requests\n\ndef main():\n    pass\n"
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [("standalone.py", code)],
         )
@@ -245,7 +245,7 @@ class TestSymbolAnchorIntegrity:
         from backend.app.database import get_engine
         from backend.app.models import CodeSymbol
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("utils.py", _UTILS_PY),
@@ -267,7 +267,7 @@ class TestSymbolAnchorIntegrity:
         from backend.app.database import get_engine
         from backend.app.models import CodeSymbol, RepoFile
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [("utils.py", _UTILS_PY)],
         )
@@ -295,7 +295,7 @@ class TestExecutionChainExists:
         from backend.app.database import get_engine
         from backend.app.models import EntryPoint
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("main.py", _MAIN_PY),
@@ -319,7 +319,7 @@ class TestExecutionChainExists:
         from backend.app.database import get_engine
         from backend.app.models import CodeSymbol, EntryPoint, RepoFile, SymbolCallEdge
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("main.py", _MAIN_PY),
@@ -358,7 +358,7 @@ class TestExecutionChainExists:
         from backend.app.database import get_engine
         from backend.app.models import EntryPoint
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [("app.py", _FASTAPI_PY)],
         )
@@ -442,7 +442,7 @@ class TestCallEdgeIntegrity:
         from backend.app.database import get_engine
         from backend.app.models import CodeSymbol, SymbolCallEdge
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("utils.py", _UTILS_PY),   # process_data calls helper
@@ -465,7 +465,7 @@ class TestCallEdgeIntegrity:
         from backend.app.database import get_engine
         from backend.app.models import CodeSymbol, SymbolCallEdge
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [("utils.py", _UTILS_PY)],
         )
@@ -473,7 +473,6 @@ class TestCallEdgeIntegrity:
         with Session(get_engine()) as sess:
             edges = list(sess.exec(select(SymbolCallEdge)))
             # process_data calls helper — should have at least one call edge
-            callee_names = {e.callee_name for e in edges}
             # process_data or helper may appear as caller/callee
             symbols = list(sess.exec(select(CodeSymbol)))
             sym_names = {s.name for s in symbols}
@@ -499,7 +498,7 @@ class TestPipelinePhaseOrder:
         from backend.app.database import get_engine
         from backend.app.models import FileDependency, RepoFile
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("main.py", _MAIN_PY),
@@ -527,7 +526,7 @@ class TestPipelinePhaseOrder:
         from backend.app.database import get_engine
         from backend.app.models import FileDependency, RepoFile
 
-        job_id = _make_repo_job(
+        _make_repo_job(
             lambda: Session(get_engine()),
             [
                 ("main.py", _MAIN_PY),
