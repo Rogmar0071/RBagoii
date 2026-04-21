@@ -12,7 +12,7 @@ function at execution time via ``JOB_REGISTRY``, so no ``AttributeError``
 or ``DeserializationError`` can occur due to renamed or moved functions.
 
 CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
-CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1
+CONTRACT: MQP-CONTRACT:WORKER-EXECUTION-GOVERNANCE-LOCK v1.2
 """
 
 from __future__ import annotations
@@ -86,38 +86,37 @@ def execute_job(job_name: str, *args) -> object:
         If *job_name* is not registered.
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
-    CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1
-    CONTRACT: MQP-CONTRACT:EXECUTION-HARD-STOP v1.0
+    CONTRACT: MQP-CONTRACT:WORKER-EXECUTION-GOVERNANCE-LOCK v1.2
     """
-    print(f"WORKER:execute_job:start job_name={job_name} args={args}")
+    # TRACE_ENTRY — first log, always emitted
+    print(f"TRACE_ENTRY: job_name={job_name} args={args}")
 
     # -----------------------------------------------------------------------
-    # MQP-CONTRACT: EXECUTION-HARD-STOP v1.0 — STATE GATE IS FIRST
+    # MQP-CONTRACT: WORKER-EXECUTION-GOVERNANCE-LOCK v1.2 — STATE GATE FIRST
     #
-    # This block is the FIRST executable logic.  It runs before function
-    # resolution and before any "executing" log so that a blocked job has
-    # no path to execution under any code branch.
+    # Extract job_id from the first argument (may be None for arg-less jobs).
+    # try_load_job handles non-UUID / None values safely and returns None.
     #
-    # Execution authority follows state ownership, not function identity.
-    # Jobs whose first argument does not resolve to a governed record
-    # (non-UUID or unknown model) pass through unimpeded.
+    # GOVERNED JOB   — record found → state controls execution.
+    # NON-GOVERNED   — no record    → execution allowed; must be logged.
+    #
+    # This block runs before registry resolution and before any "executing"
+    # log so that no blocked job can reach fn(*args) under any path.
     # -----------------------------------------------------------------------
-    if args:
+    job_id = args[0] if args else None
+    job = try_load_job(job_id)
+
+    if job is not None:
         from backend.app.ingest_pipeline import IngestJobState
 
-        job_id = args[0]
-        job = try_load_job(job_id)
-        if job is not None:
-            if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
-                print(
-                    f"SKIPPED_TERMINAL: job_id={job_id} status={job.status}"
-                )
-                return None
-            if job.status != IngestJobState.QUEUED:
-                print(
-                    f"SKIPPED_INVALID_STATE: job_id={job_id} status={job.status}"
-                )
-                return None
+        if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
+            print(f"SKIPPED_TERMINAL: job_id={job_id} status={job.status}")
+            return None
+        if job.status != IngestJobState.QUEUED:
+            print(f"SKIPPED_INVALID_STATE: job_id={job_id} status={job.status}")
+            return None
+    else:
+        print(f"NON_GOVERNED_JOB: job_name={job_name}")
 
     # Lazy import avoids circular-import issues at module load time.
     from backend.app.job_registry import JOB_REGISTRY
@@ -125,10 +124,10 @@ def execute_job(job_name: str, *args) -> object:
     fn = JOB_REGISTRY.get(job_name)
     print(f"WORKER:resolved fn={fn}")
     if not fn:
-        print(f"WORKER:invalid_job_name={job_name}")
+        print(f"INVALID_JOB_NAME: job_name={job_name}")
         raise RuntimeError("INVALID_JOB_NAME")
 
-    print(f"WORKER:executing {job_name}")
+    print(f"WORKER_EXECUTING: job_name={job_name} job_id={job_id}")
     try:
         result = fn(*args)
     except Exception as e:
@@ -136,5 +135,5 @@ def execute_job(job_name: str, *args) -> object:
         print(f"WORKER:error job_name={job_name} err={repr(e)}")
         traceback.print_exc()
         raise
-    print(f"WORKER:completed {job_name}")
+    print(f"WORKER_COMPLETED: job_name={job_name} job_id={job_id}")
     return result
