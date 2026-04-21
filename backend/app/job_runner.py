@@ -38,7 +38,8 @@ def _load_ingest_job(job_id: str):
 
         with Session(get_engine()) as session:
             return session.get(IngestJob, _uuid.UUID(job_id))
-    except Exception:
+    except Exception as exc:
+        print(f"WORKER:load_ingest_job_error job_id={job_id} err={repr(exc)}")
         return None
 
 
