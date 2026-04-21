@@ -58,6 +58,10 @@ class GithubRepoAdapter(
         notifyDataSetChanged()
     }
 
+    fun currentRepos(): List<GithubRepo> = repos.toList()
+
+    fun selectedRepos(): List<GithubRepo> = repos.filter { it.selected }.map { it.copy() }
+
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RepoViewHolder {
         val binding = ItemGithubRepoBinding.inflate(
             LayoutInflater.from(parent.context),
@@ -90,7 +94,7 @@ class GithubRepoAdapter(
                     binding.tvIngestStatus.setTextColor(
                         ContextCompat.getColor(binding.root.context, android.R.color.white),
                     )
-                    binding.tvIngestStatus.text = "Queued"
+                    binding.tvIngestStatus.text = "queued"
                 }
                 "running" -> {
                     binding.tvIngestStatus.visibility = View.VISIBLE
@@ -98,7 +102,7 @@ class GithubRepoAdapter(
                     binding.tvIngestStatus.setTextColor(
                         ContextCompat.getColor(binding.root.context, R.color.status_pill_text_dark),
                     )
-                    binding.tvIngestStatus.text = "Processing..."
+                    binding.tvIngestStatus.text = "running"
                 }
                 "success" -> {
                     binding.tvIngestStatus.visibility = View.VISIBLE
@@ -106,7 +110,7 @@ class GithubRepoAdapter(
                     binding.tvIngestStatus.setTextColor(
                         ContextCompat.getColor(binding.root.context, R.color.status_pill_text_muted),
                     )
-                    binding.tvIngestStatus.text = "Completed"
+                    binding.tvIngestStatus.text = "success"
                 }
                 "failed" -> {
                     binding.tvIngestStatus.visibility = View.VISIBLE
@@ -114,7 +118,7 @@ class GithubRepoAdapter(
                     binding.tvIngestStatus.setTextColor(
                         ContextCompat.getColor(binding.root.context, android.R.color.white),
                     )
-                    binding.tvIngestStatus.text = "Failed"
+                    binding.tvIngestStatus.text = "failed"
                 }
                 else -> {
                     binding.tvIngestStatus.visibility = View.GONE
