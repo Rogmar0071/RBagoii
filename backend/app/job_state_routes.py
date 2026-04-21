@@ -63,7 +63,11 @@ def get_job_state(job_id: str, session=Depends(_db_session)) -> JobStateResponse
 
 
 @router.get("/chat/{conversation_id}/jobs", dependencies=[Depends(require_auth)], status_code=200)
-@router.get("/v1/chat/{conversation_id}/jobs", dependencies=[Depends(require_auth)], status_code=200)
+@router.get(
+    "/v1/chat/{conversation_id}/jobs",
+    dependencies=[Depends(require_auth)],
+    status_code=200,
+)
 def list_conversation_jobs(
     conversation_id: str,
     kind: Optional[str] = Query(default=None),

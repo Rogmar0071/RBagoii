@@ -1418,7 +1418,13 @@ class TestDeterministicStateLayer:
         detail_body = detail.json()
         assert detail_body["status"] == "success"
         assert detail_body["execution_locked"] is True
-        assert set(detail_body) >= {"job_id", "status", "execution_locked", "created_at", "updated_at"}
+        assert set(detail_body) >= {
+            "job_id",
+            "status",
+            "execution_locked",
+            "created_at",
+            "updated_at",
+        }
 
         listing = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
         assert listing.status_code == 200
