@@ -139,6 +139,15 @@ class Job(SQLModel, table=True):
     status: str = Field(default="queued")
     progress: int = Field(default=0)
     error: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    execution_locked: bool = Field(
+        default=False,
+        sa_column=Column(sa.Boolean, nullable=False, server_default=sa.false()),
+    )
+    execution_attempts: int = Field(default=0, sa_column=Column(sa.Integer, nullable=False, server_default="0"))
+    last_execution_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
@@ -297,6 +306,15 @@ class AnalysisJob(SQLModel, table=True):
     file_path: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
     # queued / running / succeeded / failed
     status: str = Field(default="queued")
+    execution_locked: bool = Field(
+        default=False,
+        sa_column=Column(sa.Boolean, nullable=False, server_default=sa.false()),
+    )
+    execution_attempts: int = Field(default=0, sa_column=Column(sa.Integer, nullable=False, server_default="0"))
+    last_execution_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
     # Full analysis result JSON (populated on success).
     results_json: Optional[Any] = Field(default=None, sa_column=Column(sa.JSON, nullable=True))
     # List of error dicts recorded during processing.
@@ -676,6 +694,15 @@ class IngestJob(SQLModel, table=True):
 
     # created / stored / queued / running / processing / indexing / finalizing / success / failed
     status: str = Field(default="created", sa_column=Column(sa.Text, index=True))
+    execution_locked: bool = Field(
+        default=False,
+        sa_column=Column(sa.Boolean, nullable=False, server_default=sa.false()),
+    )
+    execution_attempts: int = Field(default=0, sa_column=Column(sa.Integer, nullable=False, server_default="0"))
+    last_execution_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
 
     # Progress percentage (0-100)
     progress: int = Field(default=0)

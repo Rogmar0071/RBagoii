@@ -69,8 +69,13 @@ def _update_analysis_job(job_id: str, **kwargs) -> None:
             job = session.get(AnalysisJob, uuid.UUID(job_id))
             if job is None:
                 return
+            next_status = kwargs.get("status")
+            if next_status in {"succeeded", "failed"}:
+                kwargs["execution_locked"] = True
             for k, v in kwargs.items():
                 setattr(job, k, v)
+            if job.execution_locked:
+                job.execution_locked = True
             session.add(job)
             session.commit()
     except Exception:

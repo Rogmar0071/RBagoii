@@ -85,6 +85,9 @@ logger = logging.getLogger(__name__)
 
 def _redis_queue(name: str = "default"):
     """Return an RQ Queue connected to REDIS_URL, or None if not configured."""
+    if name != "default":
+        logger.error("QUEUE_VIOLATION: queue=%s", name)
+        raise RuntimeError("QUEUE_VIOLATION_HARD_STOP")
     redis_url = os.environ.get("REDIS_URL", "").strip()
     if not redis_url:
         return None
@@ -93,7 +96,11 @@ def _redis_queue(name: str = "default"):
         from rq import Queue
 
         conn = Redis.from_url(redis_url)
-        return Queue(name, connection=conn)
+        queue = Queue(name, connection=conn)
+        if queue.name != "default":
+            logger.error("QUEUE_VIOLATION: queue=%s", queue.name)
+            raise RuntimeError("QUEUE_VIOLATION_HARD_STOP")
+        return queue
     except Exception as exc:  # pragma: no cover – connection errors in prod
         logger.warning("RQ unavailable (%s); will run jobs synchronously.", exc)
         return None
@@ -228,6 +235,7 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
     """
     # Lazy import avoids circular-import issues at module load time.
     from backend.app.job_registry import JOB_REGISTRY
+    from backend.app.job_lifecycle import prepare_governed_job_for_enqueue
 
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:
@@ -251,11 +259,14 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
     if fn is None:
         raise ValueError(f"Unknown job type: {job_type!r}")
 
+    prepare_governed_job_for_enqueue(job_id)
+
     q = _redis_queue()
     if q is not None:
         # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §3 — Hard assert queue name
         if q.name != "default":
-            raise RuntimeError("QUEUE_VIOLATION")
+            logger.error("QUEUE_VIOLATION: queue=%s", q.name)
+            raise RuntimeError("QUEUE_VIOLATION_HARD_STOP")
 
         # Enqueue by stable STRING PATH — never by function object.
         # The worker resolves the function at execution time via execute_job.
@@ -278,8 +289,10 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
     # legacy sessions implementation).
     from concurrent.futures import ThreadPoolExecutor
 
+    from backend.app.job_runner import execute_job
+
     executor = ThreadPoolExecutor(max_workers=1)
-    executor.submit(fn, job_id)
+    executor.submit(execute_job, job_type, job_id)
     executor.shutdown(wait=False)
     return None
 
@@ -301,8 +314,13 @@ def _update_job(job_id: str, **kwargs) -> None:
         job = session.get(Job, uuid.UUID(job_id))
         if job is None:
             return
+        next_status = kwargs.get("status")
+        if next_status in {"succeeded", "failed"}:
+            kwargs["execution_locked"] = True
         for k, v in kwargs.items():
             setattr(job, k, v)
+        if job.execution_locked:
+            job.execution_locked = True
         session.add(job)
         session.commit()
 

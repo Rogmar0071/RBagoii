@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
 import uuid
 from datetime import datetime
 from typing import Any
@@ -72,26 +71,9 @@ def _enqueue_analysis_job(job_id: str, file_path: str) -> None:
     if disable:
         return
 
-    redis_url = os.environ.get("REDIS_URL", "").strip()
-    if redis_url:
-        try:
-            # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
-            from backend.app.worker import enqueue_job
+    from backend.app.worker import enqueue_job
 
-            enqueue_job(job_id, "process_analysis_job")
-            return
-        except Exception as exc:
-            logger.warning("RQ unavailable (%s); running analysis job in thread.", exc)
-
-    from backend.app.analysis_job_processor import process_analysis_job
-
-    t = threading.Thread(
-        target=process_analysis_job,
-        args=(job_id,),
-        daemon=True,
-        name=f"analysis-{job_id}",
-    )
-    t.start()
+    enqueue_job(job_id, "process_analysis_job")
 
 
 # ---------------------------------------------------------------------------

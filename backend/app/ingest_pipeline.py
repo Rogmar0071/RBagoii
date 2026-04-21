@@ -67,7 +67,6 @@ import logging
 import mimetypes
 import os
 import re
-import threading
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -264,39 +263,10 @@ def _dispatch_job(job_id: str) -> None:
         process_ingest_job(job_id)
         return
 
-    redis_url = os.environ.get("REDIS_URL", "").strip()
-    if redis_url:
-        try:
-            from redis import Redis
+    from backend.app.worker import enqueue_job
 
-            from backend.app.worker import enqueue_job
-
-            enqueue_job(job_id, "process_ingest_job")
-            logger.info("IngestJob %s enqueued via RQ", job_id)
-
-            conn = Redis.from_url(redis_url)
-            keys = conn.keys("rq:queue:*:intermediate")
-            if keys:
-                logger.error(
-                    "QUEUE_VIOLATION: Intermediate queue detected after enqueue: %s", keys
-                )
-                raise RuntimeError(
-                    f"QUEUE_VIOLATION: Intermediate queue prohibited. Found: {keys}"
-                )
-            return
-        except RuntimeError:
-            raise
-        except Exception as exc:
-            logger.warning("RQ unavailable (%s) — falling back to thread", exc)
-
-    t = threading.Thread(
-        target=process_ingest_job,
-        args=(job_id,),
-        daemon=True,
-        name=f"ingest-{job_id}",
-    )
-    t.start()
-    logger.info("IngestJob %s started in background thread", job_id)
+    enqueue_job(job_id, "process_ingest_job")
+    logger.info("IngestJob %s enqueued for execution", job_id)
 
 
 def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | None = None) -> None:
@@ -367,6 +337,8 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
         # Atomic state + payload update
         job.status = next_state
         job.updated_at = datetime.now(timezone.utc)
+        if next_state in IngestJobState.terminal_states():
+            job.execution_locked = True
 
         if payload:
             if "progress" in payload:
@@ -1364,6 +1336,11 @@ def process_ingest_job(job_id: str) -> None:
         logger.error("WORKER_MISSING_JOB: job=%s", job_id)
         return
 
+    if getattr(job, "execution_locked", False):
+        logger.error("REPLAY_BLOCKED: job=%s", job_id)
+        logger.error("TRACE_EXIT: LOCKED_BLOCK job=%s", job_id)
+        return
+
     # TERMINAL STATES — HARD STOP
     if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
         logger.error(
@@ -1374,7 +1351,7 @@ def process_ingest_job(job_id: str) -> None:
         return
 
     # NON-QUEUED — HARD STOP
-    if job.status != IngestJobState.QUEUED:
+    if job.status not in (IngestJobState.QUEUED, IngestJobState.RUNNING):
         logger.error(
             "WORKER_ENTRY_VIOLATION: job=%s state=%s expected=queued",
             job_id, job.status,
@@ -1386,7 +1363,8 @@ def process_ingest_job(job_id: str) -> None:
 
     try:
         logger.error("TRACE_EXECUTION_ALLOWED: job=%s", job_id)
-        _transition(job_id, IngestJobState.RUNNING)
+        if job.status == IngestJobState.QUEUED:
+            _transition(job_id, IngestJobState.RUNNING)
 
         from sqlmodel import Session
 
