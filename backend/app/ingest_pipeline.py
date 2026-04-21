@@ -879,19 +879,14 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         content_hash=hash_content(data),
     )
     session.add(file_node)
-    for name, kind, line in graph["symbols"]:
-        session.add(SymbolNode(
-            file_id=file_node.id,
-            name=name,
-            kind=kind,
-            start_line=line,
-            end_line=line,
-        ))
-    for imp in graph["imports"]:
-        session.add(FileEdge(
-            source_file_id=file_node.id,
-            target_path=imp,
-        ))
+    session.add_all([
+        SymbolNode(file_id=file_node.id, name=name, kind=kind, start_line=line, end_line=line)
+        for name, kind, line in graph["symbols"]
+    ])
+    session.add_all([
+        FileEdge(source_file_id=file_node.id, target_path=imp)
+        for imp in graph["imports"]
+    ])
 
     text = extract_text(data, mime_type, filename)
 
@@ -1069,19 +1064,14 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             content_hash=hash_content(content_bytes),
         )
         session.add(file_node)
-        for name, kind, line in graph["symbols"]:
-            session.add(SymbolNode(
-                file_id=file_node.id,
-                name=name,
-                kind=kind,
-                start_line=line,
-                end_line=line,
-            ))
-        for imp in graph["imports"]:
-            session.add(FileEdge(
-                source_file_id=file_node.id,
-                target_path=imp,
-            ))
+        session.add_all([
+            SymbolNode(file_id=file_node.id, name=name, kind=kind, start_line=line, end_line=line)
+            for name, kind, line in graph["symbols"]
+        ])
+        session.add_all([
+            FileEdge(source_file_id=file_node.id, target_path=imp)
+            for imp in graph["imports"]
+        ])
 
         # Chunk the content
         chunks = split_with_overlap(content)

@@ -756,6 +756,6 @@ class FileEdge(SQLModel, table=True):
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     source_file_id: uuid.UUID = Field(
-        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False)
+        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False, index=True)
     )
     target_path: str  # raw import path

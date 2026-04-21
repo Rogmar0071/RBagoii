@@ -18,8 +18,10 @@ from typing import List, Tuple
 def detect_language(path: str) -> str:
     if path.endswith(".py"):
         return "python"
-    if path.endswith(".ts") or path.endswith(".js"):
+    if path.endswith(".ts") or path.endswith(".tsx"):
         return "typescript"
+    if path.endswith(".js") or path.endswith(".jsx"):
+        return "javascript"
     return "unknown"
 
 
