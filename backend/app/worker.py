@@ -234,8 +234,8 @@ def enqueue_job(job_id: str, job_type: str, rq_job_id: Optional[str] = None) -> 
     This is the ONLY function that should enqueue jobs. All other code must use this entry point.
     """
     # Lazy import avoids circular-import issues at module load time.
-    from backend.app.job_registry import JOB_REGISTRY
     from backend.app.job_lifecycle import prepare_governed_job_for_enqueue
+    from backend.app.job_registry import JOB_REGISTRY
 
     disable = os.environ.get("BACKEND_DISABLE_JOBS", "0") == "1"
     if disable:

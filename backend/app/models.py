@@ -143,7 +143,10 @@ class Job(SQLModel, table=True):
         default=False,
         sa_column=Column(sa.Boolean, nullable=False, server_default=sa.false()),
     )
-    execution_attempts: int = Field(default=0, sa_column=Column(sa.Integer, nullable=False, server_default="0"))
+    execution_attempts: int = Field(
+        default=0,
+        sa_column=Column(sa.Integer, nullable=False, server_default="0"),
+    )
     last_execution_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), nullable=True),
@@ -310,7 +313,10 @@ class AnalysisJob(SQLModel, table=True):
         default=False,
         sa_column=Column(sa.Boolean, nullable=False, server_default=sa.false()),
     )
-    execution_attempts: int = Field(default=0, sa_column=Column(sa.Integer, nullable=False, server_default="0"))
+    execution_attempts: int = Field(
+        default=0,
+        sa_column=Column(sa.Integer, nullable=False, server_default="0"),
+    )
     last_execution_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), nullable=True),
@@ -698,7 +704,10 @@ class IngestJob(SQLModel, table=True):
         default=False,
         sa_column=Column(sa.Boolean, nullable=False, server_default=sa.false()),
     )
-    execution_attempts: int = Field(default=0, sa_column=Column(sa.Integer, nullable=False, server_default="0"))
+    execution_attempts: int = Field(
+        default=0,
+        sa_column=Column(sa.Integer, nullable=False, server_default="0"),
+    )
     last_execution_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), nullable=True),

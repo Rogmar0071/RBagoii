@@ -120,7 +120,9 @@ def claim_governed_job_execution(job_id: str | None) -> dict[str, object]:
             now = _utcnow()
             values: dict[object, object] = {
                 spec.model.status: spec.running_state,
-                spec.model.execution_attempts: sa.func.coalesce(spec.model.execution_attempts, 0) + 1,
+                spec.model.execution_attempts: (
+                    sa.func.coalesce(spec.model.execution_attempts, 0) + 1
+                ),
                 spec.model.last_execution_at: now,
             }
             if hasattr(spec.model, "updated_at"):
@@ -143,7 +145,9 @@ def claim_governed_job_execution(job_id: str | None) -> dict[str, object]:
                 }
 
             refreshed = session.get(spec.model, job_uuid)
-            refreshed_status = getattr(refreshed, "status", status) if refreshed is not None else status
+            refreshed_status = (
+                getattr(refreshed, "status", status) if refreshed is not None else status
+            )
             refreshed_locked = bool(
                 getattr(refreshed, "execution_locked", locked) if refreshed is not None else locked
             )

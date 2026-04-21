@@ -768,6 +768,8 @@ def _transition(job_id: str, next_state: str, **payload: Any) -> None:
             # ATOMIC UPDATE: state + payload + timestamp
             job.status = next_state
             job.updated_at = datetime.now(timezone.utc)
+            if next_state in IngestJobState.terminal_states():
+                job.execution_locked = True
 
             for k, v in payload.items():
                 setattr(job, k, v)
