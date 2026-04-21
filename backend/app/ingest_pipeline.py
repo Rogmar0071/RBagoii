@@ -1211,7 +1211,12 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         symbol_names = [name for name, _, _, _ in path_symbols]
         local_sym_map = {name: sym for name, _, _, sym in path_symbols}
 
-        calls = extract_symbol_calls(file_contents_by_path[file_path], symbol_names)
+        # Pass all globally-known symbol names so cross-file callees are also
+        # detected (e.g. run() in main.py calling process_data() from utils.py).
+        # symbol_starts inside extract_symbol_calls is still bounded to symbols
+        # whose definitions appear in *this* file, so no orphan bodies are scanned.
+        all_known_names = list(global_symbol_map.keys())
+        calls = extract_symbol_calls(file_contents_by_path[file_path], all_known_names)
 
         for caller_name, callee_names in calls.items():
             caller_sym = local_sym_map.get(caller_name)
