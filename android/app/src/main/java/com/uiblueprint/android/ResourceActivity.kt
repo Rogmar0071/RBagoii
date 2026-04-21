@@ -178,7 +178,7 @@ class ResourceActivity : AppCompatActivity() {
     }
 
     // Restore saved selections onto the freshly loaded repo list.
-    private fun restoreSelections(repos: List<GithubRepo>): List<GithubRepo> {
+    private fun restoreRepoSelections(repos: List<GithubRepo>): List<GithubRepo> {
         val savedUrls = selectedRepoUrls()
         if (savedUrls.isEmpty()) return repos
         return repos.map { repo ->
@@ -287,7 +287,7 @@ class ResourceActivity : AppCompatActivity() {
                     }
 
                     runOnUiThread {
-                        val projectedRepos = restoreSelections(repos)
+                        val projectedRepos = restoreRepoSelections(repos)
                         repoAdapter.submitList(projectedRepos)
                         binding.rvGithubRepos.visibility = if (repos.isEmpty()) View.GONE else View.VISIBLE
                         binding.tvNoRepos.visibility = if (repos.isEmpty()) View.VISIBLE else View.GONE
@@ -760,7 +760,7 @@ class ResourceActivity : AppCompatActivity() {
                 }
 
                 runOnUiThread {
-                    val projectedRepos = restoreSelections(repos)
+                    val projectedRepos = restoreRepoSelections(repos)
                     repoAdapter.submitList(projectedRepos)
                     binding.rvGithubRepos.visibility = if (projectedRepos.isEmpty()) View.GONE else View.VISIBLE
                     binding.tvNoRepos.visibility = if (projectedRepos.isEmpty()) View.VISIBLE else View.GONE
