@@ -538,6 +538,7 @@ class TestNoActivationWithoutAlignment:
             EnrichedGraph,
             FinalContext,
             StructuralGraph,
+            _PipelineToken,
             _stage_activate,
             _stage_finalize,
         )
@@ -558,8 +559,9 @@ class TestNoActivationWithoutAlignment:
             aligned_intent_contract=contract,
         )
 
-        # Must succeed
-        session = _stage_activate(fc)
+        # Must succeed when called with a valid pipeline token
+        token = _PipelineToken()
+        session = _stage_activate(fc, token)
         assert session.session_id
 
     def test_activate_raises_for_unconfirmed_contract(self):
@@ -569,6 +571,7 @@ class TestNoActivationWithoutAlignment:
             EnrichedGraph,
             FinalContext,
             StructuralGraph,
+            _PipelineToken,
             _stage_activate,
         )
 
@@ -586,8 +589,10 @@ class TestNoActivationWithoutAlignment:
             aligned_intent_contract=contract,
         )
 
+        # Token present but contract unconfirmed — must still raise ACTIVATION_BLOCKED
+        token = _PipelineToken()
         with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
-            _stage_activate(fc)
+            _stage_activate(fc, token)
 
     def test_contract_valid_property(self):
         from backend.app.context_pipeline import AlignedIntentContract
@@ -898,3 +903,316 @@ class TestContextGraphIntegrity:
         assert callable(cp._stage_activate)
         assert hasattr(cp, "AlignmentRequiredError")
         assert hasattr(cp, "ActiveContextSession")
+        assert hasattr(cp, "_PipelineToken")
+
+
+# ---------------------------------------------------------------------------
+# TEST_activation_only_via_pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestActivationOnlyViaPipeline:
+    """
+    TEST_activation_only_via_pipeline
+
+    ActiveContextSession MUST NOT be constructable outside run_context_pipeline().
+    Any direct construction attempt without a valid _PipelineToken must fail
+    with ACTIVATION_BLOCKED.
+    """
+
+    def test_direct_construction_without_token_fails(self):
+        """ActiveContextSession() without a _PipelineToken raises ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import (
+            ActiveContextSession,
+            AlignedIntentContract,
+            ContextGraph,
+            EnrichedGraph,
+            FinalContext,
+            StructuralGraph,
+        )
+
+        sg = StructuralGraph(job_id="direct-test")
+        eg = EnrichedGraph(structural_graph=sg)
+        cg = ContextGraph(enriched_graph=eg, user_intent="test")
+        contract = AlignedIntentContract(
+            job_id="direct-test", user_intent="test", confirmed=True, refinement=None
+        )
+        fc = FinalContext(context_graph=cg, aligned_intent_contract=contract)
+
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            # No _token provided — must raise
+            ActiveContextSession(
+                session_id=str(uuid.uuid4()),
+                job_id="direct-test",
+                final_context=fc,
+            )
+
+    def test_direct_construction_with_wrong_token_type_fails(self):
+        """ActiveContextSession() with a non-_PipelineToken token raises ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import (
+            ActiveContextSession,
+            AlignedIntentContract,
+            ContextGraph,
+            EnrichedGraph,
+            FinalContext,
+            StructuralGraph,
+        )
+
+        sg = StructuralGraph(job_id="direct-test")
+        eg = EnrichedGraph(structural_graph=sg)
+        cg = ContextGraph(enriched_graph=eg, user_intent="test")
+        contract = AlignedIntentContract(
+            job_id="direct-test", user_intent="test", confirmed=True, refinement=None
+        )
+        fc = FinalContext(context_graph=cg, aligned_intent_contract=contract)
+
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            ActiveContextSession(
+                session_id=str(uuid.uuid4()),
+                job_id="direct-test",
+                final_context=fc,
+                _token="not-a-real-token",   # string — wrong type
+            )
+
+    def test_direct_construction_with_none_token_fails(self):
+        """ActiveContextSession() with _token=None explicitly raises ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import (
+            ActiveContextSession,
+            AlignedIntentContract,
+            ContextGraph,
+            EnrichedGraph,
+            FinalContext,
+            StructuralGraph,
+        )
+
+        sg = StructuralGraph(job_id="direct-test")
+        eg = EnrichedGraph(structural_graph=sg)
+        cg = ContextGraph(enriched_graph=eg, user_intent="test")
+        contract = AlignedIntentContract(
+            job_id="direct-test", user_intent="test", confirmed=True, refinement=None
+        )
+        fc = FinalContext(context_graph=cg, aligned_intent_contract=contract)
+
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            ActiveContextSession(
+                session_id=str(uuid.uuid4()),
+                job_id="direct-test",
+                final_context=fc,
+                _token=None,
+            )
+
+    def test_pipeline_produces_valid_session(self, tmp_path):
+        """run_context_pipeline() produces a real ActiveContextSession (token handled inside)."""
+        from sqlmodel import Session
+
+        from backend.app.context_pipeline import ActiveContextSession, run_context_pipeline
+        from backend.app.database import get_engine
+
+        job_id = _make_repo_job(
+            lambda: Session(get_engine()),
+            [
+                ("main.py", _MAIN_PY),
+                ("utils.py", _UTILS_PY),
+                ("models.py", _MODELS_PY),
+            ],
+        )
+
+        with Session(get_engine()) as sess:
+            result = run_context_pipeline(
+                job_id, sess,
+                user_intent="run the main pipeline",
+                alignment_confirmed=True,
+            )
+
+        # The pipeline must produce a proper ActiveContextSession
+        assert isinstance(result, ActiveContextSession)
+        assert result.session_id
+        # The internal token must be set and valid
+        from backend.app.context_pipeline import _PipelineToken
+        assert isinstance(result._token, _PipelineToken)
+
+
+# ---------------------------------------------------------------------------
+# TEST_stage_activate_direct_call_blocked
+# ---------------------------------------------------------------------------
+
+
+class TestStageActivateDirectCallBlocked:
+    """
+    TEST_stage_activate_direct_call_blocked
+
+    Calling _stage_activate directly (without a pipeline token) MUST fail.
+    No token → ACTIVATION_BLOCKED.
+    """
+
+    def _make_final_context(self, confirmed: bool = True) -> "FinalContext":
+        from backend.app.context_pipeline import (
+            AlignedIntentContract,
+            ContextGraph,
+            EnrichedGraph,
+            FinalContext,
+            StructuralGraph,
+        )
+
+        sg = StructuralGraph(job_id="token-test")
+        eg = EnrichedGraph(structural_graph=sg)
+        cg = ContextGraph(enriched_graph=eg, user_intent="test")
+        contract = AlignedIntentContract(
+            job_id="token-test",
+            user_intent="test",
+            confirmed=confirmed,
+            refinement=None,
+        )
+        return FinalContext(context_graph=cg, aligned_intent_contract=contract)
+
+    def test_no_args_fails(self):
+        """_stage_activate(fc) with no token must raise ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import _stage_activate
+
+        fc = self._make_final_context(confirmed=True)
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc)
+
+    def test_none_token_fails(self):
+        """_stage_activate(fc, None) must raise ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import _stage_activate
+
+        fc = self._make_final_context(confirmed=True)
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc, None)
+
+    def test_string_token_fails(self):
+        """_stage_activate(fc, 'some-string') must raise ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import _stage_activate
+
+        fc = self._make_final_context(confirmed=True)
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc, "fake-pipeline-token-string")
+
+    def test_uuid_string_token_fails(self):
+        """A plain UUID string is not a _PipelineToken — must raise ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import _stage_activate
+
+        fc = self._make_final_context(confirmed=True)
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc, str(uuid.uuid4()))
+
+    def test_dict_token_fails(self):
+        """A dict is not a _PipelineToken — must raise ACTIVATION_BLOCKED."""
+        from backend.app.context_pipeline import _stage_activate
+
+        fc = self._make_final_context(confirmed=True)
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc, {"token": str(uuid.uuid4())})
+
+    def test_valid_token_and_confirmed_contract_succeeds(self):
+        """_stage_activate with a real _PipelineToken and valid contract must succeed."""
+        from backend.app.context_pipeline import ActiveContextSession, _PipelineToken, _stage_activate
+
+        fc = self._make_final_context(confirmed=True)
+        token = _PipelineToken()
+        result = _stage_activate(fc, token)
+        assert isinstance(result, ActiveContextSession)
+        assert result.session_id
+
+    def test_valid_token_but_unconfirmed_contract_fails(self):
+        """Token present but unconfirmed contract → ACTIVATION_BLOCKED (contract guard)."""
+        from backend.app.context_pipeline import _PipelineToken, _stage_activate
+
+        fc = self._make_final_context(confirmed=False)
+        token = _PipelineToken()
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc, token)
+
+
+# ---------------------------------------------------------------------------
+# TEST_pipeline_token_required
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineTokenRequired:
+    """
+    TEST_pipeline_token_required
+
+    The pipeline token is the sole key to activation.
+    Missing token → immediate ACTIVATION_BLOCKED at every enforcement point.
+    """
+
+    def test_pipeline_token_is_uuid(self):
+        """_PipelineToken must generate a valid UUID internally."""
+        from backend.app.context_pipeline import _PipelineToken
+
+        t = _PipelineToken()
+        # value must be a parseable UUID
+        parsed = uuid.UUID(t.value)
+        assert str(parsed) == t.value
+
+    def test_each_pipeline_call_generates_unique_token(self):
+        """Every _PipelineToken instance must have a distinct value."""
+        from backend.app.context_pipeline import _PipelineToken
+
+        tokens = [_PipelineToken().value for _ in range(50)]
+        assert len(set(tokens)) == 50, "Every pipeline token must be unique"
+
+    def test_token_not_exposed_in_session_repr(self, tmp_path):
+        """The pipeline token must not appear in the ActiveContextSession repr."""
+        from sqlmodel import Session
+
+        from backend.app.context_pipeline import run_context_pipeline
+        from backend.app.database import get_engine
+
+        job_id = _make_repo_job(
+            lambda: Session(get_engine()),
+            [
+                ("main.py", _MAIN_PY),
+                ("utils.py", _UTILS_PY),
+                ("models.py", _MODELS_PY),
+            ],
+        )
+
+        with Session(get_engine()) as sess:
+            result = run_context_pipeline(
+                job_id, sess,
+                user_intent="check token exposure",
+                alignment_confirmed=True,
+            )
+
+        r = repr(result)
+        # _token field has repr=False — the raw UUID value must not appear in repr
+        assert result._token.value not in r, (
+            "Pipeline token value must not be visible in ActiveContextSession repr"
+        )
+
+    def test_activation_without_pipeline_cannot_produce_session(self):
+        """Without running the full pipeline, no ActiveContextSession can be produced."""
+        from backend.app.context_pipeline import (
+            ActiveContextSession,
+            AlignedIntentContract,
+            ContextGraph,
+            EnrichedGraph,
+            FinalContext,
+            StructuralGraph,
+            _stage_activate,
+        )
+
+        sg = StructuralGraph(job_id="no-token")
+        eg = EnrichedGraph(structural_graph=sg)
+        cg = ContextGraph(enriched_graph=eg, user_intent="test")
+        contract = AlignedIntentContract(
+            job_id="no-token", user_intent="test", confirmed=True, refinement=None
+        )
+        fc = FinalContext(context_graph=cg, aligned_intent_contract=contract)
+
+        # Attempt 1: call _stage_activate without token
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            _stage_activate(fc)
+
+        # Attempt 2: construct ActiveContextSession directly without token
+        with pytest.raises(RuntimeError, match="ACTIVATION_BLOCKED"):
+            ActiveContextSession(
+                session_id=str(uuid.uuid4()),
+                job_id="no-token",
+                final_context=fc,
+            )
+
+        # Both paths blocked — no session was produced
