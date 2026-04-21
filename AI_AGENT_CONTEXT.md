@@ -9,7 +9,9 @@
 
 ## 🎯 Project Overview
 
-**RecoB (ui-blueprint)** - Convert 10-second Android screen-recording clips into a structured "blueprint" suitable for near-human-indistinguishable replay in a custom renderer — and optionally for compiling into automation events.
+**RecoB (ui-blueprint)** - **RBoII is a deterministic context construction engine that converts user intent + uploaded systems into execution-ready, validated system intelligence.**
+
+It also ingests 10-second Android screen-recording clips and converts them into structured "blueprints" suitable for near-human-indistinguishable replay.
 
 ### Core Purpose
 - Extract UI interaction patterns from 10-second Android screen recordings
@@ -444,7 +446,7 @@ tool execution yet — information only).
 
 ---
 
-**Last Updated**: 2026-04-20
+**Last Updated**: 2026-04-21
 **Generated From**: README.md
 **Generator**: scripts/sync_ai_context.py
 **Purpose**: Provide AI agents with essential context before making changes
