@@ -297,8 +297,12 @@ def get_repo_structure(
     total_files = len(per_file)
     total_chunks = len(chunks)
     indexed = bool(registry.indexed) if registry else (repo.ingestion_status == "success")
-    created_at = (registry.created_at if registry else repo.created_at) or datetime.now(timezone.utc)
-    updated_at = (registry.updated_at if registry else repo.updated_at) or datetime.now(timezone.utc)
+    created_at = (registry.created_at if registry else repo.created_at) or datetime.now(
+        timezone.utc
+    )
+    updated_at = (registry.updated_at if registry else repo.updated_at) or datetime.now(
+        timezone.utc
+    )
     last_retrieved_count = registry.last_retrieved_count if registry else 0
 
     return RepoStructureResponse(

@@ -108,7 +108,9 @@ def test_retrieval_is_repo_scoped(client: TestClient):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["retrieved_count"] > 0
-    assert all(chunk["file_path"] in {"src/main.py", "README.md"} for chunk in body["retrieved_chunks"])
+    assert all(
+        chunk["file_path"] in {"src/main.py", "README.md"} for chunk in body["retrieved_chunks"]
+    )
 
 
 def test_retrieval_is_deterministic_for_same_query(client: TestClient):
@@ -125,7 +127,9 @@ def test_retrieval_is_deterministic_for_same_query(client: TestClient):
     assert results[0] == results[1] == results[2]
 
 
-def test_retrieval_failure_surfaces_contract_error(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+def test_retrieval_failure_surfaces_contract_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
     repo_id = _seed_repo_with_chunks(conversation_id=str(uuid.uuid4()))
 
     def _boom(*args, **kwargs):
@@ -174,10 +178,12 @@ def test_chat_returns_no_index_data_when_retrieval_disabled(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ):
     repo_id = _seed_repo_with_chunks(conversation_id=str(uuid.uuid4()))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
     import backend.app.chat_routes as cr
 
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "should-not-run")
     resp = client.post(
         "/api/chat",
         json={

@@ -352,7 +352,10 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
 
         if job.kind == "repo":
             source = job.source or ""
-            repo_url, source_branch = (source.rsplit("@", 1) + [None])[:2] if "@" in source else (source, None)
+            if "@" in source:
+                repo_url, source_branch = (source.rsplit("@", 1) + [None])[:2]
+            else:
+                repo_url, source_branch = source, None
             branch = job.branch or source_branch or "main"
             matching_repos = session.exec(
                 select(Repo).where(
@@ -384,7 +387,9 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
                 if "chunk_count" in (payload or {}):
                     registry.total_chunks = int(payload["chunk_count"])
                 registry.status = registry_status
-                registry.indexed = next_state == IngestJobState.SUCCESS and registry.total_chunks > 0
+                registry.indexed = (
+                    next_state == IngestJobState.SUCCESS and registry.total_chunks > 0
+                )
                 if next_state in IngestJobState.terminal_states():
                     registry.last_indexed_at = datetime.now(timezone.utc)
                 registry.updated_at = datetime.now(timezone.utc)
