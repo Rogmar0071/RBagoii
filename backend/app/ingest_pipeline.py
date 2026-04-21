@@ -836,8 +836,12 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
     Worker MUST read from database ONLY. NO filesystem access.
     """
-    from backend.app.graph_extractor import extract_graph, hash_content
-    from backend.app.models import FileEdge, FileNode, RepoChunk, SymbolNode
+    from backend.app.graph_extractor import (
+        extract_graph,
+        extract_symbol_calls,
+        hash_content,
+    )
+    from backend.app.models import EntryPoint, FileNode, RepoChunk, SymbolCallEdge, SymbolNode
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=file", job.id)
@@ -1021,8 +1025,20 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     """
     import json
 
-    from backend.app.graph_extractor import extract_graph, hash_content
-    from backend.app.models import FileEdge, FileNode, RepoChunk, SymbolNode
+    from backend.app.graph_extractor import (
+        extract_graph,
+        extract_symbol_calls,
+        hash_content,
+        resolve_import,
+    )
+    from backend.app.models import (
+        EntryPoint,
+        FileDependency,
+        FileNode,
+        RepoChunk,
+        SymbolCallEdge,
+        SymbolNode,
+    )
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
@@ -1048,20 +1064,34 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         job.id, repo_url, branch, len(files)
     )
 
-    file_count = 0
-    chunk_count = 0
+    # -----------------------------------------------------------------------
+    # PHASE 1 — Persist ALL FileNodes first, then SymbolNodes.
+    #
+    # MQP-STEERING-CONTRACT: REPO-GRAPH-INTEGRITY-LOCK v1.0 — Section 5
+    # FileNode rows MUST be committed before graph resolution begins so
+    # that import resolution operates on persisted state only.
+    # -----------------------------------------------------------------------
 
-    # Process each file from the manifest
+    # Intermediate data collected during Phase 1 (kept in memory)
+    file_nodes_by_path: dict[str, Any] = {}          # path → FileNode
+    raw_imports_by_path: dict[str, list[str]] = {}   # path → raw import list
+    entry_points_by_path: dict[str, list[tuple]] = {}  # path → [(type, line)]
+    file_contents_by_path: dict[str, str] = {}        # path → text content
+    symbols_by_path: dict[str, list[tuple]] = {}      # path → [(name, kind, line, SymbolNode)]
+    skipped_paths: set[str] = set()
+
+    # Phase 1a — Create all FileNodes
     for file_entry in files:
         file_path = file_entry["path"]
         content = file_entry["content"]
 
         if not content or not content.strip():
+            skipped_paths.add(file_path)
             continue
 
-        # GRAPH-EXTRACTION-LAYER v1.0: extract structural metadata
         content_bytes = content.encode("utf-8")
         graph = extract_graph(file_path, content_bytes)
+
         file_node = FileNode(
             repo_id=job.id,
             path=file_path,
@@ -1070,24 +1100,119 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             content_hash=hash_content(content_bytes),
         )
         session.add(file_node)
-        session.flush()
 
+        file_nodes_by_path[file_path] = file_node
+        raw_imports_by_path[file_path] = graph["imports"]
+        entry_points_by_path[file_path] = graph.get("entry_points", [])
+        file_contents_by_path[file_path] = content
+
+    # Flush all FileNodes in a single batch so their IDs are valid before
+    # creating SymbolNodes (FK: symbol_nodes.file_id → file_nodes.id).
+    session.flush()
+
+    # Phase 1b — Create all SymbolNodes (requires FileNode IDs from flush above)
+    # Also collect a global name → [symbol_id] map for call-edge resolution.
+    global_symbol_map: dict[str, list[Any]] = {}  # name → [symbol_id, ...]
+
+    for file_path, file_node in file_nodes_by_path.items():
+        graph_content_bytes = file_contents_by_path[file_path].encode("utf-8")
+        graph = extract_graph(file_path, graph_content_bytes)
+
+        path_symbols: list[tuple] = []
         for name, kind, line in graph["symbols"]:
-            session.add(SymbolNode(
+            sym = SymbolNode(
                 file_id=file_node.id,
                 name=name,
                 kind=kind,
                 start_line=line,
                 end_line=line,
+            )
+            session.add(sym)
+            path_symbols.append((name, kind, line, sym))
+            global_symbol_map.setdefault(name, []).append(sym)
+
+        symbols_by_path[file_path] = path_symbols
+
+    # Flush all SymbolNodes so their IDs are valid for call-edge FKs.
+    session.flush()
+
+    # -----------------------------------------------------------------------
+    # PHASE 2 — Resolve dependencies + persist EntryPoints.
+    #
+    # MQP-STEERING-CONTRACT — Section 1: ONLY insert FileDependency when the
+    # target resolves to a known FileNode.  Unresolved imports are dropped.
+    # -----------------------------------------------------------------------
+
+    all_paths: frozenset[str] = frozenset(file_nodes_by_path.keys())
+
+    for file_path, file_node in file_nodes_by_path.items():
+        # Resolved file-to-file dependency edges
+        for imp in raw_imports_by_path[file_path]:
+            resolved = resolve_import(imp, file_path, all_paths)
+            if resolved and resolved in file_nodes_by_path:
+                target_file_id = file_nodes_by_path[resolved].id
+                session.add(FileDependency(
+                    source_file_id=file_node.id,
+                    target_file_id=target_file_id,
+                ))
+
+        # Entry points
+        for entry_type, line in entry_points_by_path[file_path]:
+            session.add(EntryPoint(
+                file_id=file_node.id,
+                entry_type=entry_type,
+                line=line,
             ))
 
-        for imp in graph["imports"]:
-            session.add(FileEdge(
-                source_file_id=file_node.id,
-                target_path=imp,
-            ))
+    # -----------------------------------------------------------------------
+    # PHASE 3 — Symbol call edges.
+    #
+    # MQP-STEERING-CONTRACT — Section 2: source_symbol_id is ALWAYS a valid
+    # FK to symbol_nodes.  Orphan edges are forbidden — if the caller is not
+    # a persisted symbol, the edge is not created.
+    # -----------------------------------------------------------------------
 
-        # Chunk the content
+    for file_path, path_symbols in symbols_by_path.items():
+        if not path_symbols:
+            continue
+
+        symbol_names = [name for name, _, _, _ in path_symbols]
+        local_sym_map = {name: sym for name, _, _, sym in path_symbols}
+
+        calls = extract_symbol_calls(file_contents_by_path[file_path], symbol_names)
+
+        for caller_name, callee_names in calls.items():
+            caller_sym = local_sym_map.get(caller_name)
+            if caller_sym is None:
+                continue  # caller not persisted — cannot create edge
+
+            for callee_name in callee_names:
+                # Resolve to the first matching symbol (prefer same-file)
+                target_sym = local_sym_map.get(callee_name)
+                if target_sym is None:
+                    candidates = global_symbol_map.get(callee_name, [])
+                    target_sym = candidates[0] if candidates else None
+
+                session.add(SymbolCallEdge(
+                    source_symbol_id=caller_sym.id,
+                    callee_name=callee_name,
+                    target_symbol_id=target_sym.id if target_sym is not None else None,
+                ))
+
+    # -----------------------------------------------------------------------
+    # PHASE 4 — Chunks (existing behaviour, unchanged).
+    # -----------------------------------------------------------------------
+
+    file_count = 0
+    chunk_count = 0
+
+    for file_entry in files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
+
+        if not content or not content.strip():
+            continue
+
         chunks = split_with_overlap(content)
 
         for idx, chunk_text in enumerate(chunks):
@@ -1111,7 +1236,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
 
         file_count += 1
 
-    # Commit all chunks to database
+    # Commit all graph rows + chunks atomically
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)

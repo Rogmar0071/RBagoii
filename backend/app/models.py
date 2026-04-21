@@ -777,3 +777,76 @@ class FileEdge(SQLModel, table=True):
     )
     # raw import path as it appears in the source file
     target_path: str = Field(sa_column=Column(sa.Text, nullable=False))
+
+
+# ---------------------------------------------------------------------------
+# GRAPH-INTEGRITY-LOCK v1.0
+# file_dependencies / symbol_call_edges / entry_points
+# ---------------------------------------------------------------------------
+
+
+class FileDependency(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: REPO-GRAPH-INTEGRITY-LOCK v1.0 — Section 1
+
+    A RESOLVED file-to-file dependency edge.  Both FKs are non-nullable —
+    rows are ONLY inserted when the target path was found in the ingested
+    file set.  Unresolved imports are silently dropped (never stored).
+
+    INVARIANT: target_file_id IS NEVER NULL.
+    """
+
+    __tablename__ = "file_dependencies"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    source_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False, index=True)
+    )
+    target_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False, index=True)
+    )
+
+
+class SymbolCallEdge(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: REPO-GRAPH-INTEGRITY-LOCK v1.0 — Section 2
+
+    A directed call edge from one known symbol to another.
+    source_symbol_id is always a valid FK (NOT NULL) — orphan call edges
+    are forbidden.  target_symbol_id is nullable: the callee may be an
+    external library symbol that is not in the ingested file set.
+    """
+
+    __tablename__ = "symbol_call_edges"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # Caller — must be a persisted SymbolNode (NOT NULL)
+    source_symbol_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("symbol_nodes.id"), nullable=False, index=True)
+    )
+    # Raw callee name as it appears in the source
+    callee_name: str = Field(sa_column=Column(sa.Text, nullable=False))
+    # Resolved target symbol (nullable — callee may be external)
+    target_symbol_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("symbol_nodes.id"), nullable=True, index=True),
+    )
+
+
+class EntryPoint(SQLModel, table=True):
+    """
+    MQP-STEERING-CONTRACT: REPO-GRAPH-INTEGRITY-LOCK v1.0 — Section 4
+
+    Detected execution entry point within an ingested file.
+    entry_type is one of: "main" | "server" | "framework".
+    """
+
+    __tablename__ = "entry_points"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False, index=True)
+    )
+    # main | server | framework
+    entry_type: str = Field(sa_column=Column(sa.Text, nullable=False))
+    line: int
