@@ -1354,14 +1354,14 @@ class TestDeterministicStateLayer:
         conv_id = str(uuid.uuid4())
         job_id = self._create_job("running", conv_id)
 
-        first = client.get(f"/v1/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
+        first = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
         assert first.status_code == 200
         first_job = next(j for j in first.json() if j["job_id"] == job_id)
         assert first_job["status"] == "running"
 
         self._set_status(job_id, "success", execution_locked=True)
 
-        second = client.get(f"/v1/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
+        second = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
         assert second.status_code == 200
         second_job = next(j for j in second.json() if j["job_id"] == job_id)
         assert second_job["status"] == "success"
@@ -1370,41 +1370,41 @@ class TestDeterministicStateLayer:
     def test_poll_until_completion(self, client):
         job_id = self._create_job("running")
 
-        first = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        first = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert first.status_code == 200
         assert first.json()["status"] == "running"
 
         self._set_status(job_id, "success", execution_locked=True)
 
-        second = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        second = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert second.status_code == 200
         assert second.json()["status"] == "success"
 
     def test_navigation_independence(self, client):
         job_id = self._create_job("processing")
 
-        initial = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        initial = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert initial.status_code == 200
         assert initial.json()["status"] == "running"
 
         self._set_status(job_id, "finalizing")
-        resumed = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        resumed = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert resumed.status_code == 200
         assert resumed.json()["status"] == "running"
 
         self._set_status(job_id, "failed", execution_locked=True)
-        terminal = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        terminal = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert terminal.status_code == 200
         assert terminal.json()["status"] == "failed"
 
     def test_no_local_state_dependency(self, client):
         job_id = self._create_job("stored")
 
-        first = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        first = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert first.status_code == 200
         assert first.json()["status"] == "queued"
 
-        second = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        second = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert second.status_code == 200
         assert second.json()["status"] == "queued"
 
@@ -1413,14 +1413,14 @@ class TestDeterministicStateLayer:
         job_id = self._create_job("success", conv_id)
         self._set_status(job_id, "success", execution_locked=True)
 
-        detail = client.get(f"/v1/jobs/{job_id}", headers=_AUTH)
+        detail = client.get(f"/jobs/{job_id}", headers=_AUTH)
         assert detail.status_code == 200
         detail_body = detail.json()
         assert detail_body["status"] == "success"
         assert detail_body["execution_locked"] is True
         assert set(detail_body) >= {"job_id", "status", "execution_locked", "created_at", "updated_at"}
 
-        listing = client.get(f"/v1/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
+        listing = client.get(f"/chat/{conv_id}/jobs?kind=repo", headers=_AUTH)
         assert listing.status_code == 200
         listed = next(j for j in listing.json() if j["job_id"] == job_id)
         assert listed["status"] == "success"

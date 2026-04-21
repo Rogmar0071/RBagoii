@@ -11,7 +11,7 @@ from backend.app.auth import require_auth
 from backend.app.ingest_routes import _db_session
 from backend.app.models import IngestJob
 
-router = APIRouter(prefix="/v1", tags=["job_state"])
+router = APIRouter(tags=["job_state"])
 
 
 class JobStateResponse(BaseModel):
@@ -49,6 +49,7 @@ def _to_job_state(job: IngestJob) -> JobStateResponse:
 
 
 @router.get("/jobs/{job_id}", dependencies=[Depends(require_auth)], status_code=200)
+@router.get("/v1/jobs/{job_id}", dependencies=[Depends(require_auth)], status_code=200)
 def get_job_state(job_id: str, session=Depends(_db_session)) -> JobStateResponse:
     try:
         job_uuid = uuid.UUID(job_id)
@@ -62,6 +63,7 @@ def get_job_state(job_id: str, session=Depends(_db_session)) -> JobStateResponse
 
 
 @router.get("/chat/{conversation_id}/jobs", dependencies=[Depends(require_auth)], status_code=200)
+@router.get("/v1/chat/{conversation_id}/jobs", dependencies=[Depends(require_auth)], status_code=200)
 def list_conversation_jobs(
     conversation_id: str,
     kind: Optional[str] = Query(default=None),

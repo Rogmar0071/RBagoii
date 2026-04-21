@@ -116,22 +116,6 @@ class GithubRepoAdapter(
                     )
                     binding.tvIngestStatus.text = "Failed"
                 }
-                "sync_error" -> {
-                    binding.tvIngestStatus.visibility = View.VISIBLE
-                    binding.tvIngestStatus.setBackgroundResource(R.drawable.bg_status_pill_failed)
-                    binding.tvIngestStatus.setTextColor(
-                        ContextCompat.getColor(binding.root.context, android.R.color.white),
-                    )
-                    binding.tvIngestStatus.text = "Sync error"
-                }
-                "job_not_found" -> {
-                    binding.tvIngestStatus.visibility = View.VISIBLE
-                    binding.tvIngestStatus.setBackgroundResource(R.drawable.bg_status_pill_failed)
-                    binding.tvIngestStatus.setTextColor(
-                        ContextCompat.getColor(binding.root.context, android.R.color.white),
-                    )
-                    binding.tvIngestStatus.text = "Job not found"
-                }
                 else -> {
                     binding.tvIngestStatus.visibility = View.GONE
                 }

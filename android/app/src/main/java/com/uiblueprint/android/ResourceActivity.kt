@@ -22,6 +22,7 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
+import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -46,6 +47,7 @@ class ResourceActivity : AppCompatActivity() {
 
     private val githubRepos = mutableListOf<GithubRepo>()
     private val chatFiles = mutableListOf<ChatFile>()
+    private val activePollingJobs = Collections.synchronizedSet(mutableSetOf<String>())
     // Track whether selections have been committed to the backend in this session.
     private var selectionsCommitted = false
 
@@ -475,7 +477,7 @@ class ResourceActivity : AppCompatActivity() {
                     }
                     
                     // STEP 5: CALL SITE RULE — Each job = one independent loop
-                    pollIngestJob(jobId, apiKey, baseUrl) { json ->
+                    startPollingIfNeeded(jobId, apiKey, baseUrl) { json ->
                         // STEP 3: RENDER = PURE BINDING
                         val status = json.optString("status")
                         val error = json.optString("error")
@@ -547,9 +549,7 @@ class ResourceActivity : AppCompatActivity() {
                 val baseUrl = baseUrl()
 
                 var successCount = 0
-                var blockedCount = 0
                 var failureCount = 0
-                val jobIds = mutableListOf<String>()
 
                 // Add selected GitHub repos via the new unified ingestion endpoint.
                 for (repo in selectedRepos) {
@@ -576,7 +576,6 @@ class ResourceActivity : AppCompatActivity() {
                                 val responseBody = response.body?.string() ?: "{}"
                                 val responseJson = JSONObject(responseBody)
                                 val jobId = responseJson.getString("job_id")
-                                jobIds.add(jobId)
                                 successCount++
                                 Log.d("ResourceActivity", "Repo ${repo.fullName} queued with job_id=$jobId")
                             }
@@ -622,22 +621,7 @@ class ResourceActivity : AppCompatActivity() {
                         selectionsCommitted = true
                         Toast.makeText(this, "Selections applied successfully", Toast.LENGTH_SHORT).show()
                         
-                        // STEP 5: CALL SITE RULE — Each job = one independent loop
-                        for (jobId in jobIds) {
-                            pollIngestJob(jobId, apiKey, baseUrl) { json ->
-                                // STEP 3: RENDER = PURE BINDING
-                                val status = json.optString("status")
-                                val progress = json.optInt("progress")
-                                val fileCount = json.optInt("file_count")
-                                val chunkCount = json.optInt("chunk_count")
-                                val error = json.optString("error")
-                                val source = json.optString("source")  // "{repo_url}@{branch}"
-                                
-                                // STEP 3: Bind directly to UI (adapter update)
-                                updateRepoStatus(source, status, progress, fileCount, chunkCount, error, jobId)
-                            }
-                        }
-                        
+                        loadActiveRepos()
                         finish()
                     } else {
                         Toast.makeText(
@@ -686,17 +670,14 @@ class ResourceActivity : AppCompatActivity() {
 
                     val response = BackendClient.executeWithRetry(request)
                     if (response.code == 404) {
-                        runOnUiThread {
-                            onRender(JSONObject().put("job_id", jobId).put("status", "job_not_found"))
-                        }
+                        runOnUiThread { Toast.makeText(this, "Job not found", Toast.LENGTH_SHORT).show() }
                         response.close()
+                        activePollingJobs.remove(jobId)
                         break
                     }
                     if (!response.isSuccessful) {
                         response.close()
-                        runOnUiThread {
-                            onRender(JSONObject().put("job_id", jobId).put("status", "sync_error"))
-                        }
+                        runOnUiThread { Toast.makeText(this, "Sync error", Toast.LENGTH_SHORT).show() }
                         Thread.sleep(2000)
                         continue
                     }
@@ -713,6 +694,7 @@ class ResourceActivity : AppCompatActivity() {
                         val status = json.optString("status")
                         // Terminates here on terminal status
                         if (status == "success" || status == "failed") {
+                            activePollingJobs.remove(jobId)
                             break
                         }
                     }
@@ -720,13 +702,21 @@ class ResourceActivity : AppCompatActivity() {
                     Thread.sleep(2000)
 
                 } catch (_: Exception) {
-                    runOnUiThread {
-                        onRender(JSONObject().put("job_id", jobId).put("status", "sync_error"))
-                    }
+                    runOnUiThread { Toast.makeText(this, "Sync error", Toast.LENGTH_SHORT).show() }
                     Thread.sleep(2000)
                 }
             }
         }
+    }
+
+    private fun startPollingIfNeeded(
+        jobId: String,
+        apiKey: String,
+        baseUrl: String,
+        onRender: (JSONObject) -> Unit
+    ) {
+        if (!activePollingJobs.add(jobId)) return
+        pollIngestJob(jobId, apiKey, baseUrl, onRender)
     }
     
     /**
@@ -763,10 +753,33 @@ class ResourceActivity : AppCompatActivity() {
                 )
             } else repo
         }
+        val hasRepo = updatedRepos.any { it.htmlUrl == repoUrl }
+        val finalRepos = if (hasRepo) {
+            updatedRepos
+        } else {
+            val name = repoUrl.substringAfterLast("/")
+            updatedRepos + GithubRepo(
+                name = name,
+                fullName = repoUrl.removePrefix("https://github.com/"),
+                description = "",
+                htmlUrl = repoUrl,
+                defaultBranch = "main",
+                language = "",
+                stars = 0,
+                isPrivate = false,
+                selected = false,
+                ingestionStatus = status,
+                progress = progress,
+                totalFiles = fileCount,
+                totalChunks = chunkCount,
+                errorMessage = error,
+                ingestJobId = jobId
+            )
+        }
         
         githubRepos.clear()
-        githubRepos.addAll(updatedRepos)
-        repoAdapter.submitList(updatedRepos)
+        githubRepos.addAll(finalRepos)
+        repoAdapter.submitList(finalRepos)
     }
 
     /**
@@ -815,10 +828,12 @@ class ResourceActivity : AppCompatActivity() {
                 }
                 
                 runOnUiThread {
-                    val updatedRepos = githubRepos.map { repo ->
-                        val job = jobMap[repo.htmlUrl]
-                        if (job != null) {
-                            repo.copy(
+                    val currentByUrl = githubRepos.associateBy { it.htmlUrl }
+                    val projectedRepos = jobMap.values.map { job ->
+                        val repoUrl = job.source.substringBeforeLast("@")
+                        val existing = currentByUrl[repoUrl]
+                        if (existing != null) {
+                            existing.copy(
                                 ingestionStatus = job.status,
                                 progress = 0,
                                 totalFiles = 0,
@@ -827,26 +842,36 @@ class ResourceActivity : AppCompatActivity() {
                                 ingestJobId = job.job_id
                             )
                         } else {
-                            repo.copy(
-                                ingestionStatus = "",
+                            val name = repoUrl.substringAfterLast("/")
+                            GithubRepo(
+                                name = name,
+                                fullName = repoUrl.removePrefix("https://github.com/"),
+                                description = "",
+                                htmlUrl = repoUrl,
+                                defaultBranch = "main",
+                                language = "",
+                                stars = 0,
+                                isPrivate = false,
+                                selected = false,
+                                ingestionStatus = job.status,
                                 progress = 0,
                                 totalFiles = 0,
                                 totalChunks = 0,
                                 errorMessage = null,
-                                ingestJobId = null
+                                ingestJobId = job.job_id
                             )
                         }
                     }
                     githubRepos.clear()
-                    githubRepos.addAll(updatedRepos)
-                    repoAdapter.submitList(updatedRepos)
+                    githubRepos.addAll(projectedRepos)
+                    repoAdapter.submitList(projectedRepos)
                     
                     // STEP 5: CALL SITE RULE — Each job = one independent loop
                     val apiKey = apiKey()
                     val baseUrl = baseUrl()
                     for (job in jobMap.values) {
                         if (job.status == "queued" || job.status == "running") {
-                            pollIngestJob(job.job_id, apiKey, baseUrl) { json ->
+                            startPollingIfNeeded(job.job_id, apiKey, baseUrl) { json ->
                                 val status = json.optString("status")
                                 val source = json.optString("source", job.source)
                                 updateRepoStatus(source, status, 0, 0, 0, null, job.job_id)
