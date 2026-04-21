@@ -34,32 +34,14 @@ def try_load_job(job_id: str):
 
     CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1 §4
     """
-    import uuid as _uuid
-
-    # Validate that job_id is a UUID before hitting the database.
     try:
-        uid = _uuid.UUID(str(job_id))
-    except (ValueError, AttributeError):
-        return None
+        from backend.app.job_lifecycle import load_governed_job
 
-    # --- IngestJob -----------------------------------------------------------
-    try:
-        from sqlmodel import Session
-
-        from backend.app.database import get_engine
-        from backend.app.models import IngestJob
-
-        with Session(get_engine()) as session:
-            record = session.get(IngestJob, uid)
-            if record is not None:
-                # Read status inside the session so the attribute is guaranteed
-                # to be loaded and accessible after the session is closed.
-                _ = record.status
-                return record
+        record, _spec = load_governed_job(job_id)
+        if record is not None:
+            return record
     except Exception as exc:
-        print(f"WORKER:try_load_job:ingest_error job_id={job_id} err={repr(exc)}")
-
-    # Future job model lookups go here, following the same pattern.
+        print(f"WORKER:try_load_job:error job_id={job_id} err={repr(exc)}")
 
     return None
 
@@ -105,17 +87,20 @@ def execute_job(job_name: str, *args) -> object:
     # -----------------------------------------------------------------------
     job_id = args[0] if args else None
     job = try_load_job(job_id)
+    if job is not None and getattr(job, "execution_locked", False):
+        print(f"REPLAY_BLOCKED: job_id={job_id}")
+        return None
 
-    if job is not None:
-        from backend.app.ingest_pipeline import IngestJobState
+    from backend.app.job_lifecycle import claim_governed_job_execution
 
-        if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
-            print(f"SKIPPED_TERMINAL: job_id={job_id} status={job.status}")
-            return None
-        if job.status != IngestJobState.QUEUED:
-            print(f"SKIPPED_INVALID_STATE: job_id={job_id} status={job.status}")
-            return None
-    else:
+    gate = claim_governed_job_execution(job_id)
+    if gate["state"] == "blocked_locked":
+        print(f"REPLAY_BLOCKED: job_id={job_id}")
+        return None
+    if gate["state"] == "claim_rejected":
+        print(f"CLAIM_REJECTED: job_id={job_id}")
+        return None
+    if gate["state"] == "not_found":
         print(f"NON_GOVERNED_JOB: job_name={job_name}")
 
     # Lazy import avoids circular-import issues at module load time.
@@ -127,9 +112,12 @@ def execute_job(job_name: str, *args) -> object:
         print(f"INVALID_JOB_NAME: job_name={job_name}")
         raise RuntimeError("INVALID_JOB_NAME")
 
-    print(f"WORKER_EXECUTING: job_name={job_name} job_id={job_id}")
+    print(f"WORKER:executing job_name={job_name} job_id={job_id}")
+    from backend.app.execution_spine import execution_route
+
     try:
-        result = fn(*args)
+        with execution_route(job_name):
+            result = fn(*args)
     except Exception as e:
         import traceback
         print(f"WORKER:error job_name={job_name} err={repr(e)}")

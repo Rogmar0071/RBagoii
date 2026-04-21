@@ -69,6 +69,9 @@ def _update_analysis_job(job_id: str, **kwargs) -> None:
             job = session.get(AnalysisJob, uuid.UUID(job_id))
             if job is None:
                 return
+            next_status = kwargs.get("status")
+            if next_status in {"succeeded", "failed"}:
+                kwargs["execution_locked"] = True
             for k, v in kwargs.items():
                 setattr(job, k, v)
             session.add(job)
@@ -333,6 +336,9 @@ def process_analysis_job(job_id: str) -> None:
     thread.  It persists partial results and errors after every stage so that
     the REST API can return interim state.
     """
+    from backend.app.execution_spine import require_execute_job_route
+
+    require_execute_job_route("process_analysis_job")
     logger.info("Analysis job %s starting", job_id)
     _update_analysis_job(job_id, status="running")
 

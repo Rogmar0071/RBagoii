@@ -184,16 +184,8 @@ def _startup_init_db() -> None:
             conn = Redis.from_url(redis_url)
             keys = conn.keys("rq:queue:*:intermediate")
             if keys:
-                logger.error(
-                    "SYSTEM_INTEGRITY_ERROR: Intermediate queue detected: %s",
-                    keys,
-                )
-                raise RuntimeError(
-                    f"SYSTEM_INTEGRITY_ERROR: Intermediate queue violation detected. "
-                    f"Found prohibited keys: {keys}. "
-                    f"Only 'rq:queue:default' is allowed per "
-                    f"MQP-CONTRACT:INGESTION_EXECUTION_ALIGNMENT_V1"
-                )
+                logger.error("QUEUE_VIOLATION: queues=%s", keys)
+                raise RuntimeError("QUEUE_VIOLATION_HARD_STOP")
         except RuntimeError:
             raise
         except Exception as exc:
@@ -456,24 +448,9 @@ async def create_session(
 
 def _enqueue_extraction(session_id: str, clip_path: str) -> None:
     """Enqueue extraction via RQ if available, otherwise run in a thread."""
-    redis_url = os.environ.get("REDIS_URL", "").strip()
-    if redis_url:
-        try:
-            # MQP-CONTRACT:QUEUE_SINGLE_PATH_ENFORCEMENT_V1 §2 — Use single entry point
-            from backend.app.worker import enqueue_job
+    from backend.app.worker import enqueue_job
 
-            enqueue_job(session_id, "run_extraction_job")
-            return
-        except Exception as exc:
-            logger.warning("RQ unavailable (%s); falling back to thread pool.", exc)
-    # Fallback: thread
-    t = threading.Thread(
-        target=_run_extraction,
-        args=(session_id,),
-        daemon=True,
-        name=f"extract-{session_id}",
-    )
-    t.start()
+    enqueue_job(session_id, "run_extraction_job")
 
 
 # ---------------------------------------------------------------------------
