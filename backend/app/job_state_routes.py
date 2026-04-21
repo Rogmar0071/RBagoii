@@ -76,7 +76,7 @@ def list_conversation_jobs(
     stmt = (
         select(IngestJob)
         .where(IngestJob.conversation_id == conversation_id)
-        .order_by(IngestJob.created_at.desc())
+        .order_by(IngestJob.created_at.desc().nullslast())
         .limit(200)
     )
     if kind:

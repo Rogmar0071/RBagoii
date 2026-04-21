@@ -1332,6 +1332,7 @@ class TestDeterministicStateLayer:
             s.add(job)
             s.commit()
             s.refresh(job)
+            assert job.status == status
         return str(job.id)
 
     @staticmethod

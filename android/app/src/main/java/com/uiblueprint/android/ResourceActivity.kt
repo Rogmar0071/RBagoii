@@ -813,6 +813,8 @@ class ResourceActivity : AppCompatActivity() {
                         kind = obj.getString("kind"),
                         source = obj.getString("source"),
                         status = obj.getString("status"),
+                        // Deterministic state layer endpoint only returns contract
+                        // fields; progress/count/error are intentionally ignored.
                         progress = 0,
                         file_count = 0,
                         chunk_count = 0,
