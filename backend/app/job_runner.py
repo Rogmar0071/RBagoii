@@ -87,26 +87,20 @@ def execute_job(job_name: str, *args) -> object:
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
     CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1
+    CONTRACT: MQP-CONTRACT:EXECUTION-HARD-STOP v1.0
     """
     print(f"WORKER:execute_job:start job_name={job_name} args={args}")
-    # Lazy import avoids circular-import issues at module load time.
-    from backend.app.job_registry import JOB_REGISTRY
-
-    fn = JOB_REGISTRY.get(job_name)
-    print(f"WORKER:resolved fn={fn}")
-    if not fn:
-        print(f"WORKER:invalid_job_name={job_name}")
-        raise RuntimeError("INVALID_JOB_NAME")
 
     # -----------------------------------------------------------------------
-    # MQP-CONTRACT: STATE-DRIVEN-EXECUTION-GATE v1.1 — HARD LOCK
+    # MQP-CONTRACT: EXECUTION-HARD-STOP v1.0 — STATE GATE IS FIRST
+    #
+    # This block is the FIRST executable logic.  It runs before function
+    # resolution and before any "executing" log so that a blocked job has
+    # no path to execution under any code branch.
     #
     # Execution authority follows state ownership, not function identity.
-    #
-    # If the first argument resolves to a known stateful job record the
-    # state machine decides whether execution is allowed.  Jobs without a
-    # governing record (non-UUID first arg or unknown model) pass through
-    # unimpeded so that non-governed workers are never affected.
+    # Jobs whose first argument does not resolve to a governed record
+    # (non-UUID or unknown model) pass through unimpeded.
     # -----------------------------------------------------------------------
     if args:
         from backend.app.ingest_pipeline import IngestJobState
@@ -124,6 +118,15 @@ def execute_job(job_name: str, *args) -> object:
                     f"SKIPPED_INVALID_STATE: job_id={job_id} status={job.status}"
                 )
                 return None
+
+    # Lazy import avoids circular-import issues at module load time.
+    from backend.app.job_registry import JOB_REGISTRY
+
+    fn = JOB_REGISTRY.get(job_name)
+    print(f"WORKER:resolved fn={fn}")
+    if not fn:
+        print(f"WORKER:invalid_job_name={job_name}")
+        raise RuntimeError("INVALID_JOB_NAME")
 
     print(f"WORKER:executing {job_name}")
     try:
