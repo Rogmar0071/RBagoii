@@ -1,6 +1,144 @@
-# RecoB
+# RBoII
 
-> Convert 10-second Android screen-recording clips into a structured "blueprint" suitable for near-human-indistinguishable replay in a custom renderer — and optionally for compiling into automation events.
+> **RBoII is a deterministic context construction engine that converts user intent + uploaded systems into execution-ready, validated system intelligence.**
+
+It also ingests 10-second Android screen-recording clips and converts them into structured "blueprints" suitable for near-human-indistinguishable replay.
+
+---
+
+## System Purpose
+
+RBoII constructs a verifiable execution reality from user-aligned intent using structural truth.
+The system does **not** simply process files — it builds a validated, queryable Context Graph that maps user intent to deterministic execution paths.
+
+**System Law:**
+> *Execution only occurs after validated intent alignment on a fully constructed context graph.*
+
+---
+
+## Architecture
+
+RBoII operates through two sealed phases:
+
+### Phase 1: Structural Ingestion Engine
+
+Converts uploaded repositories, files, and text into a validated structural graph stored in the database.
+
+**Input types supported:**
+- Repository (zip archive or git clone URL)
+- Individual files (single or multiple)
+- User text (intent / description)
+
+**Structural output:**
+
+| Table | Purpose |
+|---|---|
+| `repo_files` | Canonical file identity (ONE ENTITY = ONE TABLE) |
+| `code_symbols` | Functions and classes extracted per file |
+| `file_dependencies` | Resolved import edges (NULL target NEVER stored) |
+| `symbol_call_edges` | Symbol-to-symbol call graph |
+| `entry_points` | Detected execution entry points (main / framework / server) |
+
+**Phase 1 Guarantees:**
+- No duplicate graph authority
+- No unresolved dependencies stored
+- No orphan edges
+- Entry points always detected when present
+- Full execution path reconstructable
+- All drops logged (no silent discard)
+
+### Phase 3: Context Construction Pipeline
+
+A single deterministic pipeline (`run_context_pipeline`) that converts Phase 1 structural output into an execution-ready, user-aligned context session.
+
+**Single entry point:**
+
+```python
+from backend.app.context_pipeline import run_context_pipeline
+
+session = run_context_pipeline(
+    job_id,
+    db_session,
+    user_intent="run the main entry point and process user data",
+    alignment_confirmed=True,
+)
+```
+
+---
+
+## Pipeline Flow
+
+```
+Input
+ → Stage 1   Normalize         load Phase 1 DB rows into NormalizedArtifactSet
+ → Stage 2   Structural Graph  build StructuralGraph from RepoFile/CodeSymbol/etc.
+ → Stage 3   Semantic Enrich   annotate file roles (entry|service|model|config|util)
+                                and symbol roles (orchestrator|transformer|leaf)
+ → Stage 4   Context Link      bind user intent keywords to graph nodes → ContextGraph
+ → Stage 5   Gap Detect        log all gaps (missing paths, unresolved deps) → ContextGaps
+ → Stage 6   USER ALIGN ──────── HARD STOP ─── raises AlignmentRequiredError if not confirmed
+ → Stage 7   Finalize          validate no critical gaps → FinalContext
+ → Stage 8   Activate          produce ActiveContextSession (enables simulation/validation)
+```
+
+**Locked flow — no deviation allowed.**
+
+---
+
+## User Flow
+
+1. **Upload** — POST repository, files, or text to `/v1/ingest/repo` (or `/file`, `/url`)
+2. **See system** — Call `run_context_pipeline(job_id, session, user_intent="...", alignment_confirmed=False)` to receive the alignment summary (raises `AlignmentRequiredError` with a `summary` dict)
+3. **Align intent** — Review the summary (system structure, intent mapping, missing components, execution paths) and confirm
+4. **Activate simulation** — Re-call with `alignment_confirmed=True` to receive an `ActiveContextSession` that enables execution simulation, path validation, and structural reasoning
+
+---
+
+## User Alignment Flow
+
+The alignment hard stop ensures the user has explicitly reviewed the system's understanding before any execution occurs.
+
+**First call** (alignment_confirmed=False):
+```python
+try:
+    run_context_pipeline(job_id, sess, user_intent="...", alignment_confirmed=False)
+except AlignmentRequiredError as e:
+    # e.summary contains:
+    #   system_structure  — files, entry points, file roles
+    #   intent_mapping    — matched files and symbols
+    #   missing_components — detected gaps
+    #   execution_paths   — reconstructed paths
+    show_to_user(e.summary)
+```
+
+**Second call** (after user confirms):
+```python
+active = run_context_pipeline(
+    job_id, sess,
+    user_intent="...",
+    alignment_confirmed=True,
+    alignment_refinement="optional clarification",
+)
+# active.session_id — live context session ready for use
+```
+
+---
+
+## Activation Behavior
+
+- `_stage_activate` executes **immediately** after `_stage_finalize`
+- Activation is **gated** on `AlignedIntentContract.valid == True`
+- A `RuntimeError` is raised if activation is attempted without a valid contract
+- No second pipeline, no alternate path, no bypass
+
+---
+
+## Core Guarantees
+
+- ✅ **No hallucinated structure** — all graph nodes come from Phase 1 DB tables only
+- ✅ **Deterministic execution paths** — same input always produces the same graph
+- ✅ **Explicit intent alignment** — user must confirm before activation
+- ✅ **Real-world validation readiness** — execution simulation available after alignment
 
 ---
 
