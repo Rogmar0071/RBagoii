@@ -22,7 +22,6 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.text.SimpleDateFormat
-import java.util.Collections
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
@@ -40,14 +39,13 @@ class ResourceActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityResourceBinding
     private lateinit var prefs: SharedPreferences
-    private val executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
+    private var executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
 
     private lateinit var repoAdapter: GithubRepoAdapter
     private lateinit var fileAdapter: ChatFileAdapter
 
     private val githubRepos = mutableListOf<GithubRepo>()
     private val chatFiles = mutableListOf<ChatFile>()
-    private val activePollingJobs = Collections.synchronizedSet(mutableSetOf<String>())
     // Track whether selections have been committed to the backend in this session.
     private var selectionsCommitted = false
 
@@ -127,23 +125,30 @@ class ResourceActivity : AppCompatActivity() {
             }
         }
 
-        // Load files for the current conversation
-        loadChatFiles()
-        loadActiveRepos()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        executor.shutdownNow()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        // Cancel any active polling to prevent memory leaks
         executor.shutdownNow()
     }
 
     override fun onResume() {
         super.onResume()
-        // Reload files when returning to this activity
+        ensureExecutor()
         if (conversationId != null) {
             loadChatFiles()
             loadActiveRepos()
+        }
+    }
+
+    private fun ensureExecutor() {
+        if (executor.isShutdown || executor.isTerminated) {
+            executor = Executors.newSingleThreadExecutor { Thread(it, "ResourceActivity-worker") }
         }
     }
 
@@ -477,7 +482,7 @@ class ResourceActivity : AppCompatActivity() {
                     }
                     
                     // STEP 5: CALL SITE RULE — Each job = one independent loop
-                    startPollingIfNeeded(jobId, apiKey, baseUrl) { json ->
+                    pollIngestJob(jobId, apiKey, baseUrl) { json ->
                         // STEP 3: RENDER = PURE BINDING
                         val status = json.optString("status")
                         val error = json.optString("error")
@@ -669,15 +674,8 @@ class ResourceActivity : AppCompatActivity() {
                         .build()
 
                     val response = BackendClient.executeWithRetry(request)
-                    if (response.code == 404) {
-                        runOnUiThread { Toast.makeText(this, "Job not found", Toast.LENGTH_SHORT).show() }
-                        response.close()
-                        activePollingJobs.remove(jobId)
-                        break
-                    }
                     if (!response.isSuccessful) {
                         response.close()
-                        runOnUiThread { Toast.makeText(this, "Sync error", Toast.LENGTH_SHORT).show() }
                         Thread.sleep(2000)
                         continue
                     }
@@ -694,7 +692,6 @@ class ResourceActivity : AppCompatActivity() {
                         val status = json.optString("status")
                         // Terminates here on terminal status
                         if (status == "success" || status == "failed") {
-                            activePollingJobs.remove(jobId)
                             break
                         }
                     }
@@ -702,22 +699,11 @@ class ResourceActivity : AppCompatActivity() {
                     Thread.sleep(2000)
 
                 } catch (_: Exception) {
-                    Log.w("ResourceActivity", "Polling sync error for job_id=$jobId")
-                    runOnUiThread { Toast.makeText(this, "Sync error", Toast.LENGTH_SHORT).show() }
+                    Log.w("ResourceActivity", "Polling fetch failed for job_id=$jobId; retrying")
                     Thread.sleep(2000)
                 }
             }
         }
-    }
-
-    private fun startPollingIfNeeded(
-        jobId: String,
-        apiKey: String,
-        baseUrl: String,
-        onRender: (JSONObject) -> Unit
-    ) {
-        if (!activePollingJobs.add(jobId)) return
-        pollIngestJob(jobId, apiKey, baseUrl, onRender)
     }
     
     /**
@@ -804,7 +790,7 @@ class ResourceActivity : AppCompatActivity() {
                 
                 val body = response.body?.string() ?: "[]"
                 val arr = JSONArray(body)
-                val jobMap = mutableMapOf<String, IngestJobResponse>()
+                val jobs = mutableListOf<IngestJobResponse>()
                 
                 // Parse IngestJob responses
                 for (i in 0 until arr.length()) {
@@ -825,16 +811,13 @@ class ResourceActivity : AppCompatActivity() {
                         created_at = obj.getString("created_at"),
                         updated_at = obj.getString("updated_at")
                     )
-                    // Map by repo_url (extract from source which is "url@branch")
-                    val repoUrl = job.source.substringBeforeLast("@")
-                    jobMap[repoUrl] = job
+                    jobs.add(job)
                 }
                 
                 runOnUiThread {
-                    val currentByUrl = githubRepos.associateBy { it.htmlUrl }
-                    val projectedRepos = jobMap.values.map { job ->
+                    val projectedRepos = jobs.map { job ->
                         val repoUrl = job.source.substringBeforeLast("@")
-                        val existing = currentByUrl[repoUrl]
+                        val existing = githubRepos.firstOrNull { it.htmlUrl == repoUrl }
                         if (existing != null) {
                             existing.copy(
                                 ingestionStatus = job.status,
@@ -872,9 +855,9 @@ class ResourceActivity : AppCompatActivity() {
                     // STEP 5: CALL SITE RULE — Each job = one independent loop
                     val apiKey = apiKey()
                     val baseUrl = baseUrl()
-                    for (job in jobMap.values) {
+                    for (job in jobs.distinctBy { it.job_id }) {
                         if (job.status == "queued" || job.status == "running") {
-                            startPollingIfNeeded(job.job_id, apiKey, baseUrl) { json ->
+                            pollIngestJob(job.job_id, apiKey, baseUrl) { json ->
                                 val status = json.optString("status")
                                 val source = json.optString("source", job.source)
                                 updateRepoStatus(source, status, 0, 0, 0, null, job.job_id)
