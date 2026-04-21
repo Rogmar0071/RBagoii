@@ -836,7 +836,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
 
     Worker MUST read from database ONLY. NO filesystem access.
     """
-    from backend.app.models import RepoChunk
+    from backend.app.graph_extractor import extract_graph, hash_content
+    from backend.app.models import FileEdge, FileNode, RepoChunk, SymbolNode
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=file", job.id)
@@ -877,6 +878,32 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         logger.info("INGEST_SUCCESS job_id=%s chunks=0", job.id)
         return 0, 0
 
+    # GRAPH-EXTRACTION-LAYER v1.0: extract structural metadata
+    graph = extract_graph(filename, data)
+    file_node = FileNode(
+        repo_id=job.id,
+        path=filename,
+        language=graph["language"],
+        size_bytes=len(data),
+        content_hash=hash_content(data),
+    )
+    session.add(file_node)
+    session.flush()
+
+    for name, kind, line in graph["symbols"]:
+        session.add(SymbolNode(
+            file_id=file_node.id,
+            name=name,
+            kind=kind,
+            start_line=line,
+            end_line=line,
+        ))
+
+    for imp in graph["imports"]:
+        session.add(FileEdge(
+            source_file_id=file_node.id,
+            target_path=imp,
+        ))
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
@@ -994,7 +1021,8 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     """
     import json
 
-    from backend.app.models import RepoChunk
+    from backend.app.graph_extractor import extract_graph, hash_content
+    from backend.app.models import FileEdge, FileNode, RepoChunk, SymbolNode
     from backend.app.repo_chunk_extractor import extract_structure
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
@@ -1030,6 +1058,34 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
 
         if not content or not content.strip():
             continue
+
+        # GRAPH-EXTRACTION-LAYER v1.0: extract structural metadata
+        content_bytes = content.encode("utf-8")
+        graph = extract_graph(file_path, content_bytes)
+        file_node = FileNode(
+            repo_id=job.id,
+            path=file_path,
+            language=graph["language"],
+            size_bytes=len(content_bytes),
+            content_hash=hash_content(content_bytes),
+        )
+        session.add(file_node)
+        session.flush()
+
+        for name, kind, line in graph["symbols"]:
+            session.add(SymbolNode(
+                file_id=file_node.id,
+                name=name,
+                kind=kind,
+                start_line=line,
+                end_line=line,
+            ))
+
+        for imp in graph["imports"]:
+            session.add(FileEdge(
+                source_file_id=file_node.id,
+                target_path=imp,
+            ))
 
         # Chunk the content
         chunks = split_with_overlap(content)

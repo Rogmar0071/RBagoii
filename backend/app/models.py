@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 import sqlalchemy as sa
-from sqlmodel import Column, Field, SQLModel
+from sqlmodel import Column, Field, SQLModel, UniqueConstraint
 
 
 def _utcnow() -> datetime:
@@ -710,3 +710,70 @@ class IngestJob(SQLModel, table=True):
         if "updated_at" not in data or data["updated_at"] is None:
             data["updated_at"] = _utcnow()
         super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# GRAPH-EXTRACTION-LAYER v1.0
+# file_nodes / symbol_nodes / file_edges
+# ---------------------------------------------------------------------------
+
+
+class FileNode(SQLModel, table=True):
+    """
+    MQP-CONTRACT: GRAPH-EXTRACTION-LAYER v1.0
+
+    One row per ingested file within a repo ingestion job.
+    Enables deterministic file lookup by path and structural graph reasoning.
+    """
+
+    __tablename__ = "file_nodes"
+    __table_args__ = (
+        UniqueConstraint("repo_id", "path", name="uq_repo_file_path"),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # repo_id maps to IngestJob.id for unified-pipeline jobs
+    repo_id: uuid.UUID = Field(sa_column=Column(sa.Uuid, nullable=False, index=True))
+    path: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    language: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+    size_bytes: int = Field(default=0)
+    content_hash: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+
+class SymbolNode(SQLModel, table=True):
+    """
+    MQP-CONTRACT: GRAPH-EXTRACTION-LAYER v1.0
+
+    A named symbol (function, class, variable) extracted from a FileNode.
+    Enables symbol-level reasoning without raw blob access.
+    """
+
+    __tablename__ = "symbol_nodes"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False, index=True)
+    )
+    name: str = Field(sa_column=Column(sa.Text, nullable=False))
+    # function | class | variable
+    kind: str = Field(sa_column=Column(sa.Text, nullable=False))
+    start_line: int
+    end_line: int
+
+
+class FileEdge(SQLModel, table=True):
+    """
+    MQP-CONTRACT: GRAPH-EXTRACTION-LAYER v1.0
+
+    A directed import/dependency edge from one file to a target path.
+    Enables dependency graph traversal and reachability queries.
+    """
+
+    __tablename__ = "file_edges"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    source_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("file_nodes.id"), nullable=False, index=True)
+    )
+    # raw import path as it appears in the source file
+    target_path: str = Field(sa_column=Column(sa.Text, nullable=False))
