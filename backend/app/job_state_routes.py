@@ -73,6 +73,8 @@ def list_conversation_jobs(
     kind: Optional[str] = Query(default=None),
     session=Depends(_db_session),
 ) -> list[JobStateResponse]:
+    # Legacy rows may have nullable timestamps; keep deterministic ordering by
+    # placing null created_at values after all timestamped jobs.
     stmt = (
         select(IngestJob)
         .where(IngestJob.conversation_id == conversation_id)

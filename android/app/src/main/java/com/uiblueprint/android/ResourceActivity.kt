@@ -663,7 +663,7 @@ class ResourceActivity : AppCompatActivity() {
             while (true) {
                 try {
                     val request = Request.Builder()
-                        .url("$baseUrl/v1/jobs/$jobId")
+                        .url("$baseUrl/jobs/$jobId")
                         .addHeader("Authorization", "Bearer $apiKey")
                         .get()
                         .build()
@@ -702,6 +702,7 @@ class ResourceActivity : AppCompatActivity() {
                     Thread.sleep(2000)
 
                 } catch (_: Exception) {
+                    Log.w("ResourceActivity", "Polling sync error for job_id=$jobId")
                     runOnUiThread { Toast.makeText(this, "Sync error", Toast.LENGTH_SHORT).show() }
                     Thread.sleep(2000)
                 }
@@ -794,7 +795,7 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = apiKey()
                 val baseUrl = baseUrl()
                 val request = Request.Builder()
-                    .url("$baseUrl/v1/chat/$convId/jobs?kind=repo")
+                    .url("$baseUrl/chat/$convId/jobs?kind=repo")
                     .addHeader("Authorization", "Bearer $apiKey")
                     .get()
                     .build()
