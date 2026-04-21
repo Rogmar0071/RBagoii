@@ -710,3 +710,161 @@ class IngestJob(SQLModel, table=True):
         if "updated_at" not in data or data["updated_at"] is None:
             data["updated_at"] = _utcnow()
         super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
+# REPO_GRAPH_RESOLUTION_V1 — Execution graph tables
+# ---------------------------------------------------------------------------
+
+
+class RepoFile(SQLModel, table=True):
+    """
+    REPO_GRAPH_RESOLUTION_V1.
+
+    Represents a single file ingested as part of a repo IngestJob.
+    Serves as the node entity for file-level dependency edges.
+    """
+
+    __tablename__ = "repo_files"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # Parent ingestion job (kind="repo")
+    ingest_job_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("ingest_jobs.id"), nullable=False, index=True)
+    )
+    # Relative path within the repository
+    file_path: str = Field(sa_column=Column(sa.Text, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+class CodeSymbol(SQLModel, table=True):
+    """
+    REPO_GRAPH_RESOLUTION_V1.
+
+    A named symbol (function, class, etc.) extracted from a RepoFile.
+    Serves as the node entity for symbol-level call edges.
+    """
+
+    __tablename__ = "code_symbols"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    # Symbol name (function name, class name, etc.)
+    name: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    # FUNCTION | CLASS | INTERFACE | ENUM | STRUCT | TRAIT | UNKNOWN
+    symbol_type: str = Field(sa_column=Column(sa.Text, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+class FileDependency(SQLModel, table=True):
+    """
+    REPO_GRAPH_RESOLUTION_V1.
+
+    A resolved import edge between two files in the same repo.
+    RULE: Only stored when target_file_id is resolved — no phantom edges.
+    """
+
+    __tablename__ = "file_dependencies"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    source_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    target_file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    # The raw import string as it appeared in the source file
+    import_path: str = Field(sa_column=Column(sa.Text, nullable=False))
+    # Always True — only resolved edges are persisted
+    is_resolved: bool = Field(default=True)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+class SymbolCallEdge(SQLModel, table=True):
+    """
+    REPO_GRAPH_RESOLUTION_V1.
+
+    A call edge from a source symbol to a called symbol name.
+    target_file_id is populated when the call target can be attributed
+    to a specific file (best-effort, not blocking).
+    """
+
+    __tablename__ = "symbol_call_edges"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    source_symbol_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("code_symbols.id"), nullable=False, index=True)
+    )
+    # Name of the called symbol (required)
+    target_symbol_name: str = Field(sa_column=Column(sa.Text, nullable=False, index=True))
+    # Resolved file where the target symbol lives (nullable — best-effort)
+    target_file_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=True, index=True),
+    )
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)
+
+
+class EntryPoint(SQLModel, table=True):
+    """
+    REPO_GRAPH_RESOLUTION_V1.
+
+    An entry point file detected in a repo ingestion.
+    entry_type: main | cli | server | test
+    """
+
+    __tablename__ = "entry_points"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    # The IngestJob (kind="repo") this entry point belongs to
+    ingest_job_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("ingest_jobs.id"), nullable=False, index=True)
+    )
+    file_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repo_files.id"), nullable=False, index=True)
+    )
+    # main | cli | server | test
+    entry_type: str = Field(sa_column=Column(sa.Text, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        super().__init__(**data)

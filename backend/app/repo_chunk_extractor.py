@@ -31,6 +31,8 @@ end_line      1-based last line of the chunk content
 
 from __future__ import annotations
 
+import os
+import posixpath
 import re
 from typing import Any
 
@@ -221,7 +223,282 @@ def _looks_like_data(lines: list[str]) -> bool:
 
 def _splitext(path: str) -> tuple[str, str]:
     """Return ``(root, ext)`` with ext lowercased."""
-    import os
-
     root, ext = os.path.splitext(path)
     return root, ext.lower()
+
+
+# ---------------------------------------------------------------------------
+# REPO_GRAPH_RESOLUTION_V1 — Import resolution, call extraction, entry points
+# ---------------------------------------------------------------------------
+
+# Patterns that preserve full import paths (not just top-level package names).
+# Used by extract_raw_imports() for dependency resolution.
+# ORDER MATTERS: more-specific patterns first to avoid early short-circuit.
+_FULL_IMPORT_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^from\s+([\w\.]+)\s+import"),                         # Python from-import
+    re.compile(r'^import\s+[{]?.*[}]?\s+from\s+["\']([^"\']+)["\']'), # JS/TS named (before bare!)
+    re.compile(r'^(?:const|let|var)\s+\w.*=\s*require\(["\']([^"\']+)["\']'),  # Node require
+    re.compile(r"^import\s+([\w\.]+)"),                                # Python bare / Java
+    re.compile(r'^require\s+["\']([^"\']+)["\']'),                     # Ruby require
+]
+
+# Function-call patterns for call-edge extraction
+_CALL_PATTERN = re.compile(r"\b([a-zA-Z_]\w*)\s*\(")
+_METHOD_CALL_PATTERN = re.compile(r"\.\s*([a-zA-Z_]\w*)\s*\(")
+
+# Python keywords and builtins to exclude from call lists
+_PYTHON_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "if", "else", "elif", "for", "while", "return", "import", "from",
+        "class", "def", "try", "except", "finally", "with", "as", "in",
+        "and", "or", "not", "is", "None", "True", "False", "pass", "break",
+        "continue", "raise", "yield", "async", "await", "lambda", "del",
+        "assert", "global", "nonlocal",
+        # Common builtins
+        "print", "len", "range", "type", "str", "int", "float", "list",
+        "dict", "set", "tuple", "bool", "open", "super", "object",
+        "isinstance", "issubclass", "hasattr", "getattr", "setattr",
+        "callable", "iter", "next", "enumerate", "zip", "map", "filter",
+        "sorted", "reversed", "max", "min", "sum", "abs", "round",
+        "repr", "format", "hex", "oct", "bin", "hash", "id",
+    }
+)
+
+# Entry-point filename patterns
+_ENTRY_FILENAME_PATTERNS: dict[str, str] = {
+    "main.py": "main",
+    "app.py": "main",
+    "index.ts": "main",
+    "index.js": "main",
+    "index.tsx": "main",
+}
+_ENTRY_PREFIX_PATTERNS: dict[str, str] = {
+    "server": "server",
+    "cli": "cli",
+    "test_": "test",
+    "tests_": "test",
+}
+# Symbol patterns to extract ALL symbols (not just the first one per chunk)
+_ALL_CLASS_PATTERNS = _CLASS_PATTERNS
+_ALL_FUNC_PATTERNS = _FUNC_PATTERNS
+
+
+def extract_raw_imports(content: str) -> list[str]:
+    """
+    Extract raw import paths from file content without normalisation.
+
+    Returns a list of unique import strings preserving their original form
+    (e.g. ``".utils"``, ``"./models"``, ``"os.path"``) for use with
+    :func:`resolve_import_path`.
+    """
+    imports: list[str] = []
+    seen: set[str] = set()
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        for pat in _FULL_IMPORT_PATTERNS:
+            m = pat.match(stripped)
+            if m:
+                raw = m.group(1)
+                if raw and raw not in seen:
+                    seen.add(raw)
+                    imports.append(raw)
+                break
+    return imports
+
+
+def resolve_import_path(
+    import_str: str,
+    source_path: str,
+    all_paths: set[str],
+) -> str | None:
+    """
+    Resolve *import_str* to an actual file path that exists in *all_paths*.
+
+    Handles:
+    - Python relative imports (``.utils``, ``..models``)
+    - JS/TS relative imports (``./utils``, ``../models``)
+    - Same-directory module resolution
+    - Extension inference (.py, .ts, .js, .tsx, .jsx, etc.)
+
+    Returns the resolved path string or ``None`` if unresolvable.
+    """
+    source_dir = posixpath.dirname(source_path)
+    _, source_ext = os.path.splitext(source_path)
+    source_ext = source_ext.lower()
+
+    # JS/TS-style relative: starts with "./" or "../"
+    if import_str.startswith("./") or import_str.startswith("../"):
+        base = posixpath.normpath(posixpath.join(source_dir, import_str))
+        return _first_matching_path(base, source_ext, all_paths)
+
+    # Python relative import: starts with one or more dots
+    if import_str.startswith("."):
+        dots = len(import_str) - len(import_str.lstrip("."))
+        module_part = import_str[dots:]
+
+        # Navigate up (dots - 1) directories from source_dir
+        base_dir = source_dir
+        for _ in range(dots - 1):
+            base_dir = posixpath.dirname(base_dir) if base_dir else base_dir
+
+        if module_part:
+            module_path = module_part.replace(".", "/")
+            full_base = posixpath.join(base_dir, module_path) if base_dir else module_path
+        else:
+            full_base = base_dir
+
+        return _first_matching_path(full_base, source_ext, all_paths)
+
+    # Absolute / package import — try same-directory resolution
+    # Convert dotted package path to directory path
+    module_path = import_str.replace(".", "/")
+    if source_dir:
+        candidate = posixpath.join(source_dir, module_path)
+        result = _first_matching_path(candidate, source_ext, all_paths)
+        if result:
+            return result
+
+    # Top-level resolution
+    return _first_matching_path(module_path, source_ext, all_paths)
+
+
+def _first_matching_path(
+    base: str, preferred_ext: str, all_paths: set[str]
+) -> str | None:
+    """
+    Try *base* with several file extensions and return the first match.
+
+    Also checks ``base/__init__.py`` and ``base/index.{ts,js}`` for
+    package/module imports.
+    """
+    # If base already has an extension and matches, return directly
+    root, ext = os.path.splitext(base)
+    if ext:
+        norm = posixpath.normpath(base)
+        return norm if norm in all_paths else None
+
+    candidate_exts = [".py", ".ts", ".js", ".tsx", ".jsx", ".go", ".rs",
+                      ".java", ".kt", ".rb", ".swift", ".cs", ".cpp", ".c"]
+
+    # Preferred extension first
+    ordered: list[str] = []
+    if preferred_ext in candidate_exts:
+        ordered.append(preferred_ext)
+    for e in candidate_exts:
+        if e not in ordered:
+            ordered.append(e)
+
+    norm_base = posixpath.normpath(base)
+    for e in ordered:
+        candidate = norm_base + e
+        if candidate in all_paths:
+            return candidate
+
+    # Package/module index files
+    for index in ("/__init__.py", "/index.ts", "/index.js"):
+        candidate = posixpath.normpath(norm_base + index)
+        if candidate in all_paths:
+            return candidate
+
+    return None
+
+
+def extract_all_symbols(content: str, path: str) -> list[tuple[str, str]]:
+    """
+    Extract all named symbols from *content*.
+
+    Returns a list of ``(name, symbol_type)`` tuples where *symbol_type* is
+    one of ``"CLASS"`` or ``"FUNCTION"``.  Duplicates within the same file
+    are deduplicated (first occurrence wins).
+    """
+    seen: set[str] = set()
+    results: list[tuple[str, str]] = []
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "//", "/*", "*", "<!--", "--")):
+            continue
+
+        # CLASS patterns have higher precedence
+        for pat in _ALL_CLASS_PATTERNS:
+            m = pat.search(stripped)
+            if m:
+                name = m.group(1)
+                if name and name not in seen:
+                    seen.add(name)
+                    results.append((name, "CLASS"))
+                break
+        else:
+            for pat in _ALL_FUNC_PATTERNS:
+                m = pat.search(stripped)
+                if m:
+                    name = m.group(1)
+                    if name and name not in seen:
+                        seen.add(name)
+                        results.append((name, "FUNCTION"))
+                    break
+
+    return results
+
+
+def extract_call_names(content: str) -> list[str]:
+    """
+    Extract unique function/method call names from *content* via regex.
+
+    Patterns matched:
+    - ``function_name(``  — bare function call
+    - ``object.method(``  — method call (captures ``method``)
+
+    Common keywords and builtins are filtered out.
+    Returns a sorted, deduplicated list.
+    """
+    calls: set[str] = set()
+    for line in content.splitlines():
+        # Method calls (object.method(…)) — captured by _METHOD_CALL_PATTERN
+        for m in _METHOD_CALL_PATTERN.finditer(line):
+            name = m.group(1)
+            if name and name not in _PYTHON_KEYWORDS:
+                calls.add(name)
+        # Bare calls (function_name(…))
+        for m in _CALL_PATTERN.finditer(line):
+            name = m.group(1)
+            if name and name not in _PYTHON_KEYWORDS:
+                calls.add(name)
+    return sorted(calls)
+
+
+def detect_entry_type(path: str, content: str) -> str | None:
+    """
+    Detect whether *path* is a repo entry point and return its type.
+
+    Returns one of ``"main"``, ``"cli"``, ``"server"``, ``"test"``,
+    or ``None`` if the file is not an entry point.
+
+    Detection rules
+    ---------------
+    1. Filename match (main.py, app.py, index.ts, index.js, …)
+    2. Basename prefix match (server.*, cli.*, test_*, tests_*)
+    3. Python ``if __name__ == "__main__"`` guard
+    """
+    basename = posixpath.basename(path).lower()
+
+    # Exact filename match
+    if basename in _ENTRY_FILENAME_PATTERNS:
+        return _ENTRY_FILENAME_PATTERNS[basename]
+
+    # Prefix match
+    for prefix, etype in _ENTRY_PREFIX_PATTERNS.items():
+        if basename.startswith(prefix):
+            return etype
+
+    # Python __main__ guard
+    if '__name__' in content and '__main__' in content:
+        main_guard = re.search(
+            r'if\s+__name__\s*==\s*["\']__main__["\']', content
+        )
+        if main_guard:
+            return "main"
+
+    return None

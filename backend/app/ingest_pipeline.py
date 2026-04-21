@@ -994,8 +994,22 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     """
     import json
 
-    from backend.app.models import RepoChunk
-    from backend.app.repo_chunk_extractor import extract_structure
+    from backend.app.models import (
+        CodeSymbol,
+        EntryPoint,
+        FileDependency,
+        RepoChunk,
+        RepoFile,
+        SymbolCallEdge,
+    )
+    from backend.app.repo_chunk_extractor import (
+        detect_entry_type,
+        extract_all_symbols,
+        extract_call_names,
+        extract_raw_imports,
+        extract_structure,
+        resolve_import_path,
+    )
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
     print(f"INGEST START: {job.id}")
@@ -1023,7 +1037,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     file_count = 0
     chunk_count = 0
 
-    # Process each file from the manifest
+    # Process each file from the manifest — CHUNKING PHASE
     for file_entry in files:
         file_path = file_entry["path"]
         content = file_entry["content"]
@@ -1058,9 +1072,217 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     # Commit all chunks to database
     session.commit()
 
+    # -------------------------------------------------------------------
+    # REPO_GRAPH_RESOLUTION_V1 — Graph phase (runs after chunking)
+    #
+    # ORDER:
+    #   1. Create RepoFile rows (one per non-empty file)
+    #   2. Create CodeSymbol rows (all symbols per file)
+    #   3. Resolve imports → FileDependency rows (resolved only)
+    #   4. Extract calls → SymbolCallEdge rows (best-effort)
+    #   5. Detect entry points → EntryPoint rows
+    #
+    # RULES:
+    #   - No filesystem / network access
+    #   - No blocking on ambiguity
+    #   - Only resolved file deps stored
+    # -------------------------------------------------------------------
+    try:
+        _build_execution_graph(
+            session=session,
+            job=job,
+            files=files,
+            RepoFile=RepoFile,
+            CodeSymbol=CodeSymbol,
+            FileDependency=FileDependency,
+            SymbolCallEdge=SymbolCallEdge,
+            EntryPoint=EntryPoint,
+            detect_entry_type=detect_entry_type,
+            extract_all_symbols=extract_all_symbols,
+            extract_call_names=extract_call_names,
+            extract_raw_imports=extract_raw_imports,
+            resolve_import_path=resolve_import_path,
+        )
+    except Exception as exc:
+        # Graph phase failure must NOT abort chunk ingestion — log and continue
+        logger.error(
+            "GRAPH_PHASE_ERROR: job=%s error=%s (chunks already committed)",
+            job.id, exc,
+        )
+
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
     print(f"INGEST DONE: {job.id} files={file_count} chunks={chunk_count}")
     return file_count, chunk_count
+
+
+def _build_execution_graph(
+    session: Any,
+    job: Any,
+    files: list[dict[str, Any]],
+    *,
+    RepoFile: Any,
+    CodeSymbol: Any,
+    FileDependency: Any,
+    SymbolCallEdge: Any,
+    EntryPoint: Any,
+    detect_entry_type: Any,
+    extract_all_symbols: Any,
+    extract_call_names: Any,
+    extract_raw_imports: Any,
+    resolve_import_path: Any,
+) -> None:
+    """
+    REPO_GRAPH_RESOLUTION_V1 — build execution graph after chunking.
+
+    Creates RepoFile, CodeSymbol, FileDependency, SymbolCallEdge, and
+    EntryPoint rows for all non-empty files in the repo manifest.
+
+    Called exclusively from ``_ingest_repo`` after the chunking phase.
+    Errors are caught by the caller — this function may raise.
+    """
+    # Filter to files with actual content
+    active_files = [
+        fe for fe in files if fe.get("content") and fe["content"].strip()
+    ]
+    if not active_files:
+        return
+
+    all_paths: set[str] = {fe["path"] for fe in active_files}
+
+    # ------------------------------------------------------------------
+    # Phase 1: Create RepoFile rows
+    # ------------------------------------------------------------------
+    file_id_map: dict[str, Any] = {}  # path → RepoFile.id
+    for file_entry in active_files:
+        repo_file = RepoFile(ingest_job_id=job.id, file_path=file_entry["path"])
+        session.add(repo_file)
+        session.flush()
+        file_id_map[file_entry["path"]] = repo_file.id
+
+    # ------------------------------------------------------------------
+    # Phase 2: Create CodeSymbol rows
+    # ------------------------------------------------------------------
+    # Maps (file_path, symbol_name) → CodeSymbol.id for call resolution
+    symbol_id_map: dict[tuple[str, str], Any] = {}
+    # Maps symbol_name → set of file_paths that define it (for cross-file resolution)
+    symbol_to_files: dict[str, list[str]] = {}
+
+    for file_entry in active_files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
+        file_id = file_id_map[file_path]
+
+        for sym_name, sym_type in extract_all_symbols(content, file_path):
+            code_sym = CodeSymbol(
+                file_id=file_id,
+                name=sym_name,
+                symbol_type=sym_type,
+            )
+            session.add(code_sym)
+            session.flush()
+            symbol_id_map[(file_path, sym_name)] = code_sym.id
+            symbol_to_files.setdefault(sym_name, []).append(file_path)
+
+    # ------------------------------------------------------------------
+    # Phase 3: Resolve imports → FileDependency rows
+    # ------------------------------------------------------------------
+    for file_entry in active_files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
+        source_file_id = file_id_map[file_path]
+
+        raw_imports = extract_raw_imports(content)
+        seen_targets: set[Any] = set()
+
+        for imp in raw_imports:
+            resolved = resolve_import_path(imp, file_path, all_paths)
+            if resolved is None or resolved not in file_id_map:
+                # Unresolved imports are NOT stored (contract rule)
+                continue
+            target_file_id = file_id_map[resolved]
+            if target_file_id == source_file_id:
+                continue
+            if target_file_id in seen_targets:
+                continue
+            seen_targets.add(target_file_id)
+            session.add(
+                FileDependency(
+                    source_file_id=source_file_id,
+                    target_file_id=target_file_id,
+                    import_path=imp,
+                    is_resolved=True,
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 4: Extract calls → SymbolCallEdge rows
+    # ------------------------------------------------------------------
+    for file_entry in active_files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
+
+        # Only create call edges for files that have at least one symbol
+        file_symbols = [
+            (sym_name, sym_id)
+            for (fp, sym_name), sym_id in symbol_id_map.items()
+            if fp == file_path
+        ]
+        if not file_symbols:
+            continue
+
+        # Use the first symbol in the file as the representative source
+        source_sym_name, source_sym_id = file_symbols[0]
+
+        called_names = extract_call_names(content)
+        seen_calls: set[str] = set()
+
+        for called_name in called_names:
+            # Skip self-references
+            if called_name == source_sym_name:
+                continue
+            if called_name in seen_calls:
+                continue
+            seen_calls.add(called_name)
+
+            # Best-effort: resolve the target file (first match wins)
+            target_file_id: Any = None
+            if called_name in symbol_to_files:
+                for defining_path in symbol_to_files[called_name]:
+                    if defining_path != file_path:
+                        target_file_id = file_id_map.get(defining_path)
+                        break
+
+            session.add(
+                SymbolCallEdge(
+                    source_symbol_id=source_sym_id,
+                    target_symbol_name=called_name,
+                    target_file_id=target_file_id,
+                )
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 5: Detect entry points
+    # ------------------------------------------------------------------
+    for file_entry in active_files:
+        file_path = file_entry["path"]
+        content = file_entry["content"]
+        file_id = file_id_map[file_path]
+
+        entry_type = detect_entry_type(file_path, content)
+        if entry_type:
+            session.add(
+                EntryPoint(
+                    ingest_job_id=job.id,
+                    file_id=file_id,
+                    entry_type=entry_type,
+                )
+            )
+
+    session.commit()
+    logger.info(
+        "GRAPH_PHASE_COMPLETE: job=%s files=%d",
+        job.id, len(active_files),
+    )
 
 
 
