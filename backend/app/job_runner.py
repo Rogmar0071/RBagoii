@@ -12,35 +12,49 @@ function at execution time via ``JOB_REGISTRY``, so no ``AttributeError``
 or ``DeserializationError`` can occur due to renamed or moved functions.
 
 CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
-CONTRACT: MQP-CONTRACT:WORKER-EXECUTION-GATE v1.0
+CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1
 """
 
 from __future__ import annotations
 
 
-# ---------------------------------------------------------------------------
-# Ingest-job names that carry an IngestJob record identified by their first
-# argument (job_id).  Terminal-state validation is enforced for these jobs
-# before the registered function is ever called.
-# ---------------------------------------------------------------------------
-_INGEST_JOB_NAMES: frozenset[str] = frozenset({"process_ingest_job"})
+def try_load_job(job_id: str):
+    """Attempt to resolve a stateful job record for *job_id*.
 
+    Tries each known job model in order.  Returns the first matching
+    record, or ``None`` when *job_id* does not correspond to any
+    governed job (non-UUID strings are silently ignored).
 
-def _load_ingest_job(job_id: str):
-    """Load an IngestJob from the database.  Returns None on failure."""
+    Extending to new job types: add a lookup block below following the
+    same pattern — no other changes are required.
+
+    CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1 §4
+    """
+    import uuid as _uuid
+
+    # Validate that job_id is a UUID before hitting the database.
     try:
-        import uuid as _uuid
+        uid = _uuid.UUID(str(job_id))
+    except (ValueError, AttributeError):
+        return None
 
+    # --- IngestJob -----------------------------------------------------------
+    try:
         from sqlmodel import Session
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
 
         with Session(get_engine()) as session:
-            return session.get(IngestJob, _uuid.UUID(job_id))
+            record = session.get(IngestJob, uid)
+            if record is not None:
+                return record
     except Exception as exc:
-        print(f"WORKER:load_ingest_job_error job_id={job_id} err={repr(exc)}")
-        return None
+        print(f"WORKER:try_load_job:ingest_error job_id={job_id} err={repr(exc)}")
+
+    # Future job model lookups go here, following the same pattern.
+
+    return None
 
 
 def execute_job(job_name: str, *args) -> object:
@@ -65,7 +79,7 @@ def execute_job(job_name: str, *args) -> object:
         If *job_name* is not registered.
 
     CONTRACT: MQP-CONTRACT:RQ_EXECUTION_SPINE_LOCK_V4 §5
-    CONTRACT: MQP-CONTRACT:WORKER-EXECUTION-GATE v1.0
+    CONTRACT: MQP-CONTRACT:STATE-DRIVEN-EXECUTION-GATE v1.1
     """
     print(f"WORKER:execute_job:start job_name={job_name} args={args}")
     # Lazy import avoids circular-import issues at module load time.
@@ -78,31 +92,29 @@ def execute_job(job_name: str, *args) -> object:
         raise RuntimeError("INVALID_JOB_NAME")
 
     # -----------------------------------------------------------------------
-    # MQP-CONTRACT: WORKER-EXECUTION-GATE v1.0 — HARD LOCK
+    # MQP-CONTRACT: STATE-DRIVEN-EXECUTION-GATE v1.1 — HARD LOCK
     #
-    # For ingest jobs the first argument is always the job_id.  Load the
-    # IngestJob record and refuse execution if the job is already in a
-    # terminal state (FAILED or SUCCESS).  The state machine — not the
-    # worker — decides whether execution is allowed.
+    # Execution authority follows state ownership, not function identity.
+    #
+    # If the first argument resolves to a known stateful job record the
+    # state machine decides whether execution is allowed.  Jobs without a
+    # governing record (non-UUID first arg or unknown model) pass through
+    # unimpeded so that non-governed workers are never affected.
     # -----------------------------------------------------------------------
-    if job_name in _INGEST_JOB_NAMES and args:
+    if args:
         from backend.app.ingest_pipeline import IngestJobState
 
         job_id = args[0]
-        job = _load_ingest_job(job_id)
+        job = try_load_job(job_id)
         if job is not None:
             if job.status in (IngestJobState.FAILED, IngestJobState.SUCCESS):
                 print(
-                    f"SKIPPED_TERMINAL: job_id={job_id} "
-                    f"status={job.status} "
-                    f"reason=job_already_in_terminal_state"
+                    f"SKIPPED_TERMINAL: job_id={job_id} status={job.status}"
                 )
                 return None
             if job.status != IngestJobState.QUEUED:
                 print(
-                    f"SKIPPED_TERMINAL: job_id={job_id} "
-                    f"status={job.status} "
-                    f"reason=job_not_in_queued_state"
+                    f"SKIPPED_INVALID_STATE: job_id={job_id} status={job.status}"
                 )
                 return None
 
