@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 
 import httpx
@@ -26,8 +27,8 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile, ConversationRepo, Repo, RepoChunk
-from backend.app.repo_retrieval import _split_into_chunks
+from backend.app.models import ChatFile, ConversationRepo, Repo, RepoChunk, RepoIndexRegistry
+from backend.app.repo_retrieval import _extract_keywords, _score_chunk, _split_into_chunks
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -108,6 +109,43 @@ class GithubRepoListItem(BaseModel):
     language: Optional[str]
     stargazers_count: int
     updated_at: str
+
+
+class RepoStructureFileItem(BaseModel):
+    path: str
+    chunk_count: int
+    size_bytes: int
+
+
+class RepoStructureResponse(BaseModel):
+    repo_id: str
+    total_files: int
+    total_chunks: int
+    indexed: bool
+    files: list[RepoStructureFileItem]
+    created_at: str
+    updated_at: str
+    last_retrieved_count: int = 0
+
+
+class RepoRetrieveRequest(BaseModel):
+    query: str
+    top_k: int = 12
+
+
+class RepoRetrievedChunk(BaseModel):
+    chunk_id: str
+    file_path: str
+    content: str
+    score: float
+
+
+class RepoRetrieveResponse(BaseModel):
+    repo_id: str
+    query: str
+    retrieved_chunks: list[RepoRetrievedChunk]
+    total_chunks_in_repo: int
+    retrieved_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +254,165 @@ async def list_user_repos(
     except httpx.RequestError as e:
         logger.error(f"GitHub API request failed: {e}")
         raise HTTPException(status_code=503, detail="Failed to connect to GitHub API")
+
+
+@router.get(
+    "/repos/{repo_id}/structure",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+    response_model=RepoStructureResponse,
+)
+def get_repo_structure(
+    repo_id: str,
+    session: Session = Depends(get_session),
+) -> RepoStructureResponse:
+    """Deterministic visibility surface for indexed repository structure."""
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    repo = session.get(Repo, repo_uuid)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    chunks = session.exec(
+        select(RepoChunk).where(RepoChunk.repo_id == repo_uuid).order_by(
+            RepoChunk.file_path.asc(),
+            RepoChunk.chunk_index.asc(),
+            RepoChunk.id.asc(),
+        )
+    ).all()
+
+    per_file: dict[str, RepoStructureFileItem] = {}
+    for chunk in chunks:
+        item = per_file.get(chunk.file_path)
+        if item is None:
+            item = RepoStructureFileItem(path=chunk.file_path, chunk_count=0, size_bytes=0)
+            per_file[chunk.file_path] = item
+        item.chunk_count += 1
+        item.size_bytes += len((chunk.content or "").encode("utf-8"))
+
+    registry = session.get(RepoIndexRegistry, repo_uuid)
+    total_files = len(per_file)
+    total_chunks = len(chunks)
+    indexed = bool(registry.indexed) if registry else (repo.ingestion_status == "success")
+    created_at = (registry.created_at if registry else repo.created_at) or datetime.now(
+        timezone.utc
+    )
+    updated_at = (registry.updated_at if registry else repo.updated_at) or datetime.now(
+        timezone.utc
+    )
+    last_retrieved_count = registry.last_retrieved_count if registry else 0
+
+    return RepoStructureResponse(
+        repo_id=str(repo_uuid),
+        total_files=total_files,
+        total_chunks=total_chunks,
+        indexed=indexed,
+        files=sorted(per_file.values(), key=lambda x: x.path),
+        created_at=created_at.isoformat(),
+        updated_at=updated_at.isoformat(),
+        last_retrieved_count=last_retrieved_count,
+    )
+
+
+@router.post(
+    "/repos/{repo_id}/retrieve",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+    response_model=RepoRetrieveResponse,
+)
+def retrieve_repo_chunks(
+    repo_id: str,
+    request: RepoRetrieveRequest,
+    session: Session = Depends(get_session),
+) -> RepoRetrieveResponse:
+    """Deterministic repo-scoped retrieval with strict no-cross-repo guarantees."""
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    if request.top_k < 1 or request.top_k > 50:
+        raise HTTPException(status_code=400, detail="top_k must be between 1 and 50")
+
+    repo = session.get(Repo, repo_uuid)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    all_chunks = session.exec(
+        select(RepoChunk).where(RepoChunk.repo_id == repo_uuid).order_by(
+            RepoChunk.file_path.asc(),
+            RepoChunk.chunk_index.asc(),
+            RepoChunk.id.asc(),
+        )
+    ).all()
+    total_chunks_in_repo = len(all_chunks)
+
+    selected: list[tuple[int, RepoChunk]] = []
+    if total_chunks_in_repo > 0:
+        try:
+            keywords = _extract_keywords(request.query)
+            lower_query = request.query.lower()
+            if keywords:
+                selected = [
+                    (_score_chunk(chunk, keywords, lower_query), chunk)
+                    for chunk in all_chunks
+                ]
+                if not any(score > 0 for score, _ in selected):
+                    selected = [(0, chunk) for chunk in all_chunks]
+            else:
+                selected = [(0, chunk) for chunk in all_chunks]
+
+            selected.sort(
+                key=lambda x: (
+                    -x[0],
+                    x[1].file_path,
+                    x[1].chunk_index,
+                    str(x[1].id),
+                )
+            )
+            selected = selected[: request.top_k]
+        except Exception as exc:
+            logger.error("Repo retrieval failed for repo_id=%s: %s", repo_id, exc)
+            raise HTTPException(status_code=500, detail="RETRIEVAL_FAILURE")
+
+    if total_chunks_in_repo > 0 and not selected:
+        raise HTTPException(status_code=500, detail="RETRIEVAL_FAILURE")
+
+    response_chunks = [
+        RepoRetrievedChunk(
+            chunk_id=str(chunk.id),
+            file_path=chunk.file_path,
+            content=chunk.content,
+            score=float(score),
+        )
+        for score, chunk in selected
+    ]
+
+    registry = session.get(RepoIndexRegistry, repo_uuid)
+    if registry is None:
+        registry = RepoIndexRegistry(
+            repo_id=repo_uuid,
+            total_files=repo.total_files,
+            total_chunks=repo.total_chunks,
+            indexed=repo.ingestion_status == "success",
+            last_indexed_at=repo.updated_at,
+            status=repo.ingestion_status if repo.ingestion_status else "created",
+        )
+    registry.last_retrieved_count = len(response_chunks)
+    registry.updated_at = datetime.now(timezone.utc)
+    session.add(registry)
+    session.commit()
+
+    return RepoRetrieveResponse(
+        repo_id=str(repo_uuid),
+        query=request.query,
+        retrieved_chunks=response_chunks,
+        total_chunks_in_repo=total_chunks_in_repo,
+        retrieved_count=len(response_chunks),
+    )
 
 
 _ALLOWED_EXTENSIONS = {".py", ".kt", ".java", ".ts", ".js", ".json", ".md"}

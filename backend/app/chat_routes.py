@@ -1172,6 +1172,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # Timeout safety: running → failed after threshold (§8).
                     # -------------------------------------------------------
                     repo_chunks = []
+                    no_index_data = False
+                    has_explicit_repo_context = bool(context.repos)
                     if context.repos and db is not None:
                         active_repo_ids: list[uuid.UUID] = []
                         for rid_str in context.repos:
@@ -1181,6 +1183,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 pass
 
                         print("CTX_REPOS:", active_repo_ids)
+
+                        if not active_repo_ids:
+                            no_index_data = True
 
                         if active_repo_ids:
                             _RUNNING_TIMEOUT = timedelta(minutes=15)
@@ -1205,6 +1210,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                             db.refresh(repo_obj)
                                     loaded_repos.append(repo_obj)
 
+                            if not loaded_repos:
+                                no_index_data = True
+
                             if loaded_repos:
                                 # Phase 6 — REPO STATUS block
                                 status_block = "\n\nREPO STATUS:\n"
@@ -1223,46 +1231,50 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 for repo_obj in loaded_repos:
                                     print("REPO_STATUS:", repo_obj.id, repo_obj.ingestion_status)
                                     if repo_obj.ingestion_status != "success":
-                                        raise HTTPException(
-                                            status_code=409,
-                                            detail=(
-                                                f"REPO_NOT_READY: {repo_obj.id}"
-                                                f" status={repo_obj.ingestion_status}"
-                                            ),
-                                        )
+                                        no_index_data = True
+                                        break
                                     if repo_obj.total_chunks == 0:
-                                        raise HTTPException(
-                                            status_code=409,
-                                            detail=(
-                                                f"REPO_CONTEXT_EMPTY: {repo_obj.id}"
-                                                " total_chunks=0"
-                                            ),
-                                        )
+                                        no_index_data = True
+                                        break
 
-                                repo_chunks = retrieve_relevant_chunks(
-                                    user_query=message,
-                                    db=db,
-                                    repo_ids=[r.id for r in loaded_repos],
-                                )
+                                if not no_index_data:
+                                    repo_chunks = retrieve_relevant_chunks(
+                                        user_query=message,
+                                        db=db,
+                                        repo_ids=[r.id for r in loaded_repos],
+                                    )
 
                                 print("REPO_CHUNKS:", len(repo_chunks))
 
                                 if not repo_chunks:
-                                    raise HTTPException(
-                                        status_code=409,
-                                        detail=(
-                                            f"REPO_CONTEXT_EMPTY: repos={context.repos}"
-                                            " but no chunks found"
-                                        ),
-                                    )
+                                    no_index_data = True
 
-                                repo_block = "\n\n---\nREPO CONTEXT:\n"
-                                for chunk in repo_chunks:
-                                    repo_block += (
-                                        f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
-                                    )
-                                repo_block += "---\n"
-                                base_system_prompt += repo_block
+                                if not no_index_data:
+                                    repo_block = "\n\n---\nREPO CONTEXT:\n"
+                                    for chunk in repo_chunks:
+                                        repo_block += (
+                                            f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                        )
+                                    repo_block += "---\n"
+                                    base_system_prompt += repo_block
+
+                    if has_explicit_repo_context and no_index_data:
+                        reply = "NO_INDEX_DATA"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
+                            conversation_id=active_conversation_id,
+                        )
+                        return _json_response(
+                            ChatPostResponse(
+                                reply=reply,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                            )
+                        )
 
                     # -------------------------------------------------------
                     # INGEST_JOB_CONTEXT_INJECTION_V1:
@@ -1272,7 +1284,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # ingested files, URLs, and repositories.
                     # Non-blocking: silently skipped when no chunks are found.
                     # -------------------------------------------------------
-                    if db is not None and active_conversation_id:
+                    if db is not None and active_conversation_id and not has_explicit_repo_context:
                         try:
                             # Keyword-based scoring: extracts non-stopword tokens from
                             # user_query and scores stored RepoChunk rows by keyword

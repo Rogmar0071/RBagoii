@@ -178,7 +178,7 @@ class ResourceActivity : AppCompatActivity() {
     }
 
     // Restore saved selections onto the freshly loaded repo list.
-    private fun restoreSelections(repos: List<GithubRepo>): List<GithubRepo> {
+    private fun restoreRepoSelections(repos: List<GithubRepo>): List<GithubRepo> {
         val savedUrls = selectedRepoUrls()
         if (savedUrls.isEmpty()) return repos
         return repos.map { repo ->
@@ -287,7 +287,7 @@ class ResourceActivity : AppCompatActivity() {
                     }
 
                     runOnUiThread {
-                        val projectedRepos = restoreSelections(repos)
+                        val projectedRepos = restoreRepoSelections(repos)
                         repoAdapter.submitList(projectedRepos)
                         binding.rvGithubRepos.visibility = if (repos.isEmpty()) View.GONE else View.VISIBLE
                         binding.tvNoRepos.visibility = if (repos.isEmpty()) View.VISIBLE else View.GONE
@@ -680,9 +680,11 @@ class ResourceActivity : AppCompatActivity() {
     }
 
     /**
-     * Load ingestion jobs for this conversation and overlay their status.
-     * Called after applySelections or on resume.
-     * SOURCE OF TRUTH: GET /v1/ingest/jobs?conversation_id={cid}
+     * Load active repos for this conversation from backend truth surfaces.
+     * Called after applySelections and on screen entry/resume.
+     * SOURCE OF TRUTH:
+     * - GET /api/chat/{conversation_id}/repos
+     * - GET /repos/{repo_id}/structure (debug visibility surface)
      */
     private fun loadActiveRepos() {
         val convId = conversationId ?: return
@@ -691,68 +693,77 @@ class ResourceActivity : AppCompatActivity() {
                 val apiKey = apiKey()
                 val baseUrl = baseUrl()
                 val request = Request.Builder()
-                    .url("$baseUrl/chat/$convId/jobs?kind=repo")
+                    .url("$baseUrl/api/chat/$convId/repos")
                     .addHeader("Authorization", "Bearer $apiKey")
                     .get()
                     .build()
                 val response = BackendClient.executeWithRetry(request)
                 if (!response.isSuccessful) return@execute
-                
+
                 val body = response.body?.string() ?: "[]"
                 val arr = JSONArray(body)
-                val jobs = mutableListOf<IngestJobResponse>()
-                
-                // Parse IngestJob responses
+                val repos = mutableListOf<GithubRepo>()
+
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
-                    val job = IngestJobResponse(
-                        job_id = obj.getString("job_id"),
-                        kind = obj.getString("kind"),
-                        source = obj.getString("source"),
-                        status = obj.getString("status"),
-                        // Deterministic state layer endpoint only returns contract
-                        // fields; progress/count/error are intentionally ignored.
-                        progress = 0,
-                        file_count = 0,
-                        chunk_count = 0,
-                        error = null,
-                        conversation_id = if (obj.isNull("conversation_id")) null else obj.getString("conversation_id"),
-                        workspace_id = if (obj.isNull("workspace_id")) null else obj.getString("workspace_id"),
-                        created_at = obj.getString("created_at"),
-                        updated_at = obj.getString("updated_at")
-                    )
-                    jobs.add(job)
-                }
-                
-                runOnUiThread {
-                    val projectedRepos = jobs.map { job ->
-                        val repoUrl = job.source.substringBeforeLast("@")
-                        val name = repoUrl.substringAfterLast("/")
+                    val repoId = obj.getString("id")
+                    val fallbackFiles = obj.optInt("total_files", 0)
+                    val fallbackChunks = obj.optInt("chunk_count", 0)
+                    val fallbackIndexed = obj.optString("status") == "success"
+                    var files = fallbackFiles
+                    var chunks = fallbackChunks
+                    var indexed = fallbackIndexed
+                    var lastRetrieved = 0
+
+                    try {
+                        val structureReq = Request.Builder()
+                            .url("$baseUrl/repos/$repoId/structure")
+                            .addHeader("Authorization", "Bearer $apiKey")
+                            .get()
+                            .build()
+                        val structureResp = BackendClient.executeWithRetry(structureReq)
+                        if (structureResp.isSuccessful) {
+                            val structureJson = JSONObject(structureResp.body?.string() ?: "{}")
+                            files = structureJson.optInt("total_files", files)
+                            chunks = structureJson.optInt("total_chunks", chunks)
+                            indexed = structureJson.optBoolean("indexed", indexed)
+                            lastRetrieved = structureJson.optInt("last_retrieved_count", 0)
+                        }
+                    } catch (e: Exception) {
+                        Log.w("ResourceActivity", "Structure fetch failed for repo_id=$repoId: ${e.message}")
+                    }
+
+                    val repoUrl = obj.optString("repo_url")
+                    val owner = obj.optString("owner")
+                    val name = obj.optString("name")
+                    repos.add(
                         GithubRepo(
-                            name = name,
-                            fullName = repoUrl.removePrefix("https://github.com/"),
+                            name = name.ifEmpty { repoUrl.substringAfterLast("/") },
+                            fullName = if (owner.isNotEmpty() && name.isNotEmpty()) "$owner/$name" else repoUrl.removePrefix("https://github.com/"),
                             description = "",
                             htmlUrl = repoUrl,
-                            defaultBranch = "main",
+                            defaultBranch = obj.optString("branch", "main"),
                             language = "",
                             stars = 0,
                             isPrivate = false,
                             selected = false,
-                            ingestionStatus = job.status,
+                            ingestionStatus = obj.optString("status"),
                             progress = 0,
-                            totalFiles = 0,
-                            totalChunks = 0,
+                            totalFiles = files,
+                            totalChunks = chunks,
+                            indexed = indexed,
+                            lastRetrievedCount = lastRetrieved,
                             errorMessage = null,
-                            ingestJobId = job.job_id
+                            ingestJobId = null
                         )
-                    }
+                    )
+                }
+
+                runOnUiThread {
+                    val projectedRepos = restoreRepoSelections(repos)
                     repoAdapter.submitList(projectedRepos)
-                    
-                    for (job in jobs.distinctBy { it.job_id }) {
-                        if (job.status == "queued" || job.status == "running") {
-                            startPolling(job.job_id)
-                        }
-                    }
+                    binding.rvGithubRepos.visibility = if (projectedRepos.isEmpty()) View.GONE else View.VISIBLE
+                    binding.tvNoRepos.visibility = if (projectedRepos.isEmpty()) View.VISIBLE else View.GONE
                 }
             } catch (e: Exception) {
                 Log.w("ResourceActivity", "loadActiveRepos failed: ${e.message}")

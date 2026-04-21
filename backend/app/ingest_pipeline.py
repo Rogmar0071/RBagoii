@@ -304,10 +304,10 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
             - file_count: int
             - chunk_count: int
     """
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from backend.app.database import get_engine
-    from backend.app.models import IngestJob
+    from backend.app.models import IngestJob, Repo, RepoIndexRegistry
 
     with Session(get_engine()) as session:
         job = session.get(IngestJob, job_id)
@@ -349,6 +349,51 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
                 job.file_count = payload["file_count"]
             if "chunk_count" in payload:
                 job.chunk_count = payload["chunk_count"]
+
+        if job.kind == "repo":
+            source = job.source or ""
+            if "@" in source:
+                repo_url, source_branch = (source.rsplit("@", 1) + [None])[:2]
+            else:
+                repo_url, source_branch = source, None
+            branch = job.branch or source_branch or "main"
+            matching_repos = session.exec(
+                select(Repo).where(
+                    Repo.repo_url == repo_url,
+                    Repo.branch == branch,
+                )
+            ).all()
+
+            registry_status = "indexing"
+            if next_state == IngestJobState.CREATED:
+                registry_status = "created"
+            elif next_state == IngestJobState.SUCCESS:
+                registry_status = "completed"
+            elif next_state == IngestJobState.FAILED:
+                registry_status = "failed"
+
+            for repo in matching_repos:
+                registry = session.get(RepoIndexRegistry, repo.id)
+                if registry is None:
+                    registry = RepoIndexRegistry(
+                        repo_id=repo.id,
+                        total_files=0,
+                        total_chunks=0,
+                        indexed=False,
+                        status="created",
+                    )
+                if "file_count" in (payload or {}):
+                    registry.total_files = int(payload["file_count"])
+                if "chunk_count" in (payload or {}):
+                    registry.total_chunks = int(payload["chunk_count"])
+                registry.status = registry_status
+                registry.indexed = (
+                    next_state == IngestJobState.SUCCESS and registry.total_chunks > 0
+                )
+                if next_state in IngestJobState.terminal_states():
+                    registry.last_indexed_at = datetime.now(timezone.utc)
+                registry.updated_at = datetime.now(timezone.utc)
+                session.add(registry)
 
         session.add(job)
         session.commit()

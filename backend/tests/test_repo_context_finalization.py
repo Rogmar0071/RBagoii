@@ -618,7 +618,7 @@ class TestRepoStatusBlock:
     def test_failed_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A failed Repo raises HTTP 409 REPO_NOT_READY (strict enforcement, V3)."""
+        """A failed repo now returns NO_INDEX_DATA without calling OpenAI."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -662,14 +662,14 @@ class TestRepoStatusBlock:
                 headers=AUTH,
             )
 
-        assert resp.status_code == 409
-        assert "REPO_NOT_READY" in resp.json().get("detail", "")
+        assert resp.status_code == 200
+        assert resp.json().get("reply") == "NO_INDEX_DATA"
         assert fake_openai.call_count == 0
 
     def test_processing_repo_without_chunks_returns_runtime_failure(
         self, client: TestClient, monkeypatch
     ):
-        """A pending/running Repo raises HTTP 409 REPO_NOT_READY (strict enforcement, V3)."""
+        """A pending/running repo now returns NO_INDEX_DATA without calling OpenAI."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session
@@ -713,8 +713,8 @@ class TestRepoStatusBlock:
                 headers=AUTH,
             )
 
-        assert resp.status_code == 409
-        assert "REPO_NOT_READY" in resp.json().get("detail", "")
+        assert resp.status_code == 200
+        assert resp.json().get("reply") == "NO_INDEX_DATA"
         assert fake_openai.call_count == 0
 
 
@@ -774,9 +774,9 @@ class TestTimeoutSafety:
                 headers=AUTH,
             )
 
-        # Timeout → "failed" → 409 REPO_NOT_READY
-        assert resp.status_code == 409
-        assert "REPO_NOT_READY" in resp.json().get("detail", "")
+        # Timeout flips repo to failed and returns NO_INDEX_DATA.
+        assert resp.status_code == 200
+        assert resp.json().get("reply") == "NO_INDEX_DATA"
         assert fake_openai.call_count == 0
 
         # Verify DB was updated to failed
@@ -1156,4 +1156,3 @@ class TestGlobalRepoAddEndpoint:
         assert resp.status_code == 410
         assert "DEPRECATED" in resp.json().get("detail", "")
         assert "/api/repos/add" in resp.json().get("detail", "")
-

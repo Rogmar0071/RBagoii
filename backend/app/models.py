@@ -550,6 +550,52 @@ class Repo(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# repo_index_registry
+# ---------------------------------------------------------------------------
+
+
+class RepoIndexRegistry(SQLModel, table=True):
+    """
+    Deterministic index visibility registry per Repo.
+
+    Tracks ingestion-backed index truth used by /repos/{repo_id}/structure and
+    retrieval enforcement.
+    """
+
+    __tablename__ = "repo_index_registry"
+
+    repo_id: uuid.UUID = Field(
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), primary_key=True, nullable=False)
+    )
+    total_files: int = Field(default=0)
+    total_chunks: int = Field(default=0)
+    indexed: bool = Field(default=False)
+    last_indexed_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), nullable=True),
+    )
+    status: str = Field(default="created")
+    # Backend-observed retrieval count from the latest /repos/{repo_id}/retrieve call.
+    # Kept server-side so UI can show "Retrieved (last query)" without client caching.
+    last_retrieved_count: int = Field(default=0)
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
+        super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
 # conversation_repos
 # ---------------------------------------------------------------------------
 

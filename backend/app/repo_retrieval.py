@@ -375,7 +375,14 @@ def retrieve_relevant_chunks(
         if score > 0:
             scored.append((score, chunk))
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    scored.sort(
+        key=lambda x: (
+            -x[0],
+            x[1].file_path,
+            x[1].chunk_index,
+            str(x[1].id),
+        )
+    )
 
     if scored:
         selected = _apply_diversity(scored, max_total=max_chunks)
