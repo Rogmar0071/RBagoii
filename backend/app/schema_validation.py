@@ -281,21 +281,39 @@ def block_create_all_in_production() -> None:
     
     This function should be called at application startup to prevent
     automatic schema creation/modification outside the migration system.
+    
+    NOTE: Only blocks for production databases (PostgreSQL, MySQL, etc.)
+    SQLite and in-memory databases are allowed for testing.
     """
+    import os
+    
     original_create_all = SQLModel.metadata.create_all
     
+    # Store reference to original if it's not already wrapped
+    if not hasattr(original_create_all, '__wrapped__'):
+        _original_impl = original_create_all
+    else:
+        # Already wrapped, get the original
+        _original_impl = getattr(original_create_all, '__wrapped__')
+    
     def blocked_create_all(*args, **kwargs):
+        # Check current DATABASE_URL to determine if we should block
+        db_url = os.environ.get("DATABASE_URL", "")
+        is_test_db = not db_url or db_url.startswith("sqlite:///") or ":memory:" in db_url
+        
+        if is_test_db:
+            # Allow for test databases
+            return _original_impl(*args, **kwargs)
+        
+        # Block for production
         raise RuntimeError(
             "BLOCKED: SQLModel.metadata.create_all() is disabled in production. "
             "Schema changes MUST go through Alembic migrations. "
             "See: backend/alembic/versions/"
         )
     
-    # Only block in production (when DATABASE_URL is not sqlite or in-memory)
-    import os
-    db_url = os.environ.get("DATABASE_URL", "")
-    is_production = db_url and not db_url.startswith("sqlite:///") and ":memory:" not in db_url
+    # Mark the wrapper so we can detect it later
+    blocked_create_all.__wrapped__ = _original_impl
     
-    if is_production:
-        SQLModel.metadata.create_all = blocked_create_all
-        logger.info("Blocked SQLModel.metadata.create_all() in production mode")
+    SQLModel.metadata.create_all = blocked_create_all
+    logger.info("Schema mutation guard installed (blocks non-test databases)")
