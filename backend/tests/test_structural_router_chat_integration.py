@@ -371,3 +371,49 @@ def test_adversarial_set_e_hybrid_retrieval_failure_blocks_llm(
     assert body["type"] == "hybrid"
     assert body["structural"]["file_count"] == 200
     assert body["semantic"]["result"] == "INSUFFICIENT_CONTEXT"
+
+
+def test_structural_query_accepts_top_level_repo_ids(client: TestClient):
+    repo_id = _seed_repo(200)
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "how many files are in the repository",
+            "conversation_id": str(uuid.uuid4()),
+            "context": {},
+            "repo_ids": [repo_id],
+            "agent_mode": False,
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "structural"
+    assert body["file_count"] == 200
+    assert body["source"] == "index_registry"
+    assert body["execution_trace"]["execution_path"] == [
+        "chat",
+        "route_query",
+        "execute_query",
+        "structural_handler",
+    ]
+
+
+def test_structural_query_accepts_context_repo_ids_alias(client: TestClient):
+    repo_id = _seed_repo(200)
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "list all files",
+            "conversation_id": str(uuid.uuid4()),
+            "context": {"repo_ids": [repo_id]},
+            "agent_mode": False,
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "structural"
+    assert body["file_count"] == 200
+    assert body["files"] is not None
+    assert len(body["files"]) == 200
