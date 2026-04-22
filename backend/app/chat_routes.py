@@ -70,6 +70,8 @@ _DEFAULT_BASE_URL = "https://api.openai.com"
 _DEFAULT_TIMEOUT = 30.0
 _GLOBAL_CHAT_HISTORY_LIMIT = 10
 _MIN_RETRIEVAL_CHUNKS = 50
+_STRUCTURAL_FILE_PREVIEW_SIZE = 20
+_STRUCTURAL_FILE_PAGINATION_THRESHOLD = 100
 
 _TOOLS_AVAILABLE = [
     "domains.derive",
@@ -1273,8 +1275,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
                     if query_type == QueryType.STRUCTURAL:
                         all_files = list(structural_result["data"]["files"])
-                        preview_files = all_files[:20]
-                        has_more = len(all_files) > 100
+                        preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                        has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
                         reply = "STRUCTURAL_QUERY_RESULT"
                         assistant_message = _persist_message(
                             db,
@@ -1324,11 +1326,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 structural_payload = None
                 if hybrid_structural_result is not None:
                     all_files = list(hybrid_structural_result["data"]["files"])
-                    has_more = len(all_files) > 100
+                    has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
                     structural_payload = {
                         "file_count": int(hybrid_structural_result["data"]["count"]),
                         "files": None if has_more else all_files,
-                        "preview": all_files[:20] if has_more else None,
+                        "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE] if has_more else None,
                         "has_more": has_more,
                     }
                 reply = "INSUFFICIENT_CONTEXT"
@@ -1408,11 +1410,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             structural_payload = None
                             if hybrid_structural_result is not None:
                                 all_files = list(hybrid_structural_result["data"]["files"])
-                                has_more = len(all_files) > 100
+                                has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
                                 structural_payload = {
                                     "file_count": int(hybrid_structural_result["data"]["count"]),
                                     "files": None if has_more else all_files,
-                                    "preview": all_files[:20] if has_more else None,
+                                    "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                    if has_more
+                                    else None,
                                     "has_more": has_more,
                                 }
                             return _json_response(
@@ -1471,11 +1475,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         structural_payload = None
                         if hybrid_structural_result is not None:
                             all_files = list(hybrid_structural_result["data"]["files"])
-                            has_more = len(all_files) > 100
+                            has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
                             structural_payload = {
                                 "file_count": int(hybrid_structural_result["data"]["count"]),
                                 "files": None if has_more else all_files,
-                                "preview": all_files[:20] if has_more else None,
+                                "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                if has_more
+                                else None,
                                 "has_more": has_more,
                             }
                         return _json_response(
@@ -1732,11 +1738,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         structural_payload = None
                         if hybrid_structural_result is not None:
                             all_files = list(hybrid_structural_result["data"]["files"])
-                            has_more = len(all_files) > 100
+                            has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
                             structural_payload = {
                                 "file_count": int(hybrid_structural_result["data"]["count"]),
                                 "files": None if has_more else all_files,
-                                "preview": all_files[:20] if has_more else None,
+                                "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                if has_more
+                                else None,
                                 "has_more": has_more,
                             }
                         return _json_response(
@@ -1887,7 +1895,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 )
                 if query_type == QueryType.HYBRID and hybrid_structural_result is not None:
                     all_files = list(hybrid_structural_result["data"]["files"])
-                    has_more = len(all_files) > 100
+                    has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
                     return _json_response(
                         ChatPostResponse(
                             conversation_id=active_conversation_id,
@@ -1899,7 +1907,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             structural={
                                 "file_count": int(hybrid_structural_result["data"]["count"]),
                                 "files": None if has_more else all_files,
-                                "preview": all_files[:20] if has_more else None,
+                                "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                if has_more
+                                else None,
                                 "has_more": has_more,
                             },
                             semantic={

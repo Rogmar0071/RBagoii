@@ -500,7 +500,7 @@ class TestIngestRepoEndpoint:
                 {"path": "src/bad.py"},
             ]
 
-        def _mock_raw(owner, repo, branch, path, client):  # noqa: ARG001
+        def _mock_raw(owner, repo, branch, path, http_client):  # noqa: ARG001
             if path == "src/good.py":
                 return b"def ok():\n    return 1\n"
             if path == "src/huge.py":
