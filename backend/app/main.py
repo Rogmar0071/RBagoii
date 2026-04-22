@@ -170,12 +170,21 @@ def _startup_init_db() -> None:
     db_url = os.environ.get("DATABASE_URL", "").strip()
     if db_url:
         try:
-            from backend.app.database import init_db
+            # MQP-CONTRACT: AIC-v1.1-SCHEMA-MIGRATION-ENFORCEMENT
+            # Use validation-enforced initialization in production
+            # Falls back to create_all for test databases
+            from backend.app.database import validate_and_init_db
 
-            init_db()
-            logger.info("Database tables initialised.")
+            # Check if we're in test mode (environment variable or sqlite)
+            is_test = os.environ.get("BACKEND_DISABLE_JOBS") == "1" or ":memory:" in db_url
+            validate_and_init_db(strict=not is_test)
+            logger.info("Database initialized with schema validation.")
         except Exception as exc:
-            logger.warning("DB init failed (non-fatal): %s", exc)
+            logger.error(f"DB init failed: {exc}")
+            # In production, schema validation failures should block startup
+            if not (os.environ.get("BACKEND_DISABLE_JOBS") == "1" or ":memory:" in db_url):
+                raise
+            logger.warning("DB init failed (non-fatal in test mode): %s", exc)
 
     # MQP-CONTRACT: INGESTION_EXECUTION_ALIGNMENT_V1 §F — Queue validation
     redis_url = os.environ.get("REDIS_URL", "").strip()
