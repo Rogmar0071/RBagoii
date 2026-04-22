@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from enum import Enum
 import re
+from enum import Enum
 
 
 class QueryType(str, Enum):
@@ -20,6 +20,7 @@ _SEMANTIC_PATTERNS = (
     "describe",
     "how does",
     "how do",
+    "where",
 )
 
 

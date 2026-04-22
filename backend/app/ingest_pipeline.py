@@ -1099,6 +1099,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     Returns ``(file_count, chunk_count)``.
     """
     import json
+
     from sqlmodel import select
 
     from backend.app.graph_extractor import (
@@ -1403,7 +1404,10 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         variance_flagged = variance_delta_pct > 10.0
         if variance_flagged:
             logger.warning(
-                "INGEST_VARIANCE_FLAG job_id=%s baseline_chunks=%d current_chunks=%d delta_pct=%.2f",
+                (
+                    "INGEST_VARIANCE_FLAG job_id=%s baseline_chunks=%d "
+                    "current_chunks=%d delta_pct=%.2f"
+                ),
                 job.id,
                 int(previous_success.chunk_count or 0),
                 chunk_count,

@@ -384,7 +384,7 @@ def list_repo_files(
 
     paths = sorted(
         {
-            row.file_path
+            row
             for row in session.exec(
                 select(RepoChunk.file_path).where(RepoChunk.repo_id == repo_uuid)
             ).all()
@@ -428,7 +428,11 @@ def retrieve_repo_chunks(
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
     registry = session.get(RepoIndexRegistry, repo_uuid)
-    if registry is not None and int(registry.total_chunks or 0) < _MIN_RETRIEVAL_CHUNKS:
+    if (
+        registry is not None
+        and registry.status in {"indexed", "completed"}
+        and int(registry.total_chunks or 0) < _MIN_RETRIEVAL_CHUNKS
+    ):
         raise HTTPException(status_code=409, detail="INSUFFICIENT_CONTEXT")
 
     all_chunks = session.exec(

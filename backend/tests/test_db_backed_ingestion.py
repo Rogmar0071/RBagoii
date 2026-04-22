@@ -80,7 +80,7 @@ class TestBlobStorage:
         """File upload stores data in blob_data field."""
         from io import BytesIO
 
-        from sqlmodel import Session, select
+        from sqlmodel import Session
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
@@ -268,7 +268,7 @@ class TestBlobStorage:
     def test_repo_ingestion_flags_chunk_variance_above_tolerance(self, client):
         import json
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob

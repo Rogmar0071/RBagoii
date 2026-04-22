@@ -158,15 +158,25 @@ def test_hybrid_query_is_split_structural_then_semantic(
     repo_id = _seed_repo(200)
     import backend.app.chat_routes as cr
 
+    class _Chunk:
+        def __init__(self):
+            self.repo_id = uuid.uuid4()
+            self.file_path = "src/file_1.py"
+            self.content = "x"
+            self.chunk_index = 0
+            self.id = uuid.uuid4()
+
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(
         cr,
         "retrieve_relevant_chunks",
-        lambda *args, **kwargs: [
-            type("Chunk", (), {"repo_id": uuid.uuid4(), "file_path": "src/file_1.py", "content": "x", "chunk_index": 0, "id": uuid.uuid4()})()
-        ],
+        lambda *args, **kwargs: [_Chunk()],
     )
-    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "Semantic explanation")
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: "Semantic explanation from src/file_1.py",
+    )
 
     resp = _chat(client, repo_id=repo_id, message="how many files and what do they do")
     assert resp.status_code == 200, resp.text
@@ -174,7 +184,7 @@ def test_hybrid_query_is_split_structural_then_semantic(
     assert body["type"] == "hybrid"
     assert body["reply"] == "HYBRID_QUERY_RESULT"
     assert body["structural"]["file_count"] == 200
-    assert body["semantic"]["result"] == "Semantic explanation"
+    assert body["semantic"]["result"] == "Semantic explanation from src/file_1.py"
     assert body["semantic_source"] == "retrieval"
     assert body["structural_source"] == "index"
     assert "semantic" in body

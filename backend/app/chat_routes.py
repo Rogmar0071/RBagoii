@@ -1305,11 +1305,22 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
                     hybrid_structural_result = structural_result
 
-            if (
-                conversation_repo_ids
-                and query_type != QueryType.STRUCTURAL
-                and total_chunks < _MIN_RETRIEVAL_CHUNKS
-            ):
+            enforce_retrieval_threshold = False
+            if conversation_repo_ids and db is not None and query_type != QueryType.STRUCTURAL:
+                registries_for_threshold = db.exec(
+                    select(RepoIndexRegistry).where(
+                        RepoIndexRegistry.repo_id.in_(conversation_repo_ids)  # type: ignore[attr-defined]
+                    )
+                ).all()
+                if registries_for_threshold and all(
+                    r.status in {"indexed", "completed"} for r in registries_for_threshold
+                ):
+                    enforce_retrieval_threshold = (
+                        sum(int(r.total_chunks or 0) for r in registries_for_threshold)
+                        < _MIN_RETRIEVAL_CHUNKS
+                    )
+
+            if enforce_retrieval_threshold:
                 structural_payload = None
                 if hybrid_structural_result is not None:
                     all_files = list(hybrid_structural_result["data"]["files"])
