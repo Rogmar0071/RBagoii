@@ -1,3 +1,6 @@
+#!/bin/bash
+set -e
+
 echo "Running Alembic migrations..."
 echo "  pwd: $(pwd)"
 
