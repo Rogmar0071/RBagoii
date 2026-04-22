@@ -46,7 +46,9 @@ from backend.app.mode_engine import (
     mode_engine_gateway,
 )
 from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo
+from backend.app.query_classifier import QueryType, classify_query
 from backend.app.repo_retrieval import retrieve_relevant_chunks
+from backend.app.structural_handler import handle_structural_query
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
 from ui_blueprint.prompt_security import (
@@ -67,6 +69,7 @@ _DEFAULT_MODEL_CHAT = "gpt-4.1-mini"
 _DEFAULT_BASE_URL = "https://api.openai.com"
 _DEFAULT_TIMEOUT = 30.0
 _GLOBAL_CHAT_HISTORY_LIMIT = 10
+_SEMANTIC_THRESHOLD_REQUIRED_FOR_ANSWER = 1
 
 _TOOLS_AVAILABLE = [
     "domains.derive",
@@ -294,6 +297,8 @@ class ChatPostResponse(BaseModel):
     repo_count: int = 0
     total_chunks: int = 0
     retrieved_chunks: int = 0
+    data: dict[str, Any] | None = None
+    source: str | None = None
     tools_available: list[str]
     user_message: ChatMessageResponse
     assistant_message: ChatMessageResponse
@@ -1193,6 +1198,66 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             else:
                 history = _load_recent_history(db, conversation_id=active_conversation_id)
 
+            query_type = (
+                classify_query(message) if conversation_repo_ids else QueryType.SEMANTIC
+            )
+            if conversation_repo_ids and query_type == QueryType.STRUCTURAL and db is not None:
+                structural_response = handle_structural_query(
+                    db=db,
+                    repo_ids=conversation_repo_ids,
+                    query_text=message,
+                )
+                structural_error = structural_response.get("error_code")
+                if structural_error:
+                    reply = "INSUFFICIENT_CONTEXT"
+                    assistant_message = _persist_message(
+                        db,
+                        "assistant",
+                        reply,
+                        context,
+                        conversation_id=active_conversation_id,
+                    )
+                    return _json_response(
+                        ChatPostResponse(
+                            conversation_id=active_conversation_id,
+                            reply=reply,
+                            error_code="INSUFFICIENT_CONTEXT",
+                            retrieved_count=0,
+                            repo_count=repo_count,
+                            total_chunks=total_chunks,
+                            retrieved_chunks=0,
+                            source="index",
+                            tools_available=_TOOLS_AVAILABLE,
+                            user_message=user_message,
+                            assistant_message=assistant_message,
+                        )
+                    )
+
+                reply = "STRUCTURAL_QUERY_RESULT"
+                assistant_message = _persist_message(
+                    db,
+                    "assistant",
+                    reply,
+                    context,
+                    conversation_id=active_conversation_id,
+                )
+                return _json_response(
+                    ChatPostResponse(
+                        conversation_id=active_conversation_id,
+                        reply=reply,
+                        error_code=None,
+                        retrieved_count=0,
+                        repo_count=int(structural_response["repo_count"]),
+                        total_chunks=int(structural_response["total_chunks"]),
+                        retrieved_chunks=int(structural_response["retrieved_chunks"]),
+                        data=structural_response["data"],
+                        source=str(structural_response["source"]),
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+                )
+
             # Read OPENAI_API_KEY at call time -- never returned or logged.
             openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
 
@@ -1209,6 +1274,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         retrieved_count = len(repo_chunks)
                         retrieved_chunks = retrieved_count
                         repo_chunks_for_grounding = repo_chunks
+                        if (
+                            query_type == QueryType.SEMANTIC
+                            and retrieved_chunks < _SEMANTIC_THRESHOLD_REQUIRED_FOR_ANSWER
+                        ):
+                            reply = "INSUFFICIENT_CONTEXT"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="INSUFFICIENT_CONTEXT",
+                                    retrieved_count=retrieved_count,
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=retrieved_chunks,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                )
+                            )
                         if not repo_chunks:
                             reply = "REPO_CONTEXT_EMPTY"
                             assistant_message = _persist_message(
@@ -1408,6 +1499,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             retrieved_count = len(repo_chunks)
                             retrieved_chunks = retrieved_count
                             repo_chunks_for_grounding = repo_chunks
+                            if (
+                                query_type == QueryType.SEMANTIC
+                                and retrieved_chunks < _SEMANTIC_THRESHOLD_REQUIRED_FOR_ANSWER
+                            ):
+                                reply = "INSUFFICIENT_CONTEXT"
+                                assistant_message = _persist_message(
+                                    db,
+                                    "assistant",
+                                    reply,
+                                    context,
+                                    conversation_id=active_conversation_id,
+                                )
+                                return _json_response(
+                                    ChatPostResponse(
+                                        conversation_id=active_conversation_id,
+                                        reply=reply,
+                                        error_code="INSUFFICIENT_CONTEXT",
+                                        retrieved_count=retrieved_count,
+                                        repo_count=repo_count,
+                                        total_chunks=total_chunks,
+                                        retrieved_chunks=retrieved_chunks,
+                                        tools_available=_TOOLS_AVAILABLE,
+                                        user_message=user_message,
+                                        assistant_message=assistant_message,
+                                    )
+                                )
 
                             print("REPO_CHUNKS:", len(repo_chunks))
 
