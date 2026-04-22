@@ -28,7 +28,9 @@ def _is_count_query(lower_query: str) -> bool:
 
 
 def _is_list_query(lower_query: str) -> bool:
-    return any(x in lower_query for x in ("list files", "list all files", "show files", "file paths"))
+    return any(
+        x in lower_query for x in ("list files", "list all files", "show files", "file paths")
+    )
 
 
 def _is_structure_query(lower_query: str) -> bool:

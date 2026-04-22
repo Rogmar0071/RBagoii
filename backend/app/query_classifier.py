@@ -21,10 +21,16 @@ _STRUCTURAL_TRIGGERS = (
 )
 _STRUCTURAL_KEYWORD_RE = re.compile(r"\b(count|list|structure|paths?|files?)\b", re.IGNORECASE)
 _SEMANTIC_TRIGGERS = (
+    "what do they do",
     "what does",
     "how does",
+    "how do",
     "why",
     "explain",
+    "describe",
+    "where",
+    "important",
+    "inside",
     "purpose",
 )
 

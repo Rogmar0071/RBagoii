@@ -126,7 +126,10 @@ def execute_query(
 
         return {"type": "hybrid", "structural": structural, "semantic": semantic_payload}, runtime
     except Exception:
-        if runtime.state != QueryState.FAILED and QueryState.FAILED in _ALLOWED_TRANSITIONS[runtime.state]:
+        if (
+            runtime.state != QueryState.FAILED
+            and QueryState.FAILED in _ALLOWED_TRANSITIONS[runtime.state]
+        ):
             runtime.state = QueryState.FAILED
             runtime.state_history.append(QueryState.FAILED)
         return {"error_code": "STRUCTURAL_FAILURE"}, runtime
