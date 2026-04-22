@@ -29,6 +29,7 @@ from backend.app.auth import require_auth
 from backend.app.database import get_session
 from backend.app.models import ChatFile, ConversationRepo, Repo, RepoChunk, RepoIndexRegistry
 from backend.app.repo_retrieval import _extract_keywords, _score_chunk, _split_into_chunks
+from backend.app.structural_handler import handle_structural_query
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -151,6 +152,34 @@ class RepoRetrieveResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/debug/structural/{repo_id}",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def debug_structural_index_surface(
+    repo_id: str,
+    session: Session = Depends(get_session),
+):
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    result = handle_structural_query(
+        db=session,
+        repo_ids=[repo_uuid],
+        query_text="list all files",
+    )
+    if result.get("error_code") is not None:
+        return {"error_code": "INSUFFICIENT_CONTEXT"}
+
+    return {
+        "count": result["data"]["count"],
+        "files": result["data"]["files"],
+    }
 
 
 @router.get(
