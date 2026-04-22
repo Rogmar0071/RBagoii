@@ -475,7 +475,11 @@ def _reply_references_repo_data(reply: str, repo_chunks: list[Any]) -> bool:
         file_path = str(getattr(chunk, "file_path", "") or "").lower()
         if repo_id and repo_id in lower_reply:
             return True
+        if repo_id and f"repo_id: {repo_id}" in lower_reply:
+            return True
         if file_path and file_path in lower_reply:
+            return True
+        if file_path and f"file: {file_path}" in lower_reply:
             return True
         file_name = file_path.split("/")[-1] if file_path else ""
         if file_name and file_name in lower_reply:
@@ -1413,8 +1417,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             if not no_index_data:
                                 has_invalid_context_injection = any(
                                     (chunk.repo_id is None)
-                                    or (not str(chunk.file_path or "").strip())
-                                    or (not str(chunk.content or "").strip())
+                                    or (not isinstance(chunk.file_path, str))
+                                    or (not chunk.file_path.strip())
+                                    or (not isinstance(chunk.content, str))
+                                    or (not chunk.content.strip())
                                     for chunk in repo_chunks
                                 )
                                 if has_invalid_context_injection:
@@ -1427,7 +1433,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         conversation_id=active_conversation_id,
                                     )
                                     logger.info(
-                                        "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                                        (
+                                            "chat_response conversation_id=%s "
+                                            "retrieved_count=%s error_code=%s"
+                                        ),
                                         active_conversation_id,
                                         retrieved_count,
                                         "RETRIEVAL_FAILURE",
@@ -1581,7 +1590,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         reply += _format_citations(search_results)
 
                 if has_explicit_repo_context and repo_chunks_for_grounding:
-                    if not _reply_references_repo_data(reply=reply, repo_chunks=repo_chunks_for_grounding):
+                    if not _reply_references_repo_data(
+                        reply=reply, repo_chunks=repo_chunks_for_grounding
+                    ):
                         response_error_code = "RETRIEVAL_FAILURE"
                         reply = "RETRIEVAL_FAILURE"
 

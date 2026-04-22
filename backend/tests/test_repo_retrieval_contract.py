@@ -243,7 +243,7 @@ def test_chat_large_repo_grounding_and_debug_metadata(client: TestClient, monkey
 
     import backend.app.chat_routes as cr
 
-    def _fake_openai(message, key, history=None, system_prompt=None):  # noqa: ARG001
+    def _fake_openai(user_message, key, history=None, system_prompt=None):  # noqa: ARG001
         assert system_prompt is not None
         assert "REPO_ID:" in system_prompt
         assert "FILE:" in system_prompt
