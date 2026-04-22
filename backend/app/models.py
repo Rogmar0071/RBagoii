@@ -28,8 +28,29 @@ def _utcnow() -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# global_chat_messages
+# conversations / global_chat_messages
 # ---------------------------------------------------------------------------
+
+
+class Conversation(SQLModel, table=True):
+    __tablename__ = "conversations"
+
+    id: str = Field(sa_column=Column(sa.Text, primary_key=True, nullable=False))
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
+        super().__init__(**data)
 
 
 class GlobalChatMessage(SQLModel, table=True):
@@ -60,6 +81,10 @@ class GlobalChatMessage(SQLModel, table=True):
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         super().__init__(**data)
+
+
+# Backward-compatible message model alias for conversation chat history.
+Message = GlobalChatMessage
 
 
 # ---------------------------------------------------------------------------

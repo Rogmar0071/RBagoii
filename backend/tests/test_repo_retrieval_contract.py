@@ -195,4 +195,6 @@ def test_chat_returns_no_index_data_when_retrieval_disabled(
         headers=AUTH,
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["reply"] == "NO_INDEX_DATA"
+    assert resp.json()["reply"] == "REPO_CONTEXT_EMPTY"
+    assert resp.json()["error_code"] == "REPO_CONTEXT_EMPTY"
+    assert resp.json()["retrieved_count"] == 0
