@@ -85,6 +85,40 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
     return str(repo_id)
 
 
+def _seed_repo_with_many_chunks(
+    conversation_id: str, repo_name: str = "repo-large", file_count: int = 200
+) -> str:
+    import backend.app.database as db_module
+    from backend.app.models import Repo, RepoChunk
+
+    repo_id = uuid.uuid4()
+    with Session(db_module.get_engine()) as session:
+        repo = Repo(
+            id=repo_id,
+            conversation_id=conversation_id,
+            repo_url=f"https://github.com/acme/{repo_name}",
+            owner="acme",
+            name=repo_name,
+            branch="main",
+            ingestion_status="success",
+            total_files=file_count,
+            total_chunks=file_count,
+        )
+        session.add(repo)
+        for i in range(file_count):
+            session.add(
+                RepoChunk(
+                    repo_id=repo_id,
+                    file_path=f"src/file_{i}.py",
+                    content=f"# files inventory entry {i}\nTOTAL FILES marker\n",
+                    chunk_index=0,
+                    token_estimate=8,
+                )
+            )
+        session.commit()
+    return str(repo_id)
+
+
 def test_visibility_structure_reports_indexed_surface(client: TestClient):
     repo_id = _seed_repo_with_chunks(conversation_id=str(uuid.uuid4()))
     resp = client.get(f"/repos/{repo_id}/structure", headers=AUTH)
@@ -198,3 +232,73 @@ def test_chat_returns_no_index_data_when_retrieval_disabled(
     assert resp.json()["reply"] == "REPO_CONTEXT_EMPTY"
     assert resp.json()["error_code"] == "REPO_CONTEXT_EMPTY"
     assert resp.json()["retrieved_count"] == 0
+    assert resp.json()["repo_count"] == 1
+    assert "total_chunks" in resp.json()
+    assert resp.json()["retrieved_chunks"] == 0
+
+
+def test_chat_large_repo_grounding_and_debug_metadata(client: TestClient, monkeypatch):
+    repo_id = _seed_repo_with_many_chunks(conversation_id=str(uuid.uuid4()), file_count=200)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+    import backend.app.chat_routes as cr
+
+    def _fake_openai(user_message, key, history=None, system_prompt=None):  # noqa: ARG001
+        assert system_prompt is not None
+        assert "REPO_ID:" in system_prompt
+        assert "FILE:" in system_prompt
+        for line in system_prompt.splitlines():
+            if line.startswith("FILE: "):
+                return f"Grounded via {line.removeprefix('FILE: ')}"
+        return "RETRIEVAL_FAILURE"
+
+    monkeypatch.setattr(cr, "_call_openai_chat", _fake_openai)
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "how many files",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+            "context": {"repos": [repo_id]},
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["repo_count"] == 1
+    assert body["total_chunks"] >= 200
+    assert body["retrieved_chunks"] > 0
+    assert body["error_code"] is None
+    assert "file_" in body["reply"]
+
+
+def test_chat_flags_retrieval_failure_when_reply_not_grounded(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo_with_chunks(conversation_id=str(uuid.uuid4()))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: "This answer does not reference repository data.",
+    )
+
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "Where is the answer function?",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+            "context": {"repos": [repo_id]},
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["retrieved_chunks"] > 0
+    assert body["error_code"] == "RETRIEVAL_FAILURE"
+    assert body["reply"] == "RETRIEVAL_FAILURE"

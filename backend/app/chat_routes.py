@@ -291,6 +291,9 @@ class ChatPostResponse(BaseModel):
     reply: str
     error_code: str | None = None
     retrieved_count: int = 0
+    repo_count: int = 0
+    total_chunks: int = 0
+    retrieved_chunks: int = 0
     tools_available: list[str]
     user_message: ChatMessageResponse
     assistant_message: ChatMessageResponse
@@ -462,6 +465,26 @@ def _message_to_response(message: Any) -> ChatMessageResponse:
         ),
         superseded=getattr(message, "superseded_by_id", None) is not None,
     )
+
+
+def _reply_references_repo_data(reply: str, repo_chunks: list[Any]) -> bool:
+    """Best-effort grounding check: reply should reference retrieved repo data."""
+    lower_reply = reply.lower()
+    for chunk in repo_chunks:
+        repo_id = str(getattr(chunk, "repo_id", "") or "").lower()
+        file_path = str(getattr(chunk, "file_path", "") or "").lower()
+        if repo_id and repo_id in lower_reply:
+            return True
+        if repo_id and f"repo_id: {repo_id}" in lower_reply:
+            return True
+        if file_path and file_path in lower_reply:
+            return True
+        if file_path and f"file: {file_path}" in lower_reply:
+            return True
+        file_name = file_path.split("/")[-1] if file_path else ""
+        if file_name and file_name in lower_reply:
+            return True
+    return False
 
 
 def _new_ephemeral_message(
@@ -1115,6 +1138,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
         db = _db_session()
         retrieved_count = 0
+        repo_count = 0
+        total_chunks = 0
+        retrieved_chunks = 0
+        response_error_code: str | None = None
+        repo_chunks_for_grounding: list[Any] = []
+        has_explicit_repo_context = False
         try:
             _ensure_conversation(db, active_conversation_id)
             if db is not None and context.repos:
@@ -1140,6 +1169,14 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         )
                 db.commit()
             conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
+            has_explicit_repo_context = bool(conversation_repo_ids)
+            repo_count = len(conversation_repo_ids)
+            if conversation_repo_ids and db is not None:
+                for rid in conversation_repo_ids:
+                    repo_obj = db.get(Repo, rid)
+                    if repo_obj is None:
+                        continue
+                    total_chunks += int(repo_obj.total_chunks or 0)
             # RULE 5: always persist messages, regardless of force_new_session.
             # force_new_session=True skips history READ only (debug/testing override).
             user_message = _persist_message(
@@ -1170,6 +1207,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             repo_ids=conversation_repo_ids,
                         )
                         retrieved_count = len(repo_chunks)
+                        retrieved_chunks = retrieved_count
+                        repo_chunks_for_grounding = repo_chunks
                         if not repo_chunks:
                             reply = "REPO_CONTEXT_EMPTY"
                             assistant_message = _persist_message(
@@ -1191,11 +1230,44 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     reply=reply,
                                     error_code="REPO_CONTEXT_EMPTY",
                                     retrieved_count=retrieved_count,
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=retrieved_chunks,
                                     tools_available=_TOOLS_AVAILABLE,
                                     user_message=user_message,
                                     assistant_message=assistant_message,
                                 )
                             )
+                        # NO_SILENT_FALLBACKS: with attached repos, never emit generic
+                        # fallback content when grounded generation is unavailable.
+                        reply = "RETRIEVAL_FAILURE"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
+                            conversation_id=active_conversation_id,
+                        )
+                        logger.info(
+                            "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
+                            active_conversation_id,
+                            retrieved_count,
+                            "RETRIEVAL_FAILURE",
+                        )
+                        return _json_response(
+                            ChatPostResponse(
+                                conversation_id=active_conversation_id,
+                                reply=reply,
+                                error_code="RETRIEVAL_FAILURE",
+                                retrieved_count=retrieved_count,
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=retrieved_chunks,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                            )
+                        )
                     # No OpenAI key — the stub reply still flows through mode_engine_gateway
                     # so that pre-generation constraints, all four validation stages, and
                     # mandatory audit logging run.  The stub path is NOT a bypass.
@@ -1273,7 +1345,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # -------------------------------------------------------
                     repo_chunks = []
                     no_index_data = False
-                    has_explicit_repo_context = bool(conversation_repo_ids)
                     if conversation_repo_ids and db is not None:
                         active_repo_ids = conversation_repo_ids
                         print("CTX_REPOS:", active_repo_ids)
@@ -1328,27 +1399,70 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         no_index_data = True
                                         break
 
-                                if not no_index_data:
-                                    repo_chunks = retrieve_relevant_chunks(
-                                        user_query=message,
-                                        db=db,
-                                        repo_ids=[r.id for r in loaded_repos],
+                            # CONTRACT: when repo_ids are attached, retrieval MUST execute.
+                            repo_chunks = retrieve_relevant_chunks(
+                                user_query=message,
+                                db=db,
+                                repo_ids=active_repo_ids,
+                            )
+                            retrieved_count = len(repo_chunks)
+                            retrieved_chunks = retrieved_count
+                            repo_chunks_for_grounding = repo_chunks
+
+                            print("REPO_CHUNKS:", len(repo_chunks))
+
+                            if not repo_chunks:
+                                no_index_data = True
+
+                            if not no_index_data:
+                                has_invalid_context_injection = any(
+                                    (chunk.repo_id is None)
+                                    or (not isinstance(chunk.file_path, str))
+                                    or (not chunk.file_path.strip())
+                                    or (not isinstance(chunk.content, str))
+                                    or (not chunk.content.strip())
+                                    for chunk in repo_chunks
+                                )
+                                if has_invalid_context_injection:
+                                    reply = "RETRIEVAL_FAILURE"
+                                    assistant_message = _persist_message(
+                                        db,
+                                        "assistant",
+                                        reply,
+                                        context,
+                                        conversation_id=active_conversation_id,
                                     )
-                                    retrieved_count = len(repo_chunks)
-
-                                print("REPO_CHUNKS:", len(repo_chunks))
-
-                                if not repo_chunks:
-                                    no_index_data = True
-
-                                if not no_index_data:
-                                    repo_block = "\n\n---\nREPO CONTEXT:\n"
-                                    for chunk in repo_chunks:
-                                        repo_block += (
-                                            f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                    logger.info(
+                                        (
+                                            "chat_response conversation_id=%s "
+                                            "retrieved_count=%s error_code=%s"
+                                        ),
+                                        active_conversation_id,
+                                        retrieved_count,
+                                        "RETRIEVAL_FAILURE",
+                                    )
+                                    return _json_response(
+                                        ChatPostResponse(
+                                            conversation_id=active_conversation_id,
+                                            reply=reply,
+                                            error_code="RETRIEVAL_FAILURE",
+                                            retrieved_count=retrieved_count,
+                                            repo_count=repo_count,
+                                            total_chunks=total_chunks,
+                                            retrieved_chunks=retrieved_chunks,
+                                            tools_available=_TOOLS_AVAILABLE,
+                                            user_message=user_message,
+                                            assistant_message=assistant_message,
                                         )
-                                    repo_block += "---\n"
-                                    base_system_prompt += repo_block
+                                    )
+                                repo_block = "\n\n---\nREPO CONTEXT:\n"
+                                for chunk in repo_chunks:
+                                    repo_block += (
+                                        f"\nREPO_ID: {chunk.repo_id}\n"
+                                        f"FILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                    )
+                                repo_block += "---\n"
+                                base_system_prompt += repo_block
 
                     if has_explicit_repo_context and no_index_data:
                         reply = "REPO_CONTEXT_EMPTY"
@@ -1371,6 +1485,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 reply=reply,
                                 error_code="REPO_CONTEXT_EMPTY",
                                 retrieved_count=retrieved_count,
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=retrieved_chunks,
                                 tools_available=_TOOLS_AVAILABLE,
                                 user_message=user_message,
                                 assistant_message=assistant_message,
@@ -1472,6 +1589,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     if search_results:
                         reply += _format_citations(search_results)
 
+                if has_explicit_repo_context and repo_chunks_for_grounding:
+                    if not _reply_references_repo_data(
+                        reply=reply, repo_chunks=repo_chunks_for_grounding
+                    ):
+                        response_error_code = "RETRIEVAL_FAILURE"
+                        reply = "RETRIEVAL_FAILURE"
+
                 assistant_message = _persist_message(
                     db, "assistant", reply, context, conversation_id=active_conversation_id
                 )
@@ -1479,13 +1603,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
                     active_conversation_id,
                     retrieved_count,
-                    None,
+                    response_error_code,
                 )
                 return _json_response(
                     ChatPostResponse(
                         conversation_id=active_conversation_id,
                         reply=reply,
+                        error_code=response_error_code,
                         retrieved_count=retrieved_count,
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=retrieved_chunks,
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
@@ -1525,6 +1653,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         reply=error_reply,
                         error_code="SYSTEM_FAILURE",
                         retrieved_count=retrieved_count,
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=retrieved_chunks,
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
@@ -1558,6 +1689,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         reply=error_reply,
                         error_code="SYSTEM_FAILURE",
                         retrieved_count=retrieved_count,
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=retrieved_chunks,
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
@@ -1613,6 +1747,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     reply=error_reply,
                     error_code="SYSTEM_FAILURE",
                     retrieved_count=0,
+                    repo_count=0,
+                    total_chunks=0,
+                    retrieved_chunks=0,
                     tools_available=_TOOLS_AVAILABLE,
                     user_message=user_message,
                     assistant_message=assistant_message,
@@ -1628,6 +1765,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     "detail": "An unexpected error occurred. Please try again later.",
                     "retry_count": 0,
                     "retrieved_count": 0,
+                    "repo_count": 0,
+                    "total_chunks": 0,
+                    "retrieved_chunks": 0,
                     "conversation_id": (body or {}).get("conversation_id", "unknown"),
                 },
             )
