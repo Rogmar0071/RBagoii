@@ -46,7 +46,7 @@ from backend.app.mode_engine import (
     mode_engine_gateway,
 )
 from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo, RepoIndexRegistry
-from backend.app.query_classifier import QueryType, classify_query
+from backend.app.query_classifier import QueryType, route_query
 from backend.app.repo_retrieval import retrieve_relevant_chunks
 from backend.app.structural_handler import handle_structural_query
 from ui_blueprint.domain.ir import SCHEMA_VERSION
@@ -305,6 +305,7 @@ class ChatPostResponse(BaseModel):
     semantic: dict[str, Any] | None = None
     structural_source: str | None = None
     semantic_source: str | None = None
+    source: str | None = None
     repo_count: int = 0
     total_chunks: int = 0
     retrieved_chunks: int = 0
@@ -1208,7 +1209,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 history = _load_recent_history(db, conversation_id=active_conversation_id)
 
             hybrid_structural_result: dict[str, Any] | None = None
-            query_type = classify_query(message)
+            query_type = route_query(message)
             if conversation_repo_ids and db is not None:
                 if query_type in (QueryType.STRUCTURAL, QueryType.HYBRID):
                     structural_result = handle_structural_query(
@@ -1275,8 +1276,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
                     if query_type == QueryType.STRUCTURAL:
                         all_files = list(structural_result["data"]["files"])
+                        lower_message = message.lower()
+                        force_full_list = "list all files" in lower_message
                         preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
-                        has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                        has_more = (
+                            len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                            and not force_full_list
+                        )
                         reply = "STRUCTURAL_QUERY_RESULT"
                         assistant_message = _persist_message(
                             db,
@@ -1296,6 +1302,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 files=None if has_more else all_files,
                                 preview=preview_files if has_more else None,
                                 has_more=has_more,
+                                source=str(structural_result.get("source") or "index_registry"),
                                 repo_count=repo_count,
                                 total_chunks=total_chunks,
                                 retrieved_chunks=0,
@@ -1911,6 +1918,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 if has_more
                                 else None,
                                 "has_more": has_more,
+                                "source": str(
+                                    hybrid_structural_result.get("source") or "index_registry"
+                                ),
                             },
                             semantic={
                                 "result": (
@@ -1919,6 +1929,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     else reply
                                 ),
                                 "retrieved_chunks": retrieved_chunks,
+                                "source": "retrieval",
                             },
                             structural_source="index",
                             semantic_source="retrieval",

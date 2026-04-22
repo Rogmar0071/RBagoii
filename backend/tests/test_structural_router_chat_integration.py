@@ -125,6 +125,7 @@ def test_structural_how_many_files_bypasses_retrieval_and_llm(
     assert body["has_more"] is True
     assert len(body["preview"]) == 20
     assert body["files"] is None
+    assert body["source"] == "index_registry"
     assert body["retrieved_chunks"] == 0
     assert body["retrieved_count"] == 0
 
@@ -136,12 +137,11 @@ def test_structural_list_all_files_matches_debug_endpoint(client: TestClient):
     chat_body = chat_resp.json()
     assert chat_body["type"] == "structural"
     assert chat_body["file_count"] == 200
-    if chat_body["files"] is not None:
-        assert len(chat_body["files"]) == 200
-        assert len(chat_body["files"]) == len(set(chat_body["files"]))
-    else:
-        assert chat_body["has_more"] is True
-        assert len(chat_body["preview"]) == 20
+    assert chat_body["files"] is not None
+    assert len(chat_body["files"]) == 200
+    assert len(chat_body["files"]) == len(set(chat_body["files"]))
+    assert chat_body["has_more"] is False
+    assert chat_body["source"] == "index_registry"
     assert chat_body["retrieved_chunks"] == 0
 
     debug_resp = client.get(f"/debug/structural/{repo_id}", headers=AUTH)
@@ -184,7 +184,9 @@ def test_hybrid_query_is_split_structural_then_semantic(
     assert body["type"] == "hybrid"
     assert body["reply"] == "HYBRID_QUERY_RESULT"
     assert body["structural"]["file_count"] == 200
+    assert body["structural"]["source"] == "index_registry"
     assert body["semantic"]["result"] == "Semantic explanation from src/file_1.py"
+    assert body["semantic"]["source"] == "retrieval"
     assert body["semantic_source"] == "retrieval"
     assert body["structural_source"] == "index"
     assert "semantic" in body
