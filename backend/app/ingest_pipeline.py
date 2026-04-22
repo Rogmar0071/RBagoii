@@ -363,6 +363,8 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
                     Repo.branch == branch,
                 )
             ).all()
+            if matching_repos and job.repo_id is None:
+                job.repo_id = matching_repos[0].id
 
             registry_status = "indexing"
             if next_state == IngestJobState.CREATED:
@@ -389,6 +391,14 @@ def transition(job_id: uuid.UUID, next_state: str, payload: dict[str, Any] | Non
                 registry.status = registry_status
                 registry.indexed = (
                     next_state == IngestJobState.SUCCESS and registry.total_chunks > 0
+                )
+                registry.min_chunks_per_file = int(getattr(job, "min_chunks_per_file", 0))
+                registry.max_chunks_per_file = int(getattr(job, "max_chunks_per_file", 0))
+                registry.median_chunks_per_file = float(
+                    getattr(job, "median_chunks_per_file", 0.0)
+                )
+                registry.chunk_variance_flagged = bool(
+                    getattr(job, "chunk_variance_flagged", False)
                 )
                 if next_state in IngestJobState.terminal_states():
                     registry.last_indexed_at = datetime.now(timezone.utc)
@@ -725,7 +735,6 @@ def _fetch_github_tree(
         item
         for item in data.get("tree", [])
         if item.get("type") == "blob"
-        and os.path.splitext(item.get("path", "").lower())[1] in INGESTIBLE_EXTENSIONS
     ]
 
 
@@ -1090,6 +1099,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     Returns ``(file_count, chunk_count)``.
     """
     import json
+    from sqlmodel import select
 
     from backend.app.graph_extractor import (
         extract_graph,
@@ -1101,6 +1111,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         CodeSymbol,
         EntryPoint,
         FileDependency,
+        IngestJob,
         RepoChunk,
         RepoFile,
         SymbolCallEdge,
@@ -1120,6 +1131,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     try:
         manifest = json.loads(job.blob_data.decode('utf-8'))
         files = manifest["files"]
+        skipped_files = manifest.get("skipped_files", [])
         repo_url = manifest.get("repo_url", job.source)
         branch = manifest.get("branch", job.branch)
     except Exception as exc:
@@ -1129,6 +1141,10 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         "Processing repo manifest: job=%s repo=%s branch=%s files=%d",
         job.id, repo_url, branch, len(files)
     )
+    for skipped in skipped_files:
+        file_path = skipped.get("file_path", "unknown")
+        reason = skipped.get("reason", "parse_error")
+        logger.info("INGEST_SKIP job_id=%s file_path=%s reason=%s", job.id, file_path, reason)
 
     # -----------------------------------------------------------------------
     # PHASE 1 — File registration.
@@ -1319,6 +1335,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
 
     file_count = 0
     chunk_count = 0
+    chunks_per_file: dict[str, int] = {}
 
     for file_entry in files:
         file_path = file_entry["path"]
@@ -1328,6 +1345,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             continue
 
         chunks = split_with_overlap(content)
+        chunks_per_file[file_path] = len(chunks)
 
         for idx, chunk_text in enumerate(chunks):
             structure = extract_structure(chunk_text, file_path)
@@ -1351,6 +1369,56 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         file_count += 1
 
     # Commit all graph rows + chunks atomically
+    counts = sorted(chunks_per_file.values())
+    if counts:
+        mid = len(counts) // 2
+        if len(counts) % 2 == 0:
+            median_chunks = float((counts[mid - 1] + counts[mid]) / 2)
+        else:
+            median_chunks = float(counts[mid])
+        min_chunks = int(counts[0])
+        max_chunks = int(counts[-1])
+        avg_chunks = float(chunk_count / file_count) if file_count > 0 else 0.0
+    else:
+        median_chunks = 0.0
+        min_chunks = 0
+        max_chunks = 0
+        avg_chunks = 0.0
+
+    previous_success = session.exec(
+        select(IngestJob)
+        .where(
+            IngestJob.kind == "repo",
+            IngestJob.source == job.source,
+            IngestJob.status == IngestJobState.SUCCESS,
+            IngestJob.id != job.id,
+        )
+        .order_by(IngestJob.created_at.desc())
+    ).first()
+    variance_delta_pct = 0.0
+    variance_flagged = False
+    if previous_success and int(previous_success.chunk_count or 0) > 0:
+        baseline = float(previous_success.chunk_count)
+        variance_delta_pct = abs((chunk_count - baseline) / baseline) * 100.0
+        variance_flagged = variance_delta_pct > 10.0
+        if variance_flagged:
+            logger.warning(
+                "INGEST_VARIANCE_FLAG job_id=%s baseline_chunks=%d current_chunks=%d delta_pct=%.2f",
+                job.id,
+                int(previous_success.chunk_count or 0),
+                chunk_count,
+                variance_delta_pct,
+            )
+
+    job.skipped_files_count = int(len(skipped_files))
+    job.avg_chunks_per_file = avg_chunks
+    job.min_chunks_per_file = min_chunks
+    job.max_chunks_per_file = max_chunks
+    job.median_chunks_per_file = median_chunks
+    job.chunk_variance_flagged = variance_flagged
+    job.chunk_variance_delta_pct = variance_delta_pct
+    session.add(job)
+
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)

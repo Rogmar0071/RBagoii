@@ -1,32 +1,34 @@
 from __future__ import annotations
 
 from enum import Enum
+import re
 
 
 class QueryType(str, Enum):
     STRUCTURAL = "STRUCTURAL"
+    HYBRID = "HYBRID"
     SEMANTIC = "SEMANTIC"
 
 
-_STRUCTURAL_PATTERNS = (
-    "how many files",
-    "number of files",
-    "count files",
-    "list files",
-    "list all files",
-    "show files",
-    "repository structure",
-    "repo structure",
-    "file tree",
-    "directory structure",
-    "file paths",
-    "what files exist",
+_STRUCTURAL_KEYWORD_RE = re.compile(r"\b(count|list|structure|paths?|files?)\b", re.IGNORECASE)
+_SEMANTIC_PATTERNS = (
+    "what do they do",
+    "what does",
+    "explain",
+    "why",
+    "purpose",
+    "describe",
+    "how does",
+    "how do",
 )
 
 
 def classify_query(input_text: str) -> QueryType:
     lower = (input_text or "").lower()
-    for pattern in _STRUCTURAL_PATTERNS:
-        if pattern in lower:
-            return QueryType.STRUCTURAL
+    has_structural_intent = bool(_STRUCTURAL_KEYWORD_RE.search(lower))
+    if has_structural_intent:
+        has_semantic_intent = any(pattern in lower for pattern in _SEMANTIC_PATTERNS)
+        if has_semantic_intent:
+            return QueryType.HYBRID
+        return QueryType.STRUCTURAL
     return QueryType.SEMANTIC

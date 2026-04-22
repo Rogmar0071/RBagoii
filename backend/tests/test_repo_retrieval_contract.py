@@ -302,3 +302,38 @@ def test_chat_flags_retrieval_failure_when_reply_not_grounded(
     assert body["retrieved_chunks"] > 0
     assert body["error_code"] == "RETRIEVAL_FAILURE"
     assert body["reply"] == "RETRIEVAL_FAILURE"
+
+
+def test_repo_files_endpoint_is_paginated(client: TestClient):
+    repo_id = _seed_repo_with_many_chunks(conversation_id=str(uuid.uuid4()), file_count=200)
+    resp = client.get(f"/repos/{repo_id}/files?page=1&per_page=20", headers=AUTH)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["file_count"] == 200
+    assert len(body["files"]) == 20
+    assert body["has_more"] is True
+
+
+def test_repo_retrieve_blocks_when_chunk_count_below_threshold(client: TestClient):
+    repo_id = _seed_repo_with_chunks(conversation_id=str(uuid.uuid4()))
+    import backend.app.database as db_module
+    from backend.app.models import RepoIndexRegistry
+
+    with Session(db_module.get_engine()) as session:
+        session.add(
+            RepoIndexRegistry(
+                repo_id=uuid.UUID(repo_id),
+                total_files=2,
+                total_chunks=2,
+                indexed=True,
+                status="indexed",
+            )
+        )
+        session.commit()
+    resp = client.post(
+        f"/repos/{repo_id}/retrieve",
+        json={"query": "answer function", "top_k": 12},
+        headers=AUTH,
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "INSUFFICIENT_CONTEXT"

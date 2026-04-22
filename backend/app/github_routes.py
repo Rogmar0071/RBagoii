@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 # Get GitHub token from environment (optional - if not set, uses public API with rate limits)
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+_MIN_RETRIEVAL_CHUNKS = 50
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +148,15 @@ class RepoRetrieveResponse(BaseModel):
     retrieved_chunks: list[RepoRetrievedChunk]
     total_chunks_in_repo: int
     retrieved_count: int
+
+
+class RepoFilesPageResponse(BaseModel):
+    repo_id: str
+    file_count: int
+    page: int
+    per_page: int
+    files: list[str]
+    has_more: bool
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +356,54 @@ def get_repo_structure(
     )
 
 
+@router.get(
+    "/repos/{repo_id}/files",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+    response_model=RepoFilesPageResponse,
+)
+def list_repo_files(
+    repo_id: str,
+    page: int = 1,
+    per_page: int = 20,
+    session: Session = Depends(get_session),
+) -> RepoFilesPageResponse:
+    try:
+        repo_uuid = uuid.UUID(repo_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid repo ID")
+
+    if page < 1:
+        raise HTTPException(status_code=400, detail="page must be >= 1")
+    if per_page < 1 or per_page > 100:
+        raise HTTPException(status_code=400, detail="per_page must be between 1 and 100")
+
+    repo = session.get(Repo, repo_uuid)
+    if repo is None:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    paths = sorted(
+        {
+            row.file_path
+            for row in session.exec(
+                select(RepoChunk.file_path).where(RepoChunk.repo_id == repo_uuid)
+            ).all()
+            if row
+        }
+    )
+    total = len(paths)
+    start = (page - 1) * per_page
+    end = start + per_page
+    return RepoFilesPageResponse(
+        repo_id=str(repo_uuid),
+        file_count=total,
+        page=page,
+        per_page=per_page,
+        files=paths[start:end],
+        has_more=end < total,
+    )
+
+
 @router.post(
     "/repos/{repo_id}/retrieve",
     status_code=200,
@@ -369,6 +427,9 @@ def retrieve_repo_chunks(
     repo = session.get(Repo, repo_uuid)
     if repo is None:
         raise HTTPException(status_code=404, detail="Repository not found")
+    registry = session.get(RepoIndexRegistry, repo_uuid)
+    if registry is not None and int(registry.total_chunks or 0) < _MIN_RETRIEVAL_CHUNKS:
+        raise HTTPException(status_code=409, detail="INSUFFICIENT_CONTEXT")
 
     all_chunks = session.exec(
         select(RepoChunk).where(RepoChunk.repo_id == repo_uuid).order_by(
@@ -420,7 +481,6 @@ def retrieve_repo_chunks(
         for score, chunk in selected
     ]
 
-    registry = session.get(RepoIndexRegistry, repo_uuid)
     if registry is None:
         registry = RepoIndexRegistry(
             repo_id=repo_uuid,

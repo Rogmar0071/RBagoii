@@ -80,7 +80,7 @@ class TestBlobStorage:
         """File upload stores data in blob_data field."""
         from io import BytesIO
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob
@@ -222,6 +222,12 @@ class TestBlobStorage:
             assert job.status == "success"
             assert job.file_count == 2
             assert job.chunk_count > 0
+            assert job.avg_chunks_per_file > 0
+            assert job.skipped_files_count == 0
+            assert job.min_chunks_per_file > 0
+            assert job.max_chunks_per_file >= job.min_chunks_per_file
+            assert job.median_chunks_per_file > 0
+            assert job.chunk_variance_flagged is False
 
             # Verify chunks were created
             chunks = list(session.exec(
@@ -257,6 +263,66 @@ class TestBlobStorage:
             job2_record = session.get(IngestJob, uuid.UUID(job2_id))
             assert job2_record.chunk_count == job.chunk_count  # SAME output
             assert job2_record.file_count == job.file_count
+            assert job2_record.chunk_variance_flagged is False
+
+    def test_repo_ingestion_flags_chunk_variance_above_tolerance(self, client):
+        import json
+
+        from sqlmodel import Session
+
+        from backend.app.database import get_engine
+        from backend.app.models import IngestJob
+
+        baseline_manifest = {
+            "repo_url": "https://github.com/test/variance-repo",
+            "owner": "test",
+            "name": "variance-repo",
+            "branch": "main",
+            "files": [{"path": "src/a.py", "content": "print('a')\n", "size": 10}],
+        }
+        large_manifest = {
+            "repo_url": "https://github.com/test/variance-repo",
+            "owner": "test",
+            "name": "variance-repo",
+            "branch": "main",
+            "files": [
+                {
+                    "path": "src/a.py",
+                    "content": ("x = 1\n" * 5000),
+                    "size": 30000,
+                }
+            ],
+        }
+
+        from backend.app.ingest_pipeline import transition
+
+        for manifest in (baseline_manifest, large_manifest):
+            job = IngestJob(
+                id=uuid.uuid4(),
+                kind="repo",
+                source="https://github.com/test/variance-repo@main",
+                branch="main",
+                status="created",
+                blob_data=json.dumps(manifest).encode("utf-8"),
+                blob_mime_type="application/json",
+                blob_size_bytes=len(json.dumps(manifest).encode("utf-8")),
+            )
+            with Session(get_engine()) as session:
+                session.add(job)
+                session.commit()
+                job_id = job.id
+            transition(job_id, "stored")
+            transition(job_id, "queued")
+
+        with Session(get_engine()) as session:
+            latest = session.exec(
+                select(IngestJob)
+                .where(IngestJob.source == "https://github.com/test/variance-repo@main")
+                .order_by(IngestJob.created_at.desc())
+            ).first()
+            assert latest is not None
+            assert latest.chunk_variance_flagged is True
+            assert latest.chunk_variance_delta_pct > 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -888,4 +954,3 @@ class TestPipelinePurity:
         assert len(failed_transitions) == 1, (
             f"Expected exactly 1 failed transition, got {failed_transitions}"
         )
-

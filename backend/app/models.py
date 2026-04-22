@@ -603,6 +603,10 @@ class RepoIndexRegistry(SQLModel, table=True):
     # Backend-observed retrieval count from the latest /repos/{repo_id}/retrieve call.
     # Kept server-side so UI can show "Retrieved (last query)" without client caching.
     last_retrieved_count: int = Field(default=0)
+    min_chunks_per_file: int = Field(default=0)
+    max_chunks_per_file: int = Field(default=0)
+    median_chunks_per_file: float = Field(default=0.0)
+    chunk_variance_flagged: bool = Field(default=False)
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
@@ -801,6 +805,17 @@ class IngestJob(SQLModel, table=True):
     # Counts populated as the pipeline runs
     file_count: int = Field(default=0)
     chunk_count: int = Field(default=0)
+    repo_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), nullable=True, index=True),
+    )
+    avg_chunks_per_file: float = Field(default=0.0)
+    skipped_files_count: int = Field(default=0)
+    min_chunks_per_file: int = Field(default=0)
+    max_chunks_per_file: int = Field(default=0)
+    median_chunks_per_file: float = Field(default=0.0)
+    chunk_variance_flagged: bool = Field(default=False)
+    chunk_variance_delta_pct: float = Field(default=0.0)
 
     created_at: Optional[datetime] = Field(
         default=None,

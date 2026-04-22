@@ -122,7 +122,9 @@ def test_structural_how_many_files_bypasses_retrieval_and_llm(
     body = resp.json()
     assert body["type"] == "structural"
     assert body["file_count"] == 200
-    assert len(body["files"]) == 200
+    assert body["has_more"] is True
+    assert len(body["preview"]) == 20
+    assert body["files"] is None
     assert body["retrieved_chunks"] == 0
     assert body["retrieved_count"] == 0
 
@@ -134,12 +136,76 @@ def test_structural_list_all_files_matches_debug_endpoint(client: TestClient):
     chat_body = chat_resp.json()
     assert chat_body["type"] == "structural"
     assert chat_body["file_count"] == 200
-    assert len(chat_body["files"]) == 200
-    assert len(chat_body["files"]) == len(set(chat_body["files"]))
+    if chat_body["files"] is not None:
+        assert len(chat_body["files"]) == 200
+        assert len(chat_body["files"]) == len(set(chat_body["files"]))
+    else:
+        assert chat_body["has_more"] is True
+        assert len(chat_body["preview"]) == 20
     assert chat_body["retrieved_chunks"] == 0
 
     debug_resp = client.get(f"/debug/structural/{repo_id}", headers=AUTH)
     assert debug_resp.status_code == 200, debug_resp.text
     debug_body = debug_resp.json()
     assert debug_body["count"] == chat_body["file_count"]
-    assert debug_body["files"] == chat_body["files"]
+    if chat_body["files"] is not None:
+        assert debug_body["files"] == chat_body["files"]
+
+
+def test_hybrid_query_is_split_structural_then_semantic(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(
+        cr,
+        "retrieve_relevant_chunks",
+        lambda *args, **kwargs: [
+            type("Chunk", (), {"repo_id": uuid.uuid4(), "file_path": "src/file_1.py", "content": "x", "chunk_index": 0, "id": uuid.uuid4()})()
+        ],
+    )
+    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "Semantic explanation")
+
+    resp = _chat(client, repo_id=repo_id, message="how many files and what do they do")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "hybrid"
+    assert body["reply"] == "HYBRID_QUERY_RESULT"
+    assert body["structural"]["file_count"] == 200
+    assert body["semantic"]["result"] == "Semantic explanation"
+    assert body["semantic_source"] == "retrieval"
+    assert body["structural_source"] == "index"
+    assert "semantic" in body
+
+
+def test_hybrid_query_blocks_llm_when_retrieval_empty(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: pytest.fail("llm called when retrieval is empty"),
+    )
+
+    resp = _chat(client, repo_id=repo_id, message="how many files and what do they do")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "hybrid"
+    assert body["structural"]["file_count"] == 200
+    assert body["semantic"]["result"] == "INSUFFICIENT_CONTEXT"
+
+
+def test_classifier_confusion_still_routes_structural(client: TestClient):
+    repo_id = _seed_repo(200)
+    resp = _chat(client, repo_id=repo_id, message="CoUnT... FILES??? now")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "structural"
+    assert body["retrieved_chunks"] == 0
