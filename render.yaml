@@ -39,7 +39,7 @@ services:
     name: worker
     runtime: docker
     dockerfilePath: backend/Dockerfile
-    startCommand: python -m rq worker --url $REDIS_URL default
+    startCommand: bash backend/worker-entrypoint.sh
     envVars:
       - key: DATABASE_URL
         sync: false

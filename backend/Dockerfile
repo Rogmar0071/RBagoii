@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 COPY backend/alembic.ini ./backend/alembic.ini
 COPY backend/alembic/ ./backend/alembic/
 COPY backend/entrypoint.sh ./backend/entrypoint.sh
+COPY backend/worker-entrypoint.sh ./backend/worker-entrypoint.sh
 COPY backend/app/ ./backend/app/
 
 # Persistent data directory (mount a volume here in production).
