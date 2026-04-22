@@ -45,8 +45,10 @@ from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
-from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo
+from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo, RepoIndexRegistry
+from backend.app.query_classifier import QueryType, classify_query
 from backend.app.repo_retrieval import retrieve_relevant_chunks
+from backend.app.structural_handler import handle_structural_query
 from ui_blueprint.domain.ir import SCHEMA_VERSION
 from ui_blueprint.domain.openai_provider import _build_completions_url
 from ui_blueprint.prompt_security import (
@@ -291,6 +293,9 @@ class ChatPostResponse(BaseModel):
     reply: str
     error_code: str | None = None
     retrieved_count: int = 0
+    type: str | None = None
+    file_count: int | None = None
+    files: list[str] | None = None
     repo_count: int = 0
     total_chunks: int = 0
     retrieved_chunks: int = 0
@@ -1192,6 +1197,97 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 history = []
             else:
                 history = _load_recent_history(db, conversation_id=active_conversation_id)
+
+            if conversation_repo_ids and db is not None:
+                query_type = classify_query(message)
+                if query_type == QueryType.STRUCTURAL:
+                    structural_result = handle_structural_query(
+                        db=db,
+                        repo_ids=conversation_repo_ids,
+                        query_text=message,
+                    )
+                    if structural_result.get("error_code") is not None:
+                        reply = "INSUFFICIENT_CONTEXT"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
+                            conversation_id=active_conversation_id,
+                        )
+                        return _json_response(
+                            ChatPostResponse(
+                                conversation_id=active_conversation_id,
+                                reply=reply,
+                                error_code="INSUFFICIENT_CONTEXT",
+                                retrieved_count=0,
+                                type="structural",
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=0,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                            )
+                        )
+
+                    registries = db.exec(
+                        select(RepoIndexRegistry).where(
+                            RepoIndexRegistry.repo_id.in_(conversation_repo_ids)  # type: ignore[attr-defined]
+                        )
+                    ).all()
+                    index_file_count = sum(int(row.total_files or 0) for row in registries)
+                    structural_file_count = int(structural_result["data"]["count"])
+                    if structural_file_count != index_file_count:
+                        reply = "INSUFFICIENT_CONTEXT"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
+                            conversation_id=active_conversation_id,
+                        )
+                        return _json_response(
+                            ChatPostResponse(
+                                conversation_id=active_conversation_id,
+                                reply=reply,
+                                error_code="INSUFFICIENT_CONTEXT",
+                                retrieved_count=0,
+                                type="structural",
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=0,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                            )
+                        )
+
+                    reply = "STRUCTURAL_QUERY_RESULT"
+                    assistant_message = _persist_message(
+                        db,
+                        "assistant",
+                        reply,
+                        context,
+                        conversation_id=active_conversation_id,
+                    )
+                    return _json_response(
+                        ChatPostResponse(
+                            conversation_id=active_conversation_id,
+                            reply=reply,
+                            error_code=None,
+                            retrieved_count=0,
+                            type="structural",
+                            file_count=structural_file_count,
+                            files=list(structural_result["data"]["files"]),
+                            repo_count=repo_count,
+                            total_chunks=total_chunks,
+                            retrieved_chunks=0,
+                            tools_available=_TOOLS_AVAILABLE,
+                            user_message=user_message,
+                            assistant_message=assistant_message,
+                        )
+                    )
 
             # Read OPENAI_API_KEY at call time -- never returned or logged.
             openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()

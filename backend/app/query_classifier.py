@@ -19,6 +19,8 @@ _STRUCTURAL_PATTERNS = (
     "repo structure",
     "file tree",
     "directory structure",
+    "file paths",
+    "what files exist",
 )
 
 
@@ -28,4 +30,3 @@ def classify_query(input_text: str) -> QueryType:
         if pattern in lower:
             return QueryType.STRUCTURAL
     return QueryType.SEMANTIC
-

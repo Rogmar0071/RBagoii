@@ -257,7 +257,7 @@ def test_chat_large_repo_grounding_and_debug_metadata(client: TestClient, monkey
     resp = client.post(
         "/api/chat",
         json={
-            "message": "how many files",
+            "message": "where is files inventory entry defined",
             "conversation_id": str(uuid.uuid4()),
             "agent_mode": False,
             "context": {"repos": [repo_id]},
