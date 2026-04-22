@@ -66,10 +66,10 @@ def get_session() -> Generator[Session, None, None]:
 def init_db() -> None:
     """
     Create all tables defined in ``backend.app.models`` (idempotent).
-    
+
     WARNING: This function is DEPRECATED for production use.
     It only exists for backward compatibility with tests.
-    
+
     In production, use ``validate_and_init_db()`` which enforces
     migration-based schema management.
     """
@@ -81,48 +81,49 @@ def init_db() -> None:
 def validate_and_init_db(strict: bool = True) -> None:
     """
     Initialize database with schema validation enforcement.
-    
+
     MQP-CONTRACT: AIC-v1.1-SCHEMA-MIGRATION-ENFORCEMENT
-    
+
     This function:
     1. Validates that schema matches application models
     2. Blocks startup if schema mismatch detected
     3. Prevents direct schema mutations outside migrations
-    
+
     Args:
         strict: If True, enforce schema validation (default: True).
                 If False, fall back to init_db() for test compatibility.
-    
+
     Raises:
         SchemaValidationError: If schema validation fails (blocks startup)
     """
     import os
+
     from backend.app import models as _models  # noqa: F401
-    
+
     db_url = os.environ.get("DATABASE_URL", "").strip()
-    
+
     # For tests with in-memory databases, allow create_all
     is_test_db = not db_url or ":memory:" in db_url or db_url.startswith("sqlite:///")
-    
+
     if not strict or is_test_db:
         # Test mode: allow create_all for backward compatibility
         SQLModel.metadata.create_all(get_engine())
         return
-    
+
     # Production mode: enforce schema validation
     from backend.app.schema_validation import (
-        validate_schema_on_startup,
-        block_create_all_in_production,
         SchemaValidationError,
+        block_create_all_in_production,
+        validate_schema_on_startup,
     )
-    
+
     try:
         # Block create_all in production
         block_create_all_in_production()
-        
+
         # Validate schema
         validate_schema_on_startup(get_engine())
-        
+
     except SchemaValidationError as e:
         # Schema validation failed - log and re-raise
         import logging
