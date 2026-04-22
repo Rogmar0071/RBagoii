@@ -3,6 +3,8 @@ backend.app.database
 ====================
 Database engine and session helpers.
 
+MQP-CONTRACT: AIC-v1.1-SCHEMA-MIGRATION-ENFORCEMENT
+
 Configuration
 -------------
 DATABASE_URL    SQLAlchemy-compatible URL.  Examples:
@@ -14,8 +16,11 @@ When DATABASE_URL is not set the module still imports cleanly but
 ``get_engine()`` / ``get_session()`` raise ``RuntimeError`` with a
 helpful message so the calling route can return HTTP 503.
 
-Call ``init_db()`` once at application start-up to create all tables
-(no-op if the tables already exist).
+Migration Enforcement
+---------------------
+Schema changes MUST go through Alembic migrations.
+Use ``validate_and_init_db()`` at startup to enforce schema validation.
+Direct use of ``init_db()`` is deprecated - it only exists for test compatibility.
 """
 
 from __future__ import annotations
@@ -59,7 +64,73 @@ def get_session() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """Create all tables defined in ``backend.app.models`` (idempotent)."""
+    """
+    Create all tables defined in ``backend.app.models`` (idempotent).
+
+    WARNING: This function is DEPRECATED for production use.
+    It only exists for backward compatibility with tests.
+
+    In production, use ``validate_and_init_db()`` which enforces
+    migration-based schema management.
+    """
     from backend.app import models as _models  # noqa: F401 – registers SQLModel metadata
 
     SQLModel.metadata.create_all(get_engine())
+
+
+def validate_and_init_db(strict: bool = True) -> None:
+    """
+    Initialize database with schema validation enforcement.
+
+    MQP-CONTRACT: AIC-v1.1-SCHEMA-MIGRATION-ENFORCEMENT
+
+    This function:
+    1. Validates that schema matches application models
+    2. Blocks startup if schema mismatch detected
+    3. Prevents direct schema mutations outside migrations
+
+    Args:
+        strict: If True, enforce schema validation (default: True).
+                If False, fall back to init_db() for test compatibility.
+
+    Raises:
+        SchemaValidationError: If schema validation fails (blocks startup)
+    """
+    import os
+
+    from backend.app import models as _models  # noqa: F401
+
+    db_url = os.environ.get("DATABASE_URL", "").strip()
+
+    # For tests with in-memory databases, allow create_all
+    is_test_db = not db_url or ":memory:" in db_url or db_url.startswith("sqlite:///")
+
+    if not strict or is_test_db:
+        # Test mode: allow create_all for backward compatibility
+        SQLModel.metadata.create_all(get_engine())
+        return
+
+    # Production mode: enforce schema validation
+    from backend.app.schema_validation import (
+        SchemaValidationError,
+        block_create_all_in_production,
+        validate_schema_on_startup,
+    )
+
+    try:
+        # Block create_all in production
+        block_create_all_in_production()
+
+        # Validate schema
+        validate_schema_on_startup(get_engine())
+
+    except SchemaValidationError as e:
+        # Schema validation failed - log and re-raise
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"SCHEMA VALIDATION FAILED: {e}")
+        logger.error(
+            "APPLICATION STARTUP BLOCKED. "
+            "Run migrations: alembic -c backend/alembic.ini upgrade head"
+        )
+        raise
