@@ -229,6 +229,19 @@ class ChatContext(BaseModel):
     # First-class Repo IDs.  When present, context is built from Repo entities
     # rather than from the context.files list (which is the V1 compat path).
     repos: list[str] | None = None
+    # Backward-compatible alias accepted from some clients.
+    repo_ids: list[str] | None = None
+
+    @model_validator(mode="after")
+    def _normalize_repo_fields(self) -> "ChatContext":
+        merged: list[str] = []
+        for source in (self.repos or [], self.repo_ids or []):
+            for repo_id in source:
+                text = str(repo_id or "").strip()
+                if text and text not in merged:
+                    merged.append(text)
+        self.repos = merged or None
+        return self
 
 
 class ChatMessageResponse(BaseModel):
@@ -277,6 +290,8 @@ class ChatPostRequest(BaseModel):
     # Use POST /api/chat/conversation/new to obtain a conversation_id before sending
     # the first message.  No fallback, no implicit assignment.
     conversation_id: str
+    # Backward-compatible top-level alias for repo context.
+    repo_ids: list[str] | None = None
 
     @field_validator("message")
     @classmethod
@@ -291,6 +306,13 @@ class ChatPostRequest(BaseModel):
         # CONTEXT_ASSEMBLY_ALIGNMENT_V2: project scope requires project_id.
         if self.context_scope == "project" and not self.project_id:
             raise ValueError("project_id is required when context_scope is 'project'.")
+        if self.repo_ids:
+            merged = list(self.context.repos or [])
+            for repo_id in self.repo_ids:
+                text = str(repo_id or "").strip()
+                if text and text not in merged:
+                    merged.append(text)
+            self.context.repos = merged or None
         return self
 
 
