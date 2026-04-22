@@ -86,6 +86,13 @@ class IngestJobResponse(BaseModel):
     progress: int = 0
     file_count: int
     chunk_count: int
+    avg_chunks_per_file: float = 0.0
+    skipped_files_count: int = 0
+    min_chunks_per_file: int = 0
+    max_chunks_per_file: int = 0
+    median_chunks_per_file: float = 0.0
+    chunk_variance_flagged: bool = False
+    chunk_variance_delta_pct: float = 0.0
     error: Optional[str] = None
     conversation_id: Optional[str] = None
     workspace_id: Optional[str] = None
@@ -103,6 +110,13 @@ def _to_response(job: object) -> IngestJobResponse:
         progress=getattr(job, "progress", 0),  # type: ignore[attr-defined]
         file_count=job.file_count,  # type: ignore[attr-defined]
         chunk_count=job.chunk_count,  # type: ignore[attr-defined]
+        avg_chunks_per_file=float(getattr(job, "avg_chunks_per_file", 0.0)),
+        skipped_files_count=int(getattr(job, "skipped_files_count", 0)),
+        min_chunks_per_file=int(getattr(job, "min_chunks_per_file", 0)),
+        max_chunks_per_file=int(getattr(job, "max_chunks_per_file", 0)),
+        median_chunks_per_file=float(getattr(job, "median_chunks_per_file", 0.0)),
+        chunk_variance_flagged=bool(getattr(job, "chunk_variance_flagged", False)),
+        chunk_variance_delta_pct=float(getattr(job, "chunk_variance_delta_pct", 0.0)),
         error=job.error,  # type: ignore[attr-defined]
         conversation_id=job.conversation_id,  # type: ignore[attr-defined]
         workspace_id=job.workspace_id,  # type: ignore[attr-defined]
@@ -371,6 +385,7 @@ def ingest_repo(
         import httpx
 
         from backend.app.ingest_pipeline import (
+            INGESTIBLE_EXTENSIONS,
             REPO_MAX_FILE_CHARS,
             REPO_MAX_FILES,
             _fetch_github_tree,
@@ -412,20 +427,53 @@ def ingest_repo(
         logger.info("Fetching %d files from %s/%s@%s", len(blobs), owner, repo_name, body.branch)
         max_file_chars = int(os.environ.get("REPO_MAX_FILE_CHARS", str(REPO_MAX_FILE_CHARS)))
         files = []
+        skipped_files: list[dict[str, str]] = []
 
         with httpx.Client(timeout=60.0) as client:
             for blob in blobs:
                 file_path = blob["path"]
+                ext = os.path.splitext(file_path.lower())[1]
+                if ext not in INGESTIBLE_EXTENSIONS:
+                    skipped_files.append({"file_path": file_path, "reason": "unsupported"})
+                    logger.info(
+                        "INGEST_SKIP job_id=%s file_path=%s reason=%s",
+                        job_id,
+                        file_path,
+                        "unsupported",
+                    )
+                    continue
                 raw_bytes = _fetch_raw_file(owner, repo_name, body.branch, file_path, client)
 
                 if raw_bytes is None:
-                    logger.debug("Skipping file (fetch failed): %s", file_path)
+                    skipped_files.append({"file_path": file_path, "reason": "parse_error"})
+                    logger.info(
+                        "INGEST_SKIP job_id=%s file_path=%s reason=%s",
+                        job_id,
+                        file_path,
+                        "parse_error",
+                    )
                     continue
 
                 try:
-                    content = raw_bytes.decode("utf-8", errors="replace")[:max_file_chars]
+                    content = raw_bytes.decode("utf-8")
                 except Exception:
-                    logger.debug("Skipping non-UTF-8 file: %s", file_path)
+                    skipped_files.append({"file_path": file_path, "reason": "parse_error"})
+                    logger.info(
+                        "INGEST_SKIP job_id=%s file_path=%s reason=%s",
+                        job_id,
+                        file_path,
+                        "parse_error",
+                    )
+                    continue
+
+                if len(content) > max_file_chars:
+                    skipped_files.append({"file_path": file_path, "reason": "size"})
+                    logger.info(
+                        "INGEST_SKIP job_id=%s file_path=%s reason=%s",
+                        job_id,
+                        file_path,
+                        "size",
+                    )
                     continue
 
                 files.append({
@@ -443,7 +491,9 @@ def ingest_repo(
             "owner": owner,
             "name": repo_name,
             "branch": body.branch,
-            "files": files
+            "files": files,
+            "skipped_files": skipped_files,
+            "skipped_files_count": len(skipped_files),
         }
 
         # Serialize and store as blob

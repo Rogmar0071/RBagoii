@@ -69,6 +69,9 @@ _DEFAULT_MODEL_CHAT = "gpt-4.1-mini"
 _DEFAULT_BASE_URL = "https://api.openai.com"
 _DEFAULT_TIMEOUT = 30.0
 _GLOBAL_CHAT_HISTORY_LIMIT = 10
+_MIN_RETRIEVAL_CHUNKS = 50
+_STRUCTURAL_FILE_PREVIEW_SIZE = 20
+_STRUCTURAL_FILE_PAGINATION_THRESHOLD = 100
 
 _TOOLS_AVAILABLE = [
     "domains.derive",
@@ -296,6 +299,12 @@ class ChatPostResponse(BaseModel):
     type: str | None = None
     file_count: int | None = None
     files: list[str] | None = None
+    preview: list[str] | None = None
+    has_more: bool | None = None
+    structural: dict[str, Any] | None = None
+    semantic: dict[str, Any] | None = None
+    structural_source: str | None = None
+    semantic_source: str | None = None
     repo_count: int = 0
     total_chunks: int = 0
     retrieved_chunks: int = 0
@@ -1198,9 +1207,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             else:
                 history = _load_recent_history(db, conversation_id=active_conversation_id)
 
+            hybrid_structural_result: dict[str, Any] | None = None
+            query_type = classify_query(message)
             if conversation_repo_ids and db is not None:
-                query_type = classify_query(message)
-                if query_type == QueryType.STRUCTURAL:
+                if query_type in (QueryType.STRUCTURAL, QueryType.HYBRID):
                     structural_result = handle_structural_query(
                         db=db,
                         repo_ids=conversation_repo_ids,
@@ -1263,31 +1273,102 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         )
 
-                    reply = "STRUCTURAL_QUERY_RESULT"
-                    assistant_message = _persist_message(
-                        db,
-                        "assistant",
-                        reply,
-                        context,
-                        conversation_id=active_conversation_id,
-                    )
-                    return _json_response(
-                        ChatPostResponse(
+                    if query_type == QueryType.STRUCTURAL:
+                        all_files = list(structural_result["data"]["files"])
+                        preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                        has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                        reply = "STRUCTURAL_QUERY_RESULT"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
                             conversation_id=active_conversation_id,
-                            reply=reply,
-                            error_code=None,
-                            retrieved_count=0,
-                            type="structural",
-                            file_count=structural_file_count,
-                            files=list(structural_result["data"]["files"]),
-                            repo_count=repo_count,
-                            total_chunks=total_chunks,
-                            retrieved_chunks=0,
-                            tools_available=_TOOLS_AVAILABLE,
-                            user_message=user_message,
-                            assistant_message=assistant_message,
                         )
+                        return _json_response(
+                            ChatPostResponse(
+                                conversation_id=active_conversation_id,
+                                reply=reply,
+                                error_code=None,
+                                retrieved_count=0,
+                                type="structural",
+                                file_count=structural_file_count,
+                                files=None if has_more else all_files,
+                                preview=preview_files if has_more else None,
+                                has_more=has_more,
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=0,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                            )
+                        )
+
+                    hybrid_structural_result = structural_result
+
+            enforce_retrieval_threshold = False
+            if conversation_repo_ids and db is not None and query_type != QueryType.STRUCTURAL:
+                registries_for_threshold = db.exec(
+                    select(RepoIndexRegistry).where(
+                        RepoIndexRegistry.repo_id.in_(conversation_repo_ids)  # type: ignore[attr-defined]
                     )
+                ).all()
+                if registries_for_threshold and all(
+                    r.status in {"indexed", "completed"} for r in registries_for_threshold
+                ):
+                    enforce_retrieval_threshold = (
+                        sum(int(r.total_chunks or 0) for r in registries_for_threshold)
+                        < _MIN_RETRIEVAL_CHUNKS
+                    )
+
+            if enforce_retrieval_threshold:
+                structural_payload = None
+                if hybrid_structural_result is not None:
+                    all_files = list(hybrid_structural_result["data"]["files"])
+                    has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                    structural_payload = {
+                        "file_count": int(hybrid_structural_result["data"]["count"]),
+                        "files": None if has_more else all_files,
+                        "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE] if has_more else None,
+                        "has_more": has_more,
+                    }
+                reply = "INSUFFICIENT_CONTEXT"
+                assistant_message = _persist_message(
+                    db,
+                    "assistant",
+                    reply,
+                    context,
+                    conversation_id=active_conversation_id,
+                )
+                return _json_response(
+                    ChatPostResponse(
+                        conversation_id=active_conversation_id,
+                        reply=reply,
+                        error_code="INSUFFICIENT_CONTEXT",
+                        retrieved_count=0,
+                        type="hybrid" if query_type == QueryType.HYBRID else None,
+                        file_count=(
+                            int(hybrid_structural_result["data"]["count"])
+                            if hybrid_structural_result is not None
+                            else None
+                        ),
+                        structural=structural_payload,
+                        semantic=(
+                            {"result": "INSUFFICIENT_CONTEXT", "retrieved_chunks": 0}
+                            if query_type == QueryType.HYBRID
+                            else None
+                        ),
+                        structural_source="index" if query_type == QueryType.HYBRID else None,
+                        semantic_source="retrieval" if query_type == QueryType.HYBRID else None,
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=0,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+                )
 
             # Read OPENAI_API_KEY at call time -- never returned or logged.
             openai_api_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -1306,7 +1387,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         retrieved_chunks = retrieved_count
                         repo_chunks_for_grounding = repo_chunks
                         if not repo_chunks:
-                            reply = "REPO_CONTEXT_EMPTY"
+                            reply = (
+                                "INSUFFICIENT_CONTEXT"
+                                if query_type == QueryType.HYBRID
+                                else "REPO_CONTEXT_EMPTY"
+                            )
                             assistant_message = _persist_message(
                                 db,
                                 "assistant",
@@ -1318,14 +1403,45 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
                                 active_conversation_id,
                                 retrieved_count,
-                                "REPO_CONTEXT_EMPTY",
+                                "INSUFFICIENT_CONTEXT"
+                                if query_type == QueryType.HYBRID
+                                else "REPO_CONTEXT_EMPTY",
                             )
+                            structural_payload = None
+                            if hybrid_structural_result is not None:
+                                all_files = list(hybrid_structural_result["data"]["files"])
+                                has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                                structural_payload = {
+                                    "file_count": int(hybrid_structural_result["data"]["count"]),
+                                    "files": None if has_more else all_files,
+                                    "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                    if has_more
+                                    else None,
+                                    "has_more": has_more,
+                                }
                             return _json_response(
                                 ChatPostResponse(
                                     conversation_id=active_conversation_id,
                                     reply=reply,
-                                    error_code="REPO_CONTEXT_EMPTY",
+                                    error_code=(
+                                        "INSUFFICIENT_CONTEXT"
+                                        if query_type == QueryType.HYBRID
+                                        else "REPO_CONTEXT_EMPTY"
+                                    ),
                                     retrieved_count=retrieved_count,
+                                    type="hybrid" if query_type == QueryType.HYBRID else None,
+                                    structural=structural_payload,
+                                    semantic=(
+                                        {"result": "INSUFFICIENT_CONTEXT", "retrieved_chunks": 0}
+                                        if query_type == QueryType.HYBRID
+                                        else None
+                                    ),
+                                    structural_source=(
+                                        "index" if query_type == QueryType.HYBRID else None
+                                    ),
+                                    semantic_source=(
+                                        "retrieval" if query_type == QueryType.HYBRID else None
+                                    ),
                                     repo_count=repo_count,
                                     total_chunks=total_chunks,
                                     retrieved_chunks=retrieved_chunks,
@@ -1336,7 +1452,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         # NO_SILENT_FALLBACKS: with attached repos, never emit generic
                         # fallback content when grounded generation is unavailable.
-                        reply = "RETRIEVAL_FAILURE"
+                        reply = (
+                            "INSUFFICIENT_CONTEXT"
+                            if query_type == QueryType.HYBRID
+                            else "RETRIEVAL_FAILURE"
+                        )
                         assistant_message = _persist_message(
                             db,
                             "assistant",
@@ -1348,14 +1468,48 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
                             active_conversation_id,
                             retrieved_count,
-                            "RETRIEVAL_FAILURE",
+                            "INSUFFICIENT_CONTEXT"
+                            if query_type == QueryType.HYBRID
+                            else "RETRIEVAL_FAILURE",
                         )
+                        structural_payload = None
+                        if hybrid_structural_result is not None:
+                            all_files = list(hybrid_structural_result["data"]["files"])
+                            has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                            structural_payload = {
+                                "file_count": int(hybrid_structural_result["data"]["count"]),
+                                "files": None if has_more else all_files,
+                                "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                if has_more
+                                else None,
+                                "has_more": has_more,
+                            }
                         return _json_response(
                             ChatPostResponse(
                                 conversation_id=active_conversation_id,
                                 reply=reply,
-                                error_code="RETRIEVAL_FAILURE",
+                                error_code=(
+                                    "INSUFFICIENT_CONTEXT"
+                                    if query_type == QueryType.HYBRID
+                                    else "RETRIEVAL_FAILURE"
+                                ),
                                 retrieved_count=retrieved_count,
+                                type="hybrid" if query_type == QueryType.HYBRID else None,
+                                structural=structural_payload,
+                                semantic=(
+                                    {
+                                        "result": "INSUFFICIENT_CONTEXT",
+                                        "retrieved_chunks": retrieved_chunks,
+                                    }
+                                    if query_type == QueryType.HYBRID
+                                    else None
+                                ),
+                                structural_source=(
+                                    "index" if query_type == QueryType.HYBRID else None
+                                ),
+                                semantic_source=(
+                                    "retrieval" if query_type == QueryType.HYBRID else None
+                                ),
                                 repo_count=repo_count,
                                 total_chunks=total_chunks,
                                 retrieved_chunks=retrieved_chunks,
@@ -1561,7 +1715,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 base_system_prompt += repo_block
 
                     if has_explicit_repo_context and no_index_data:
-                        reply = "REPO_CONTEXT_EMPTY"
+                        reply = (
+                            "INSUFFICIENT_CONTEXT"
+                            if query_type == QueryType.HYBRID
+                            else "REPO_CONTEXT_EMPTY"
+                        )
                         assistant_message = _persist_message(
                             db,
                             "assistant",
@@ -1573,14 +1731,48 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
                             active_conversation_id,
                             retrieved_count,
-                            "REPO_CONTEXT_EMPTY",
+                            "INSUFFICIENT_CONTEXT"
+                            if query_type == QueryType.HYBRID
+                            else "REPO_CONTEXT_EMPTY",
                         )
+                        structural_payload = None
+                        if hybrid_structural_result is not None:
+                            all_files = list(hybrid_structural_result["data"]["files"])
+                            has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                            structural_payload = {
+                                "file_count": int(hybrid_structural_result["data"]["count"]),
+                                "files": None if has_more else all_files,
+                                "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                if has_more
+                                else None,
+                                "has_more": has_more,
+                            }
                         return _json_response(
                             ChatPostResponse(
                                 conversation_id=active_conversation_id,
                                 reply=reply,
-                                error_code="REPO_CONTEXT_EMPTY",
+                                error_code=(
+                                    "INSUFFICIENT_CONTEXT"
+                                    if query_type == QueryType.HYBRID
+                                    else "REPO_CONTEXT_EMPTY"
+                                ),
                                 retrieved_count=retrieved_count,
+                                type="hybrid" if query_type == QueryType.HYBRID else None,
+                                structural=structural_payload,
+                                semantic=(
+                                    {
+                                        "result": "INSUFFICIENT_CONTEXT",
+                                        "retrieved_chunks": retrieved_chunks,
+                                    }
+                                    if query_type == QueryType.HYBRID
+                                    else None
+                                ),
+                                structural_source=(
+                                    "index" if query_type == QueryType.HYBRID else None
+                                ),
+                                semantic_source=(
+                                    "retrieval" if query_type == QueryType.HYBRID else None
+                                ),
                                 repo_count=repo_count,
                                 total_chunks=total_chunks,
                                 retrieved_chunks=retrieved_chunks,
@@ -1701,6 +1893,43 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     retrieved_count,
                     response_error_code,
                 )
+                if query_type == QueryType.HYBRID and hybrid_structural_result is not None:
+                    all_files = list(hybrid_structural_result["data"]["files"])
+                    has_more = len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                    return _json_response(
+                        ChatPostResponse(
+                            conversation_id=active_conversation_id,
+                            reply="HYBRID_QUERY_RESULT",
+                            error_code=response_error_code,
+                            retrieved_count=retrieved_count,
+                            type="hybrid",
+                            file_count=int(hybrid_structural_result["data"]["count"]),
+                            structural={
+                                "file_count": int(hybrid_structural_result["data"]["count"]),
+                                "files": None if has_more else all_files,
+                                "preview": all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                if has_more
+                                else None,
+                                "has_more": has_more,
+                            },
+                            semantic={
+                                "result": (
+                                    "INSUFFICIENT_CONTEXT"
+                                    if retrieved_chunks == 0 or reply == "RETRIEVAL_FAILURE"
+                                    else reply
+                                ),
+                                "retrieved_chunks": retrieved_chunks,
+                            },
+                            structural_source="index",
+                            semantic_source="retrieval",
+                            repo_count=repo_count,
+                            total_chunks=total_chunks,
+                            retrieved_chunks=retrieved_chunks,
+                            tools_available=_TOOLS_AVAILABLE,
+                            user_message=user_message,
+                            assistant_message=assistant_message,
+                        )
+                    )
                 return _json_response(
                     ChatPostResponse(
                         conversation_id=active_conversation_id,

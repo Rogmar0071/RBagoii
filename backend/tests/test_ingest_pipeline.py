@@ -489,6 +489,43 @@ class TestIngestRepoEndpoint:
         )
         assert resp.status_code in (401, 403)
 
+    def test_repo_ingestion_persists_skip_and_profile_metrics(self, client, monkeypatch):
+        import backend.app.ingest_pipeline as pipeline
+
+        def _mock_tree(owner, repo, branch, token):  # noqa: ARG001
+            return [
+                {"path": "src/good.py"},
+                {"path": "assets/image.png"},
+                {"path": "src/huge.py"},
+                {"path": "src/bad.py"},
+            ]
+
+        def _mock_raw(owner, repo, branch, path, http_client):  # noqa: ARG001
+            if path == "src/good.py":
+                return b"def ok():\n    return 1\n"
+            if path == "src/huge.py":
+                return ("x" * 60010).encode("utf-8")
+            if path == "src/bad.py":
+                return b"\xff\xfe\x00\xff"
+            return None
+
+        monkeypatch.setattr(pipeline, "_fetch_github_tree", _mock_tree)
+        monkeypatch.setattr(pipeline, "_fetch_raw_file", _mock_raw)
+
+        resp = client.post(
+            "/v1/ingest/repo",
+            headers=_AUTH,
+            json={"repo_url": "https://github.com/owner/repo-metrics", "branch": "main"},
+        )
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert body["kind"] == "repo"
+        assert body["file_count"] >= 1
+        assert body["chunk_count"] >= 1
+        assert body["skipped_files_count"] >= 3
+        assert body["avg_chunks_per_file"] > 0
+        assert body["max_chunks_per_file"] >= body["min_chunks_per_file"]
+
 
 # ---------------------------------------------------------------------------
 # API: GET /v1/ingest/jobs and GET /v1/ingest/{job_id}
