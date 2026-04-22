@@ -22,9 +22,23 @@ class QueryRuntime:
     classification: QueryType
     state: QueryState = QueryState.RECEIVED
     state_history: list[QueryState] = field(default_factory=lambda: [QueryState.RECEIVED])
+    execution_path: list[str] = field(default_factory=lambda: ["execute_query"])
     structural_called: bool = False
     retrieval_called: bool = False
     llm_called: bool = False
+
+
+@dataclass
+class ExecutionTrace:
+    classification: str
+    execution_path: list[str]
+    structural_called: bool
+    retrieval_called: bool
+    llm_called: bool
+
+
+class RuntimeViolationError(RuntimeError):
+    """Raised when runtime invariants are violated."""
 
 
 _ALLOWED_TRANSITIONS: dict[QueryState, set[QueryState]] = {
@@ -63,6 +77,46 @@ def _validate_structural_result(result: dict[str, Any]) -> bool:
     return source == "index_registry"
 
 
+def call_llm(
+    query: str,
+    semantic_payload: dict[str, Any],
+    llm_handler: Callable[[str, dict[str, Any]], str] | None,
+) -> str | None:
+    """Single LLM interface for router-controlled query execution."""
+    if llm_handler is None:
+        return None
+    return llm_handler(query, semantic_payload)
+
+
+def build_execution_trace(
+    runtime: QueryRuntime,
+    path_prefix: list[str] | None = None,
+) -> ExecutionTrace:
+    prefix = path_prefix or []
+    return ExecutionTrace(
+        classification=runtime.classification.value,
+        execution_path=[*prefix, *runtime.execution_path],
+        structural_called=runtime.structural_called,
+        retrieval_called=runtime.retrieval_called,
+        llm_called=runtime.llm_called,
+    )
+
+
+def verify_execution_trace(trace: ExecutionTrace) -> None:
+    classification = trace.classification
+    if classification == QueryType.STRUCTURAL.value:
+        if not trace.structural_called:
+            raise RuntimeViolationError("INVALID_EXECUTION_PATH")
+        if trace.retrieval_called or trace.llm_called:
+            raise RuntimeViolationError("LLM_BYPASS_DETECTED")
+        return
+    if classification == QueryType.SEMANTIC.value and not trace.retrieval_called:
+        raise RuntimeViolationError("ROUTER_AUTHORITY_VIOLATION")
+    if classification == QueryType.HYBRID.value:
+        if not trace.structural_called or not trace.retrieval_called:
+            raise RuntimeViolationError("INVALID_EXECUTION_PATH")
+
+
 def execute_query(
     *,
     classification: QueryType,
@@ -77,6 +131,7 @@ def execute_query(
             _transition(runtime, QueryState.CLASSIFIED_STRUCTURAL)
             _transition(runtime, QueryState.EXECUTED_STRUCTURAL)
             runtime.structural_called = True
+            runtime.execution_path.append("structural_handler")
             structural = structural_handler(query)
             if not _validate_structural_result(structural):
                 _transition(runtime, QueryState.FAILED)
@@ -87,22 +142,28 @@ def execute_query(
             _transition(runtime, QueryState.CLASSIFIED_SEMANTIC)
             _transition(runtime, QueryState.EXECUTED_SEMANTIC)
             runtime.retrieval_called = True
+            runtime.execution_path.append("retrieval_handler")
             semantic = retrieval_handler(query)
             retrieved_chunks = int(semantic.get("retrieved_chunks", 0) or 0)
             if retrieved_chunks <= 0:
                 return {"error_code": "INSUFFICIENT_CONTEXT"}, runtime
             if llm_handler is not None:
+                llm_output = call_llm(query, semantic, llm_handler)
                 runtime.llm_called = True
-                llm_handler(query, semantic)
+                runtime.execution_path.append("call_llm")
+            else:
+                llm_output = None
             return {
                 "type": "semantic",
                 "retrieved_chunks": retrieved_chunks,
                 "source": "retrieval",
+                "llm_output": llm_output,
             }, runtime
 
         _transition(runtime, QueryState.CLASSIFIED_HYBRID)
         _transition(runtime, QueryState.EXECUTED_STRUCTURAL)
         runtime.structural_called = True
+        runtime.execution_path.append("structural_handler")
         structural = structural_handler(query)
         if not _validate_structural_result(structural):
             _transition(runtime, QueryState.FAILED)
@@ -110,18 +171,23 @@ def execute_query(
 
         _transition(runtime, QueryState.EXECUTED_SEMANTIC)
         runtime.retrieval_called = True
+        runtime.execution_path.append("retrieval_handler")
         semantic = retrieval_handler(query)
         retrieved_chunks = int(semantic.get("retrieved_chunks", 0) or 0)
         if retrieved_chunks <= 0:
             semantic_payload: dict[str, Any] = {"error_code": "INSUFFICIENT_CONTEXT"}
         else:
             if llm_handler is not None:
+                llm_output = call_llm(query, semantic, llm_handler)
                 runtime.llm_called = True
-                llm_handler(query, semantic)
+                runtime.execution_path.append("call_llm")
+            else:
+                llm_output = None
             semantic_payload = {
                 "type": "semantic",
                 "retrieved_chunks": retrieved_chunks,
                 "source": "retrieval",
+                "llm_output": llm_output,
             }
 
         return {"type": "hybrid", "structural": structural, "semantic": semantic_payload}, runtime
@@ -135,4 +201,13 @@ def execute_query(
         return {"error_code": "STRUCTURAL_FAILURE"}, runtime
 
 
-__all__ = ["QueryRuntime", "QueryState", "execute_query", "route_query"]
+__all__ = [
+    "ExecutionTrace",
+    "QueryRuntime",
+    "QueryState",
+    "RuntimeViolationError",
+    "build_execution_trace",
+    "execute_query",
+    "route_query",
+    "verify_execution_trace",
+]

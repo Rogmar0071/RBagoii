@@ -47,6 +47,12 @@ from backend.app.mode_engine import (
 )
 from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo, RepoIndexRegistry
 from backend.app.query_classifier import QueryType, route_query
+from backend.app.query_router import (
+    RuntimeViolationError,
+    build_execution_trace,
+    execute_query,
+    verify_execution_trace,
+)
 from backend.app.repo_retrieval import retrieve_relevant_chunks
 from backend.app.structural_handler import handle_structural_query
 from ui_blueprint.domain.ir import SCHEMA_VERSION
@@ -312,6 +318,15 @@ class ChatPostResponse(BaseModel):
     tools_available: list[str]
     user_message: ChatMessageResponse
     assistant_message: ChatMessageResponse
+    execution_trace: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "classification": "UNKNOWN",
+            "execution_path": [],
+            "structural_called": False,
+            "retrieval_called": False,
+            "llm_called": False,
+        }
+    )
 
 
 class ChatEditRequest(BaseModel):
@@ -500,6 +515,40 @@ def _reply_references_repo_data(reply: str, repo_chunks: list[Any]) -> bool:
         if file_name and file_name in lower_reply:
             return True
     return False
+
+
+def _run_structural_query(
+    *,
+    db: Session,
+    repo_ids: list[uuid.UUID],
+    query_text: str,
+) -> dict[str, Any]:
+    return handle_structural_query(db=db, repo_ids=repo_ids, query_text=query_text)
+
+
+def _run_retrieval_query(
+    *,
+    user_query: str,
+    db: Session,
+    repo_ids: list[uuid.UUID] | None = None,
+    conversation_id: str | None = None,
+) -> list[Any]:
+    return retrieve_relevant_chunks(
+        user_query=user_query,
+        db=db,
+        repo_ids=repo_ids,
+        conversation_id=conversation_id,
+    )
+
+
+def _run_chat_llm(
+    *,
+    message: str,
+    api_key: str,
+    history: list[Any] | None = None,
+    system_prompt: str | None = None,
+) -> str:
+    return _call_openai_chat(message, api_key, history, system_prompt)
 
 
 def _new_ephemeral_message(
@@ -1210,9 +1259,166 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
             hybrid_structural_result: dict[str, Any] | None = None
             query_type = route_query(message)
+            if query_type == QueryType.STRUCTURAL and (not conversation_repo_ids or db is None):
+                router_result, router_runtime = execute_query(
+                    classification=QueryType.STRUCTURAL,
+                    query=message,
+                    structural_handler=lambda _: {
+                        "type": "structural",
+                        "file_count": 0,
+                        "files": [],
+                        "source": "index_registry",
+                    },
+                    retrieval_handler=lambda _: {"retrieved_chunks": 0},
+                    llm_handler=None,
+                )
+                trace = build_execution_trace(
+                    router_runtime,
+                    path_prefix=["chat", "route_query"],
+                )
+                verify_execution_trace(trace)
+                reply = "INSUFFICIENT_CONTEXT"
+                assistant_message = _persist_message(
+                    db,
+                    "assistant",
+                    reply,
+                    context,
+                    conversation_id=active_conversation_id,
+                )
+                return _json_response(
+                    ChatPostResponse(
+                        conversation_id=active_conversation_id,
+                        reply=reply,
+                        error_code=(
+                            "INSUFFICIENT_CONTEXT"
+                            if router_result.get("error_code") is None
+                            else str(router_result.get("error_code"))
+                        ),
+                        retrieved_count=0,
+                        type="structural",
+                        file_count=0,
+                        files=[],
+                        has_more=False,
+                        source="index_registry",
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=0,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                        execution_trace={
+                            "classification": trace.classification,
+                            "execution_path": trace.execution_path,
+                            "structural_called": trace.structural_called,
+                            "retrieval_called": trace.retrieval_called,
+                            "llm_called": trace.llm_called,
+                        },
+                    )
+                )
             if conversation_repo_ids and db is not None:
                 if query_type in (QueryType.STRUCTURAL, QueryType.HYBRID):
-                    structural_result = handle_structural_query(
+                    if query_type == QueryType.STRUCTURAL:
+                        def _router_structural(q: str) -> dict[str, Any]:
+                            structural_payload = _run_structural_query(
+                                db=db,
+                                repo_ids=conversation_repo_ids,
+                                query_text=q,
+                            )
+                            return {
+                                "type": "structural",
+                                "file_count": int(structural_payload["data"]["count"]),
+                                "files": list(structural_payload["data"]["files"]),
+                                "source": "index_registry",
+                            }
+
+                        router_result, router_runtime = execute_query(
+                            classification=QueryType.STRUCTURAL,
+                            query=message,
+                            structural_handler=_router_structural,
+                            retrieval_handler=lambda _: {"retrieved_chunks": 0},
+                            llm_handler=None,
+                        )
+                        trace = build_execution_trace(
+                            router_runtime,
+                            path_prefix=["chat", "route_query"],
+                        )
+                        verify_execution_trace(trace)
+                        if router_result.get("error_code") is not None:
+                            reply = "INSUFFICIENT_CONTEXT"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="INSUFFICIENT_CONTEXT",
+                                    retrieved_count=0,
+                                    type="structural",
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=0,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                    execution_trace={
+                                        "classification": trace.classification,
+                                        "execution_path": trace.execution_path,
+                                        "structural_called": trace.structural_called,
+                                        "retrieval_called": trace.retrieval_called,
+                                        "llm_called": trace.llm_called,
+                                    },
+                                )
+                            )
+
+                        all_files = list(router_result.get("files") or [])
+                        lower_message = message.lower()
+                        force_full_list = "list all files" in lower_message
+                        preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                        has_more = (
+                            len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                            and not force_full_list
+                        )
+                        reply = "STRUCTURAL_QUERY_RESULT"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
+                            conversation_id=active_conversation_id,
+                        )
+                        return _json_response(
+                            ChatPostResponse(
+                                conversation_id=active_conversation_id,
+                                reply=reply,
+                                error_code=None,
+                                retrieved_count=0,
+                                type="structural",
+                                file_count=int(router_result.get("file_count") or 0),
+                                files=None if has_more else all_files,
+                                preview=preview_files if has_more else None,
+                                has_more=has_more,
+                                source="index_registry",
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=0,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                                execution_trace={
+                                    "classification": trace.classification,
+                                    "execution_path": trace.execution_path,
+                                    "structural_called": trace.structural_called,
+                                    "retrieval_called": trace.retrieval_called,
+                                    "llm_called": trace.llm_called,
+                                },
+                            )
+                        )
+                    structural_result = _run_structural_query(
                         db=db,
                         repo_ids=conversation_repo_ids,
                         query_text=message,
@@ -1385,7 +1591,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             try:
                 if not openai_api_key:
                     if conversation_repo_ids and db is not None:
-                        repo_chunks = retrieve_relevant_chunks(
+                        repo_chunks = _run_retrieval_query(
                             user_query=message,
                             db=db,
                             repo_ids=conversation_repo_ids,
@@ -1657,7 +1863,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         break
 
                             # CONTRACT: when repo_ids are attached, retrieval MUST execute.
-                            repo_chunks = retrieve_relevant_chunks(
+                            repo_chunks = _run_retrieval_query(
                                 user_query=message,
                                 db=db,
                                 repo_ids=active_repo_ids,
@@ -1802,7 +2008,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             # Keyword-based scoring: extracts non-stopword tokens from
                             # user_query and scores stored RepoChunk rows by keyword
                             # frequency + path boosts + recency weight (no embeddings).
-                            ingest_chunks = retrieve_relevant_chunks(
+                            ingest_chunks = _run_retrieval_query(
                                 user_query=message,
                                 db=db,
                                 conversation_id=active_conversation_id,
@@ -1866,10 +2072,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     # This is the ONLY path through which _call_openai_chat is reached for
                     # POST /api/chat — all AI calls are exclusive to mode_engine_gateway.
                     def _openai_ai_call(system_prompt: str) -> str:
-                        return _call_openai_chat(
-                            message,
-                            openai_api_key,
-                            history[:-1] if history else [],
+                        return _run_chat_llm(
+                            message=message,
+                            api_key=openai_api_key,
+                            history=history[:-1] if history else [],
                             system_prompt=system_prompt,
                         )
 
@@ -1953,6 +2159,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         tools_available=_TOOLS_AVAILABLE,
                         user_message=user_message,
                         assistant_message=assistant_message,
+                    )
+                )
+            except RuntimeViolationError as exc:
+                error_code = str(exc)
+                assistant_message = _persist_message(
+                    db, "assistant", error_code, context, conversation_id=active_conversation_id
+                )
+                return _json_response(
+                    ChatPostResponse(
+                        conversation_id=active_conversation_id,
+                        reply=error_code,
+                        error_code=error_code,
+                        retrieved_count=retrieved_count,
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=retrieved_chunks,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                        execution_trace={
+                            "classification": query_type.value,
+                            "execution_path": ["chat", "route_query", "execute_query", "violation"],
+                            "structural_called": False,
+                            "retrieval_called": False,
+                            "llm_called": False,
+                        },
                     )
                 )
             except (
