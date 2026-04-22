@@ -1318,27 +1318,23 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             if conversation_repo_ids and db is not None:
                 if query_type in (QueryType.STRUCTURAL, QueryType.HYBRID):
                     if query_type == QueryType.STRUCTURAL:
+                        def _router_structural(q: str) -> dict[str, Any]:
+                            structural_payload = _run_structural_query(
+                                db=db,
+                                repo_ids=conversation_repo_ids,
+                                query_text=q,
+                            )
+                            return {
+                                "type": "structural",
+                                "file_count": int(structural_payload["data"]["count"]),
+                                "files": list(structural_payload["data"]["files"]),
+                                "source": "index_registry",
+                            }
+
                         router_result, router_runtime = execute_query(
                             classification=QueryType.STRUCTURAL,
                             query=message,
-                            structural_handler=lambda q: {
-                                "type": "structural",
-                                "file_count": int(
-                                    _run_structural_query(
-                                        db=db,
-                                        repo_ids=conversation_repo_ids,
-                                        query_text=q,
-                                    )["data"]["count"]
-                                ),
-                                "files": list(
-                                    _run_structural_query(
-                                        db=db,
-                                        repo_ids=conversation_repo_ids,
-                                        query_text=q,
-                                    )["data"]["files"]
-                                ),
-                                "source": "index_registry",
-                            },
+                            structural_handler=_router_structural,
                             retrieval_handler=lambda _: {"retrieved_chunks": 0},
                             llm_handler=None,
                         )

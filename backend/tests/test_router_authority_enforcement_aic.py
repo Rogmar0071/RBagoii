@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import os
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from backend.app.main import app  # noqa: E402
 
 TOKEN = "test-secret-key"
 AUTH = {"Authorization": "Bearer " + TOKEN}
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +124,7 @@ def _called_function_names(node: ast.AST) -> set[str]:
 
 
 def test_s1_chat_endpoint_has_no_direct_forbidden_calls() -> None:
-    path = "/home/runner/work/RBagoii/RBagoii/backend/app/chat_routes.py"
+    path = str(REPO_ROOT / "backend/app/chat_routes.py")
     with open(path, encoding="utf-8") as f:
         tree = ast.parse(f.read(), filename=path)
 
@@ -140,7 +142,7 @@ def test_s1_chat_endpoint_has_no_direct_forbidden_calls() -> None:
 
 
 def test_s2_router_module_contains_llm_interface() -> None:
-    path = "/home/runner/work/RBagoii/RBagoii/backend/app/query_router.py"
+    path = str(REPO_ROOT / "backend/app/query_router.py")
     with open(path, encoding="utf-8") as f:
         text = f.read()
     assert "def call_llm(" in text

@@ -28,7 +28,7 @@ class QueryRuntime:
     llm_called: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass
 class ExecutionTrace:
     classification: str
     execution_path: list[str]
@@ -148,9 +148,9 @@ def execute_query(
             if retrieved_chunks <= 0:
                 return {"error_code": "INSUFFICIENT_CONTEXT"}, runtime
             if llm_handler is not None:
+                llm_output = call_llm(query, semantic, llm_handler)
                 runtime.llm_called = True
                 runtime.execution_path.append("call_llm")
-                llm_output = call_llm(query, semantic, llm_handler)
             else:
                 llm_output = None
             return {
@@ -178,9 +178,9 @@ def execute_query(
             semantic_payload: dict[str, Any] = {"error_code": "INSUFFICIENT_CONTEXT"}
         else:
             if llm_handler is not None:
+                llm_output = call_llm(query, semantic, llm_handler)
                 runtime.llm_called = True
                 runtime.execution_path.append("call_llm")
-                llm_output = call_llm(query, semantic, llm_handler)
             else:
                 llm_output = None
             semantic_payload = {
