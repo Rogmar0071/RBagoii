@@ -219,3 +219,153 @@ def test_classifier_confusion_still_routes_structural(client: TestClient):
     body = resp.json()
     assert body["type"] == "structural"
     assert body["retrieved_chunks"] == 0
+
+
+def test_adversarial_set_a_ambiguous_hybrid_shape_and_separation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    class _Chunk:
+        def __init__(self):
+            self.repo_id = uuid.uuid4()
+            self.file_path = "src/file_7.py"
+            self.content = "This file initializes startup behavior."
+            self.chunk_index = 0
+            self.id = uuid.uuid4()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: "Explains src/file_7.py responsibilities.",
+    )
+
+    resp = _chat(client, repo_id=repo_id, message="How many files are there and what do they do?")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "hybrid"
+    assert body["structural"]["file_count"] == 200
+    assert body["semantic"]["result"] in {
+        "Explains src/file_7.py responsibilities.",
+        "INSUFFICIENT_CONTEXT",
+    }
+    assert body.get("structural_source") == "index"
+    assert body.get("semantic_source") == "retrieval"
+
+
+def test_adversarial_set_b_structural_trap_routes_hybrid(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    class _Chunk:
+        def __init__(self):
+            self.repo_id = uuid.uuid4()
+            self.file_path = "src/file_10.py"
+            self.content = "Important file summary."
+            self.chunk_index = 0
+            self.id = uuid.uuid4()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
+    monkeypatch.setattr(
+        cr, "_call_openai_chat", lambda *args, **kwargs: "Important files explained."
+    )
+
+    resp = _chat(client, repo_id=repo_id, message="List important files")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "hybrid"
+    assert body["structural"]["file_count"] == 200
+    assert "semantic" in body
+
+
+def test_adversarial_set_c_semantic_trap_never_triggers_structural_handler(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    retrieval_called = False
+
+    class _Chunk:
+        def __init__(self):
+            self.repo_id = uuid.uuid4()
+            self.file_path = "README.md"
+            self.content = "Repository purpose and architecture."
+            self.chunk_index = 0
+            self.id = uuid.uuid4()
+
+    def _fake_retrieval(*args, **kwargs):
+        nonlocal retrieval_called
+        retrieval_called = True
+        return [_Chunk()]
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(
+        cr,
+        "handle_structural_query",
+        lambda *args, **kwargs: pytest.fail("structural handler must not run on semantic trap"),
+    )
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", _fake_retrieval)
+    monkeypatch.setattr(
+        cr, "_call_openai_chat", lambda *args, **kwargs: "Repo purpose from README.md"
+    )
+
+    resp = _chat(client, repo_id=repo_id, message="What does this repo do?")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert retrieval_called is True
+    assert body.get("type") != "structural"
+    assert body.get("structural") is None
+
+
+def test_adversarial_set_d_noisy_input_still_routes_hybrid(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    class _Chunk:
+        def __init__(self):
+            self.repo_id = uuid.uuid4()
+            self.file_path = "src/file_3.py"
+            self.content = "Inside info."
+            self.chunk_index = 0
+            self.id = uuid.uuid4()
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
+    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "Inside explanation.")
+
+    resp = _chat(client, repo_id=repo_id, message="uh just like how many files and stuff inside")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "hybrid"
+    assert body["reply"] == "HYBRID_QUERY_RESULT"
+
+
+def test_adversarial_set_e_hybrid_retrieval_failure_blocks_llm(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo(200)
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: pytest.fail("llm must not run when retrieval is empty"),
+    )
+
+    resp = _chat(client, repo_id=repo_id, message="how many files and explain them")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "hybrid"
+    assert body["structural"]["file_count"] == 200
+    assert body["semantic"]["result"] == "INSUFFICIENT_CONTEXT"

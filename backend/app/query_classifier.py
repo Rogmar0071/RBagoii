@@ -21,6 +21,8 @@ _SEMANTIC_PATTERNS = (
     "how does",
     "how do",
     "where",
+    "important",
+    "inside",
 )
 
 
