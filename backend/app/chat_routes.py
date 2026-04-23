@@ -2770,6 +2770,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         raise Exception("FILE_RESOLUTION_BROKEN")
 
                     logger.info("CTX_FILES: count=%s sample=%s", len(ctx_files), ctx_files[:3])
+                    print("CTX_FILES:", ctx_files[:3])
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
@@ -3029,9 +3030,15 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3: HTTPException (e.g. 409 REPO_NOT_READY)
         # must propagate as a real HTTP response — not be swallowed into SYSTEM_FAILURE.
         raise
-    except Exception:
+    except Exception as e:
         logger.exception("HARD FAIL:", exc_info=True)
-        raise
+        return JSONResponse(
+            status_code=200,
+            content={
+                "error": "SYSTEM_FAILURE",
+                "message": str(e),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
