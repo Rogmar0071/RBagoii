@@ -314,10 +314,10 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
         file_paths.append(file_path)
 
     if chunks and not valid_chunks:
-        raise Exception("NO_VALID_CHUNKS_WITH_FILE_ID")
+        raise RuntimeError("NO_VALID_CHUNKS_WITH_FILE_ID")
 
     if valid_chunks and not file_ids:
-        raise Exception("RETRIEVAL_INTEGRITY_VIOLATION")
+        raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")
 
     return {
         "chunks": valid_chunks,
@@ -331,7 +331,7 @@ def _finalize_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
     chunks = list(payload["chunks"])
     file_ids = list(payload["file_ids"])
     if chunks and not file_ids:
-        raise Exception("RETRIEVAL_INTEGRITY_VIOLATION")
+        raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")
     logger.info(
         "RETRIEVAL_RESULT: chunks_count=%s file_ids_count=%s sample_file_id=%s",
         len(chunks),

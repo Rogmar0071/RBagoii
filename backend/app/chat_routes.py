@@ -2786,6 +2786,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         )
                     CTX_FILES = ctx_file_paths
                     logger.info("CTX_FILES: count=%s sample=%s", len(CTX_FILES), CTX_FILES[:3])
+                    print(f"CTX_FILES: count={len(CTX_FILES)} sample={CTX_FILES[:3]}")
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):

@@ -981,7 +981,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     file_id = str(repo_file.id or "").strip()
     file_path = str(repo_file.path or "").strip()
     if not file_id or not file_path:
-        raise Exception("INGESTION_FILE_ID_MISSING")
+        raise RuntimeError("INGESTION_FILE_ID_MISSING")
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
@@ -999,7 +999,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             end_line=structure["end_line"],
         )
         if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
-            raise Exception("INVALID_CHUNK_BEFORE_PERSIST")
+            raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
             chunk.graph_group,
@@ -1075,7 +1075,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     file_id = str(repo_file.id or "").strip()
     file_path = str(repo_file.path or "").strip()
     if not file_id or not file_path:
-        raise Exception("INGESTION_FILE_ID_MISSING")
+        raise RuntimeError("INGESTION_FILE_ID_MISSING")
 
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
@@ -1095,7 +1095,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
             end_line=structure["end_line"],
         )
         if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
-            raise Exception("INVALID_CHUNK_BEFORE_PERSIST")
+            raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
             chunk.graph_group,
@@ -1385,7 +1385,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         file_id = str(getattr(repo_file, "id", "") or "").strip()
         persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
         if not file_id or not persisted_file_path:
-            raise Exception("INGESTION_FILE_ID_MISSING")
+            raise RuntimeError("INGESTION_FILE_ID_MISSING")
 
         for idx, chunk_text in enumerate(chunks):
             structure = extract_structure(chunk_text, file_path)
@@ -1403,7 +1403,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 end_line=structure["end_line"],
             )
             if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
-                raise Exception("INVALID_CHUNK_BEFORE_PERSIST")
+                raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
             logger.info(
                 "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
                 chunk.graph_group,
