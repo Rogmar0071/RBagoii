@@ -46,10 +46,12 @@ def upgrade() -> None:
     # Step 2: Backfill any legacy rows where file_id is still NULL.
     if "file_id" in existing_cols:
         seed_columns = [c for c in ("graph_group", "lineage") if c in existing_cols]
-        select_cols = ", ".join(["id", *seed_columns])
+        table_cols = [sa.column("id", sa.Uuid()), sa.column("file_id", sa.Uuid())]
+        table_cols.extend(sa.column(c, sa.Text()) for c in seed_columns)
+        repo_chunks = sa.table("repo_chunks", *table_cols)
         rows = bind.execute(
-            sa.text(
-                f"SELECT {select_cols} FROM repo_chunks WHERE file_id IS NULL"  # noqa: S608
+            sa.select(repo_chunks.c.id, *[getattr(repo_chunks.c, c) for c in seed_columns]).where(
+                repo_chunks.c.file_id.is_(None)
             )
         ).mappings()
 
@@ -76,6 +78,8 @@ def upgrade() -> None:
         (c for c in inspector.get_columns("repo_chunks") if c["name"] == "file_id"),
         None,
     )
+    # SQLite is intentionally excluded because ALTER COLUMN SET NOT NULL is not
+    # reliably supported without table recreation/reflection in this revision chain.
     if file_col and file_col.get("nullable", True) and bind.dialect.name != "sqlite":
         op.alter_column(
             "repo_chunks",
