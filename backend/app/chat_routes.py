@@ -3029,7 +3029,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3: HTTPException (e.g. 409 REPO_NOT_READY)
         # must propagate as a real HTTP response — not be swallowed into SYSTEM_FAILURE.
         raise
-    except Exception as e:
+    except Exception:
         logger.exception("HARD FAIL:", exc_info=True)
         raise
 
