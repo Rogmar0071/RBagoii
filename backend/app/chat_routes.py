@@ -45,7 +45,7 @@ from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
-from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo, RepoIndexRegistry
+from backend.app.models import ChatFile, Conversation, ConversationRepo, IngestJob, Repo, RepoChunk, RepoIndexRegistry
 from backend.app.query_classifier import QueryType, route_query
 from backend.app.query_router import (
     RuntimeViolationError,
@@ -561,6 +561,42 @@ def _run_retrieval_query(
         repo_ids=repo_ids,
         conversation_id=conversation_id,
     )
+
+
+def _retrieve_conversation_context(
+    db: Session,
+    conversation_id: str,
+    limit: int = 50,
+) -> list[RepoChunk]:
+    """
+    MQP-CONTRACT: CHAT_CONTEXT_RETRIEVAL_V1 — Step 2
+    
+    Retrieve repository context chunks linked to a conversation.
+    Since RepoChunk doesn't have a direct conversation_id field,
+    we retrieve through IngestJob entities.
+    """
+    # Get all successful ingest jobs for this conversation
+    job_ids = [
+        row.id
+        for row in db.exec(
+            select(IngestJob).where(
+                IngestJob.conversation_id == conversation_id,
+                IngestJob.status == "success",
+            )
+        ).all()
+    ]
+    
+    if not job_ids:
+        return []
+    
+    # Retrieve chunks from these jobs
+    context_chunks = db.exec(
+        select(RepoChunk)
+        .where(RepoChunk.ingest_job_id.in_(job_ids))  # type: ignore[attr-defined]
+        .limit(limit)
+    ).all()
+    
+    return list(context_chunks)
 
 
 def _run_chat_llm(
@@ -2049,6 +2085,83 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 active_conversation_id,
                                 exc_info=True,
                             )
+
+                    # -------------------------------------------------------
+                    # MQP-CONTRACT: CHAT_CONTEXT_RETRIEVAL_V1
+                    # Direct conversation-based context retrieval for LLM grounding.
+                    # Steps 2-5: Retrieve, validate, build context, and inject.
+                    # -------------------------------------------------------
+                    if db is not None and active_conversation_id:
+                        # Step 2: Retrieve context chunks based on conversation_id
+                        context_chunks = _retrieve_conversation_context(
+                            db=db,
+                            conversation_id=active_conversation_id,
+                            limit=50,
+                        )
+                        
+                        # Step 8: Add logging
+                        print(f"CHAT_CONTEXT: chunks={len(context_chunks)}")
+                        
+                        # Step 3: Validate context exists
+                        if len(context_chunks) == 0:
+                            # Return INSUFFICIENT_CONTEXT response
+                            reply = "INSUFFICIENT_CONTEXT"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="INSUFFICIENT_CONTEXT",
+                                    retrieved_count=0,
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=0,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                )
+                            )
+                        
+                        # Step 4: Build context string (limit to 3000-6000 chars)
+                        context_text_parts = []
+                        total_chars = 0
+                        max_context_chars = 6000
+                        
+                        for chunk in context_chunks:
+                            chunk_text = chunk.content
+                            if total_chars + len(chunk_text) > max_context_chars:
+                                # Truncate to fit within limit
+                                remaining = max_context_chars - total_chars
+                                if remaining > 0:
+                                    context_text_parts.append(chunk_text[:remaining])
+                                break
+                            context_text_parts.append(chunk_text)
+                            total_chars += len(chunk_text)
+                        
+                        context_text = "\n\n".join(context_text_parts)
+                        
+                        # Step 5: Inject into prompt
+                        context_injection_block = f"""
+
+You are analyzing a code repository.
+
+Context:
+{context_text}
+
+User Question:
+{message}
+
+Answer ONLY using the context above.
+If the answer is not present, say: NOT_FOUND_IN_CONTEXT.
+"""
+                        # Inject the context block into the system prompt
+                        base_system_prompt += context_injection_block
 
                     print("CTX_FILES:", context.files)
 
