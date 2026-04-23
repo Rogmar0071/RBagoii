@@ -2054,30 +2054,48 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         )
 
                     # -------------------------------------------------------
-                    # INGEST_JOB_CONTEXT_INJECTION_V1:
+                    # MQP-CONTRACT: CHAT_CONTEXT_RETRIEVAL_V1
+                    # INGEST_JOB_CONTEXT_INJECTION_V1 (Enhanced with contract requirements)
                     # Retrieve chunks from all successfully completed IngestJob
                     # records for the current conversation and inject them into
                     # the system prompt so the AI can answer questions about
                     # ingested files, URLs, and repositories.
-                    # Non-blocking: silently skipped when no chunks are found.
                     # -------------------------------------------------------
                     if db is not None and active_conversation_id and not has_explicit_repo_context:
                         try:
-                            # Keyword-based scoring: extracts non-stopword tokens from
-                            # user_query and scores stored RepoChunk rows by keyword
-                            # frequency + path boosts + recency weight (no embeddings).
-                            ingest_chunks = _run_retrieval_query(
-                                user_query=message,
+                            # Step 2: Direct conversation-based context retrieval
+                            context_chunks = _retrieve_conversation_context(
                                 db=db,
                                 conversation_id=active_conversation_id,
+                                limit=50,
                             )
-                            if ingest_chunks:
-                                ingest_block = "\n\n---\nINGESTED CONTENT:\n"
-                                for chunk in ingest_chunks:
-                                    ingest_block += (
-                                        f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
-                                    )
-                                ingest_block += "---\n"
+                            
+                            # Step 8: Add logging
+                            print(f"CHAT_CONTEXT: chunks={len(context_chunks)}")
+                            
+                            if context_chunks:
+                                # Step 4: Build context string (limit to 3000-6000 chars)
+                                context_text_parts = []
+                                total_chars = 0
+                                max_context_chars = 6000
+                                
+                                for chunk in context_chunks:
+                                    chunk_text = f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                    if total_chars + len(chunk_text) > max_context_chars:
+                                        # Truncate to fit within limit
+                                        remaining = max_context_chars - total_chars
+                                        if remaining > 0:
+                                            context_text_parts.append(chunk_text[:remaining])
+                                        break
+                                    context_text_parts.append(chunk_text)
+                                    total_chars += len(chunk_text)
+                                
+                                # Step 5: Inject with strong grounding instruction
+                                ingest_block = "\n\n---\nREPOSITORY CONTEXT:\n"
+                                ingest_block += "".join(context_text_parts)
+                                ingest_block += "\n---\n"
+                                ingest_block += "\nInstructions: Answer questions about the repository using the context above.\n"
+                                ingest_block += "If the answer is not in the context, respond with: NOT_FOUND_IN_CONTEXT\n"
                                 base_system_prompt += ingest_block
                         except Exception:
                             logger.warning(
@@ -2085,83 +2103,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 active_conversation_id,
                                 exc_info=True,
                             )
-
-                    # -------------------------------------------------------
-                    # MQP-CONTRACT: CHAT_CONTEXT_RETRIEVAL_V1
-                    # Direct conversation-based context retrieval for LLM grounding.
-                    # Steps 2-5: Retrieve, validate, build context, and inject.
-                    # -------------------------------------------------------
-                    if db is not None and active_conversation_id:
-                        # Step 2: Retrieve context chunks based on conversation_id
-                        context_chunks = _retrieve_conversation_context(
-                            db=db,
-                            conversation_id=active_conversation_id,
-                            limit=50,
-                        )
-                        
-                        # Step 8: Add logging
-                        print(f"CHAT_CONTEXT: chunks={len(context_chunks)}")
-                        
-                        # Step 3: Validate context exists
-                        if len(context_chunks) == 0:
-                            # Return INSUFFICIENT_CONTEXT response
-                            reply = "INSUFFICIENT_CONTEXT"
-                            assistant_message = _persist_message(
-                                db,
-                                "assistant",
-                                reply,
-                                context,
-                                conversation_id=active_conversation_id,
-                            )
-                            return _json_response(
-                                ChatPostResponse(
-                                    conversation_id=active_conversation_id,
-                                    reply=reply,
-                                    error_code="INSUFFICIENT_CONTEXT",
-                                    retrieved_count=0,
-                                    repo_count=repo_count,
-                                    total_chunks=total_chunks,
-                                    retrieved_chunks=0,
-                                    tools_available=_TOOLS_AVAILABLE,
-                                    user_message=user_message,
-                                    assistant_message=assistant_message,
-                                )
-                            )
-                        
-                        # Step 4: Build context string (limit to 3000-6000 chars)
-                        context_text_parts = []
-                        total_chars = 0
-                        max_context_chars = 6000
-                        
-                        for chunk in context_chunks:
-                            chunk_text = chunk.content
-                            if total_chars + len(chunk_text) > max_context_chars:
-                                # Truncate to fit within limit
-                                remaining = max_context_chars - total_chars
-                                if remaining > 0:
-                                    context_text_parts.append(chunk_text[:remaining])
-                                break
-                            context_text_parts.append(chunk_text)
-                            total_chars += len(chunk_text)
-                        
-                        context_text = "\n\n".join(context_text_parts)
-                        
-                        # Step 5: Inject into prompt
-                        context_injection_block = f"""
-
-You are analyzing a code repository.
-
-Context:
-{context_text}
-
-User Question:
-{message}
-
-Answer ONLY using the context above.
-If the answer is not present, say: NOT_FOUND_IN_CONTEXT.
-"""
-                        # Inject the context block into the system prompt
-                        base_system_prompt += context_injection_block
 
                     print("CTX_FILES:", context.files)
 
