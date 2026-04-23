@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import List
+from typing import Any
 
 from sqlmodel import Session, select
 
@@ -286,6 +286,44 @@ def _apply_token_budget(
     return result
 
 
+def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
+    """
+    Build retrieval payload with mandatory file identity metadata.
+
+    Contract:
+    - chunks
+    - file_ids
+    - file_paths
+    - total_chunks
+    """
+    file_ids: list[str] = []
+    file_paths: list[str] = []
+    for chunk in chunks:
+        file_path = str(chunk.file_path or "").strip()
+        if not file_path:
+            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+        file_id = (
+            str(chunk.chat_file_id)
+            if chunk.chat_file_id is not None
+            else f"{str(chunk.repo_id or '')}:{file_path}"
+        )
+        file_id = file_id.strip()
+        if not file_id:
+            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+        file_ids.append(file_id)
+        file_paths.append(file_path)
+
+    if chunks and not file_ids:
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+
+    return {
+        "chunks": chunks,
+        "file_ids": file_ids,
+        "file_paths": file_paths,
+        "total_chunks": len(chunks),
+    }
+
+
 def retrieve_relevant_chunks(
     user_query: str,
     db: Session,
@@ -295,7 +333,7 @@ def retrieve_relevant_chunks(
     conversation_id: str | None = None,
     max_chunks: int = _MAX_CHUNKS_TOTAL,
     max_tokens: int = _MAX_CONTEXT_TOKENS_REPO,
-) -> List[RepoChunk]:
+) -> dict[str, Any]:
     """
     Return at most *max_chunks* RepoChunk rows relevant to *user_query*,
     subject to the token budget *max_tokens*.
@@ -321,7 +359,7 @@ def retrieve_relevant_chunks(
     has_file_ids = bool(chat_file_ids)
 
     if not has_repo_ids and not has_ingest_ids and not has_conversation and not has_file_ids:
-        return []
+        return _build_retrieval_payload([])
 
     lower_query = user_query.lower()
     keywords = _extract_keywords(user_query)
@@ -362,10 +400,10 @@ def retrieve_relevant_chunks(
     all_chunks = db.exec(chunk_stmt).all()
 
     if not all_chunks:
-        return []
+        return _build_retrieval_payload([])
 
     if not keywords:
-        return []
+        return _build_retrieval_payload([])
 
     scored: list[tuple[int, RepoChunk]] = []
     for chunk in all_chunks:
@@ -384,6 +422,7 @@ def retrieve_relevant_chunks(
 
     if scored:
         selected = _apply_diversity(scored, max_total=max_chunks)
-        return _apply_token_budget(selected, max_tokens=max_tokens)
+        bounded = _apply_token_budget(selected, max_tokens=max_tokens)
+        return _build_retrieval_payload(bounded)
 
-    return []
+    return _build_retrieval_payload([])
