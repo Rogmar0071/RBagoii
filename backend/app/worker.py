@@ -3064,6 +3064,11 @@ def run_repo_ingestion(repo_id: str) -> None:
             for file_path, content in file_list:
                 for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
                     structure = extract_structure(chunk_text, file_path)
+                    logger.info(
+                        "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
+                        file_path,
+                        "run_repo_ingestion",
+                    )
                     chunk = RepoChunk(
                         repo_id=r.id,
                         file_path=file_path,

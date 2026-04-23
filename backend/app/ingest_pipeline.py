@@ -985,6 +985,11 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
+        logger.info(
+            "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
+            file_path,
+            "_ingest_file",
+        )
         chunk = RepoChunk(
             ingest_job_id=job.id,
             file_path=file_path,
@@ -1080,6 +1085,11 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
+        logger.info(
+            "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
+            file_path,
+            "_ingest_url",
+        )
         chunk = RepoChunk(
             ingest_job_id=job.id,
             file_path=file_path,
@@ -1389,6 +1399,11 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
 
         for idx, chunk_text in enumerate(chunks):
             structure = extract_structure(chunk_text, file_path)
+            logger.info(
+                "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
+                persisted_file_path,
+                "_ingest_repo",
+            )
             chunk = RepoChunk(
                 ingest_job_id=job.id,
                 file_path=persisted_file_path,
