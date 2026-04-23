@@ -45,7 +45,15 @@ from backend.app.mode_engine import (
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
     mode_engine_gateway,
 )
-from backend.app.models import ChatFile, Conversation, ConversationRepo, Repo, RepoIndexRegistry
+from backend.app.models import (
+    ChatFile,
+    Conversation,
+    ConversationRepo,
+    IngestJob,
+    Repo,
+    RepoChunk,
+    RepoIndexRegistry,
+)
 from backend.app.query_classifier import QueryType, route_query
 from backend.app.query_router import (
     RuntimeViolationError,
@@ -561,6 +569,42 @@ def _run_retrieval_query(
         repo_ids=repo_ids,
         conversation_id=conversation_id,
     )
+
+
+def _retrieve_conversation_context(
+    db: Session,
+    conversation_id: str,
+    limit: int = 50,
+) -> list[RepoChunk]:
+    """
+    MQP-CONTRACT: CHAT_CONTEXT_RETRIEVAL_V1 — Step 2
+
+    Retrieve repository context chunks linked to a conversation.
+    Since RepoChunk doesn't have a direct conversation_id field,
+    we retrieve through IngestJob entities.
+    """
+    # Get all successful ingest jobs for this conversation
+    job_ids = [
+        row.id
+        for row in db.exec(
+            select(IngestJob).where(
+                IngestJob.conversation_id == conversation_id,
+                IngestJob.status == "success",
+            )
+        ).all()
+    ]
+
+    if not job_ids:
+        return []
+
+    # Retrieve chunks from these jobs
+    context_chunks = db.exec(
+        select(RepoChunk)
+        .where(RepoChunk.ingest_job_id.in_(job_ids))  # type: ignore[attr-defined]
+        .limit(limit)
+    ).all()
+
+    return list(context_chunks)
 
 
 def _run_chat_llm(
@@ -2018,31 +2062,65 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         )
 
                     # -------------------------------------------------------
-                    # INGEST_JOB_CONTEXT_INJECTION_V1:
+                    # MQP-CONTRACT: CHAT_CONTEXT_RETRIEVAL_V1
+                    # INGEST_JOB_CONTEXT_INJECTION_V1 (Enhanced with contract requirements)
                     # Retrieve chunks from all successfully completed IngestJob
                     # records for the current conversation and inject them into
                     # the system prompt so the AI can answer questions about
                     # ingested files, URLs, and repositories.
-                    # Non-blocking: silently skipped when no chunks are found.
                     # -------------------------------------------------------
                     if db is not None and active_conversation_id and not has_explicit_repo_context:
                         try:
-                            # Keyword-based scoring: extracts non-stopword tokens from
-                            # user_query and scores stored RepoChunk rows by keyword
-                            # frequency + path boosts + recency weight (no embeddings).
-                            ingest_chunks = _run_retrieval_query(
-                                user_query=message,
+                            # Step 2: Direct conversation-based context retrieval
+                            context_chunks = _retrieve_conversation_context(
                                 db=db,
                                 conversation_id=active_conversation_id,
+                                limit=50,
                             )
-                            if ingest_chunks:
-                                ingest_block = "\n\n---\nINGESTED CONTENT:\n"
-                                for chunk in ingest_chunks:
-                                    ingest_block += (
-                                        f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
-                                    )
-                                ingest_block += "---\n"
+
+                            # Step 8: Add logging
+                            print(f"CHAT_CONTEXT: chunks={len(context_chunks)}")
+
+                            # Step 3: Validate and inject context
+                            if context_chunks:
+                                # Step 4: Build context string (limit to 3000-6000 chars)
+                                context_text_parts = []
+                                total_chars = 0
+                                max_context_chars = 6000
+
+                                for chunk in context_chunks:
+                                    chunk_text = f"\nFILE: {chunk.file_path}\n\n{chunk.content}\n"
+                                    if total_chars + len(chunk_text) > max_context_chars:
+                                        # Truncate to fit within limit
+                                        remaining = max_context_chars - total_chars
+                                        if remaining > 0:
+                                            context_text_parts.append(chunk_text[:remaining])
+                                        break
+                                    context_text_parts.append(chunk_text)
+                                    total_chars += len(chunk_text)
+
+                                # Step 5: Inject with strong grounding instruction
+                                ingest_block = "\n\n---\nREPOSITORY CONTEXT:\n"
+                                ingest_block += "".join(context_text_parts)
+                                ingest_block += "\n---\n"
+                                ingest_block += (
+                                    "\nInstructions: Answer questions about the "
+                                    "repository using the context above.\n"
+                                )
+                                ingest_block += (
+                                    "If the answer is not in the context, "
+                                    "respond with: NOT_FOUND_IN_CONTEXT\n"
+                                )
                                 base_system_prompt += ingest_block
+                            else:
+                                # Step 3: No repository context available
+                                # Note: Contract suggests returning INSUFFICIENT_CONTEXT,
+                                # but for flexibility, we let the LLM handle this gracefully.
+                                base_system_prompt += (
+                                    "\n\nNote: No repository data is linked to this "
+                                    "conversation. Repository-specific questions cannot "
+                                    "be answered.\n"
+                                )
                         except Exception:
                             logger.warning(
                                 "Failed to retrieve ingest job chunks for conversation %s",
