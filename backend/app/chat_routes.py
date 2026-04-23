@@ -41,6 +41,7 @@ from backend.app.artifact_utils import (
     resolve_context_surface,
 )
 from backend.app.auth import require_auth
+from backend.app.file_resolution import resolve_files_from_chunks
 from backend.app.mode_engine import (
     MODE_STRICT,
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
@@ -63,7 +64,6 @@ from backend.app.query_router import (
     execute_query,
     verify_execution_trace,
 )
-from backend.app.file_resolution import resolve_files_from_chunks
 from backend.app.repo_retrieval import retrieve_relevant_chunks
 from backend.app.structural_handler import handle_structural_query
 from ui_blueprint.domain.ir import SCHEMA_VERSION

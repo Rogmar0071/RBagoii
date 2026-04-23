@@ -66,10 +66,16 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
         )
         session.add(repo)
         session.add(
-            RepoFile(id=file_main_id, repo_id=repo_id, path="src/main.py", language="python", size_bytes=10)
+            RepoFile(
+                id=file_main_id, repo_id=repo_id, path="src/main.py",
+                language="python", size_bytes=10,
+            )
         )
         session.add(
-            RepoFile(id=file_readme_id, repo_id=repo_id, path="README.md", language="markdown", size_bytes=10)
+            RepoFile(
+                id=file_readme_id, repo_id=repo_id, path="README.md",
+                language="markdown", size_bytes=10,
+            )
         )
         session.add(
             RepoChunk(
@@ -166,10 +172,16 @@ def _seed_repo_with_partial_surface(
         )
         session.add(repo)
         session.add(
-            RepoFile(id=file_alpha_id, repo_id=repo_id, path="src/alpha.py", language="python", size_bytes=10)
+            RepoFile(
+                id=file_alpha_id, repo_id=repo_id, path="src/alpha.py",
+                language="python", size_bytes=10,
+            )
         )
         session.add(
-            RepoFile(id=file_beta_id, repo_id=repo_id, path="src/beta.py", language="python", size_bytes=10)
+            RepoFile(
+                id=file_beta_id, repo_id=repo_id, path="src/beta.py",
+                language="python", size_bytes=10,
+            )
         )
         session.add(
             RepoChunk(

@@ -215,8 +215,9 @@ def test_no_fallback_uses_only_file_id(session: Session) -> None:
 
 
 def _read_chat_routes_source() -> str:
-    import backend.app.chat_routes as cr
     import inspect
+
+    import backend.app.chat_routes as cr
 
     return inspect.getsource(cr)
 
