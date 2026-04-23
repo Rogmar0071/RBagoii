@@ -1384,7 +1384,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         for idx, chunk_text in enumerate(chunks):
             repo_file = repo_files_by_path.get(file_path)
             if repo_file is None:
-                raise RuntimeError("INGESTION_FILE_ID_MISSING_AT_LOOP")
+                raise RuntimeError("REPO_FILE_NOT_FOUND_AT_LOOP")
             file_id = str(getattr(repo_file, "id", "") or "").strip()
             persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
             if not file_id or not persisted_file_path:
