@@ -47,9 +47,11 @@ def client() -> TestClient:
 
 def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> str:
     import backend.app.database as db_module
-    from backend.app.models import Repo, RepoChunk
+    from backend.app.models import Repo, RepoChunk, RepoFile
 
     repo_id = uuid.uuid4()
+    file_main_id = uuid.uuid4()
+    file_readme_id = uuid.uuid4()
     with Session(db_module.get_engine()) as session:
         repo = Repo(
             id=repo_id,
@@ -64,9 +66,15 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
         )
         session.add(repo)
         session.add(
+            RepoFile(id=file_main_id, repo_id=repo_id, path="src/main.py", language="python", size_bytes=10)
+        )
+        session.add(
+            RepoFile(id=file_readme_id, repo_id=repo_id, path="README.md", language="markdown", size_bytes=10)
+        )
+        session.add(
             RepoChunk(
                 repo_id=repo_id,
-                file_id=uuid.uuid4(),
+                file_id=file_main_id,
                 file_path="src/main.py",
                 content="def answer():\n    return 42\n",
                 chunk_index=0,
@@ -77,7 +85,7 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
         session.add(
             RepoChunk(
                 repo_id=repo_id,
-                file_id=uuid.uuid4(),
+                file_id=file_readme_id,
                 file_path="README.md",
                 content="Project contract and setup instructions.",
                 chunk_index=0,
@@ -93,7 +101,7 @@ def _seed_repo_with_many_chunks(
     conversation_id: str, repo_name: str = "repo-large", file_count: int = 200
 ) -> str:
     import backend.app.database as db_module
-    from backend.app.models import Repo, RepoChunk
+    from backend.app.models import Repo, RepoChunk, RepoFile
 
     repo_id = uuid.uuid4()
     with Session(db_module.get_engine()) as session:
@@ -110,10 +118,20 @@ def _seed_repo_with_many_chunks(
         )
         session.add(repo)
         for i in range(file_count):
+            file_id = uuid.uuid4()
+            session.add(
+                RepoFile(
+                    id=file_id,
+                    repo_id=repo_id,
+                    path=f"src/file_{i}.py",
+                    language="python",
+                    size_bytes=10,
+                )
+            )
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
-                    file_id=uuid.uuid4(),
+                    file_id=file_id,
                     file_path=f"src/file_{i}.py",
                     content=f"# files inventory entry {i}\nTOTAL FILES marker\n",
                     chunk_index=0,
@@ -129,9 +147,11 @@ def _seed_repo_with_partial_surface(
     conversation_id: str, repo_name: str = "repo-partial", total_files: int = 20
 ) -> str:
     import backend.app.database as db_module
-    from backend.app.models import Repo, RepoChunk
+    from backend.app.models import Repo, RepoChunk, RepoFile
 
     repo_id = uuid.uuid4()
+    file_alpha_id = uuid.uuid4()
+    file_beta_id = uuid.uuid4()
     with Session(db_module.get_engine()) as session:
         repo = Repo(
             id=repo_id,
@@ -146,9 +166,15 @@ def _seed_repo_with_partial_surface(
         )
         session.add(repo)
         session.add(
+            RepoFile(id=file_alpha_id, repo_id=repo_id, path="src/alpha.py", language="python", size_bytes=10)
+        )
+        session.add(
+            RepoFile(id=file_beta_id, repo_id=repo_id, path="src/beta.py", language="python", size_bytes=10)
+        )
+        session.add(
             RepoChunk(
                 repo_id=repo_id,
-                file_id=uuid.uuid4(),
+                file_id=file_alpha_id,
                 file_path="src/alpha.py",
                 content="def alpha():\n    return 'alpha'\n",
                 chunk_index=0,
@@ -159,7 +185,7 @@ def _seed_repo_with_partial_surface(
         session.add(
             RepoChunk(
                 repo_id=repo_id,
-                file_id=uuid.uuid4(),
+                file_id=file_beta_id,
                 file_path="src/beta.py",
                 content="def beta():\n    return 'beta'\n",
                 chunk_index=0,

@@ -563,7 +563,7 @@ class TestRepoStatusBlock:
         from sqlmodel import Session
 
         import backend.app.database as db_module
-        from backend.app.models import Repo, RepoChunk
+        from backend.app.models import Repo, RepoChunk, RepoFile
 
         cid = str(uuid.uuid4())
         repo_id = uuid.uuid4()
@@ -581,10 +581,20 @@ class TestRepoStatusBlock:
                 total_chunks=20,
             )
             session.add(repo)
+            file_id = uuid.uuid4()
+            session.add(
+                RepoFile(
+                    id=file_id,
+                    repo_id=repo_id,
+                    path="app.py",
+                    language="python",
+                    size_bytes=10,
+                )
+            )
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
-                    file_id=uuid.uuid4(),
+                    file_id=file_id,
                     file_path="app.py",
                     content="def status_repo():\n    return True",
                     chunk_index=0,

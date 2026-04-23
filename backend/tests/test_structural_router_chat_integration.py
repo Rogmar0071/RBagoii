@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_structural_chat")
@@ -47,7 +47,7 @@ def client() -> TestClient:
 
 def _seed_repo(file_count: int = 200) -> str:
     import backend.app.database as db_module
-    from backend.app.models import Repo, RepoChunk, RepoIndexRegistry
+    from backend.app.models import Repo, RepoChunk, RepoFile, RepoIndexRegistry
 
     repo_id = uuid.uuid4()
     with Session(db_module.get_engine()) as session:
@@ -64,10 +64,20 @@ def _seed_repo(file_count: int = 200) -> str:
             )
         )
         for i in range(file_count):
+            file_id = uuid.uuid4()
+            session.add(
+                RepoFile(
+                    id=file_id,
+                    repo_id=repo_id,
+                    path=f"src/file_{i}.py",
+                    language="python",
+                    size_bytes=10,
+                )
+            )
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
-                    file_id=uuid.uuid4(),
+                    file_id=file_id,
                     file_path=f"src/file_{i}.py",
                     content=f"# file {i}\n",
                     chunk_index=0,
@@ -85,6 +95,21 @@ def _seed_repo(file_count: int = 200) -> str:
         )
         session.commit()
     return str(repo_id)
+
+
+def _any_file_id(repo_id: str) -> uuid.UUID:
+    """Return a real ``RepoFile.id`` for the given repo so the deterministic
+    ``RepoChunk.file_id -> RepoFile.id`` join in ``resolve_files_from_chunks``
+    can succeed in tests that mock ``retrieve_relevant_chunks``."""
+    import backend.app.database as db_module
+    from backend.app.models import RepoFile
+
+    with Session(db_module.get_engine()) as session:
+        rf = session.exec(
+            select(RepoFile).where(RepoFile.repo_id == uuid.UUID(repo_id))
+        ).first()
+        assert rf is not None, "test seed missing RepoFile rows"
+        return rf.id
 
 
 def _chat(client: TestClient, *, repo_id: str, message: str):
@@ -166,7 +191,7 @@ def test_hybrid_query_is_split_structural_then_semantic(
             self.content = "x"
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.file_id = uuid.uuid4()
+            self.file_id = _any_file_id(repo_id)
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(
@@ -238,7 +263,7 @@ def test_adversarial_set_a_ambiguous_hybrid_shape_and_separation(
             self.content = "This file initializes startup behavior."
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.file_id = uuid.uuid4()
+            self.file_id = _any_file_id(repo_id)
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
@@ -274,7 +299,7 @@ def test_adversarial_set_b_structural_trap_routes_hybrid(
             self.content = "Important file summary."
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.file_id = uuid.uuid4()
+            self.file_id = _any_file_id(repo_id)
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
@@ -343,7 +368,7 @@ def test_adversarial_set_d_noisy_input_still_routes_hybrid(
             self.content = "Inside info."
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.file_id = uuid.uuid4()
+            self.file_id = _any_file_id(repo_id)
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])

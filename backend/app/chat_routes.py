@@ -63,6 +63,7 @@ from backend.app.query_router import (
     execute_query,
     verify_execution_trace,
 )
+from backend.app.file_resolution import resolve_files_from_chunks
 from backend.app.repo_retrieval import retrieve_relevant_chunks
 from backend.app.structural_handler import handle_structural_query
 from ui_blueprint.domain.ir import SCHEMA_VERSION
@@ -1481,8 +1482,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         response_error_code: str | None = None
         repo_chunks_for_grounding: list[Any] = []
         ctx_chunks: list[Any] = []
-        ctx_file_ids: list[str] | None = None
-        ctx_file_paths: list[str] = []
         has_explicit_repo_context = False
         context_integrity_state: ContextIntegrityState | None = None
         try:
@@ -2077,8 +2076,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         repo_chunks = list(retrieval_payload["chunks"])
                         ctx_chunks = retrieval_payload["chunks"]
-                        ctx_file_ids = retrieval_payload["file_ids"]
-                        ctx_file_paths = retrieval_payload["file_paths"]
                         retrieved_count = len(repo_chunks)
                         retrieved_chunks = int(retrieval_payload["total_chunks"])
                         retrieved_files = len(set(retrieval_payload["file_ids"]))
@@ -2467,8 +2464,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 )
                             repo_chunks = list(retrieval_payload["chunks"])
                             ctx_chunks = retrieval_payload["chunks"]
-                            ctx_file_ids = retrieval_payload["file_ids"]
-                            ctx_file_paths = retrieval_payload["file_paths"]
                             retrieved_count = len(repo_chunks)
                             retrieved_chunks = int(retrieval_payload["total_chunks"])
                             retrieved_files = len(set(retrieval_payload["file_ids"]))
@@ -2768,17 +2763,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 exc_info=True,
                             )
 
-                    if len(ctx_chunks) > 0 and (ctx_file_ids is None or len(ctx_file_ids) == 0):
-                        raise RuntimeError(
-                            f"CHAT_CONTEXT_BROKEN: chunks={len(ctx_chunks)} file_ids=0"
-                        )
-                    if ctx_file_ids is not None and len(ctx_file_ids) != len(ctx_chunks):
-                        raise RuntimeError(
-                            "CHUNK_FILE_MISMATCH: "
-                            f"chunks={len(ctx_chunks)} file_ids={len(ctx_file_ids)}"
-                        )
-                    CTX_FILES = ctx_file_paths
-                    logger.info("CTX_FILES: count=%s sample=%s", len(CTX_FILES), CTX_FILES[:3])
+                    # ---------------------------------------------------------
+                    # MQP-CONTRACT: REPO_CONTEXT_FILE_RESOLUTION_V1
+                    # CTX_FILES is built ONLY through the deterministic
+                    # chunk.file_id -> RepoFile.id join. Any failure here is
+                    # a HARD FAIL (FILE_RESOLUTION_BROKEN). No fallback.
+                    # ---------------------------------------------------------
+                    ctx_files = resolve_files_from_chunks(ctx_chunks, db)
+                    CTX_FILES = [f.path for f in ctx_files]
+                    logger.info(
+                        "CTX_FILES: count=%s sample=%s", len(CTX_FILES), CTX_FILES[:3]
+                    )
                     print(f"CTX_FILES: count={len(CTX_FILES)} sample={CTX_FILES[:3]}")
 
                     # -------------------------------------------------------
