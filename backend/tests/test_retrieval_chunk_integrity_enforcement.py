@@ -140,12 +140,7 @@ def test_chat_returns_http_200_with_invalid_chunk_shape_error(
     monkeypatch.setattr(
         cr,
         "_run_retrieval_query",
-        lambda **_kwargs: {
-            "chunks": [_make_invalid_chunk()],
-            "file_ids": [str(uuid.uuid4())],
-            "file_paths": ["src/main.py"],
-            "total_chunks": 1,
-        },
+        lambda **_kwargs: [_make_invalid_chunk()],
     )
 
     resp = client.post(

@@ -729,9 +729,8 @@ class TestChunkFileIdLineage:
                 ingest_job_ids=[job_id],
             )
 
-        assert len(retrieval["chunks"]) == len(retrieval["file_ids"])
-        assert len(retrieval["chunks"]) > 0
-        assert all(str(fid).strip() for fid in retrieval["file_ids"])
+        assert len(retrieval) > 0
+        assert all(chunk.file_id is not None for chunk in retrieval)
 
 
 # ---------------------------------------------------------------------------

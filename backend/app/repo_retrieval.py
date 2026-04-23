@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
 
 from sqlmodel import Session, select
 
@@ -286,50 +285,6 @@ def _apply_token_budget(
     return result
 
 
-def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
-    """
-    Build retrieval payload with mandatory file identity metadata.
-
-    Contract:
-    - chunks
-    - file_ids
-    - file_paths
-    - total_chunks
-    """
-    file_ids: list[str] = []
-    file_paths: list[str] = []
-    for chunk in chunks:
-        file_id = str(chunk.file_id or "").strip()
-        if not file_id:
-            raise RuntimeError("INVALID_CHUNK_SHAPE")
-        file_path = str(chunk.file_path or "").strip()
-        if not file_path:
-            raise RuntimeError("INVALID_CHUNK_SHAPE")
-        file_ids.append(file_id)
-        file_paths.append(file_path)
-
-    return {
-        "chunks": chunks,
-        "file_ids": file_ids,
-        "file_paths": file_paths,
-        "total_chunks": len(chunks),
-    }
-
-
-def _finalize_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    chunks = list(payload["chunks"])
-    file_ids = list(payload["file_ids"])
-    if chunks and not file_ids:
-        raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")
-    logger.info(
-        "RETRIEVAL_RESULT: chunks_count=%s file_ids_count=%s sample_file_id=%s",
-        len(chunks),
-        len(file_ids),
-        file_ids[0] if file_ids else None,
-    )
-    return payload
-
-
 def retrieve_relevant_chunks(
     user_query: str,
     db: Session,
@@ -338,7 +293,7 @@ def retrieve_relevant_chunks(
     conversation_id: str | None = None,
     max_chunks: int = _MAX_CHUNKS_TOTAL,
     max_tokens: int = _MAX_CONTEXT_TOKENS_REPO,
-) -> dict[str, Any]:
+) -> list[RepoChunk]:
     """
     Return at most *max_chunks* RepoChunk rows relevant to *user_query*,
     subject to the token budget *max_tokens*.
@@ -362,7 +317,7 @@ def retrieve_relevant_chunks(
     has_conversation = bool(conversation_id)
 
     if not has_repo_ids and not has_ingest_ids and not has_conversation:
-        return _finalize_retrieval_payload(_build_retrieval_payload([]))
+        return []
 
     lower_query = user_query.lower()
     keywords = _extract_keywords(user_query)
@@ -390,24 +345,26 @@ def retrieve_relevant_chunks(
             ).all()
         ]
         if not job_ids_for_conv:
-            return _finalize_retrieval_payload(_build_retrieval_payload([]))
+            return []
         chunk_stmt = select(RepoChunk).where(
             RepoChunk.ingest_job_id.in_(job_ids_for_conv)  # type: ignore[attr-defined]
         )
     else:
-        return _finalize_retrieval_payload(_build_retrieval_payload([]))
+        return []
 
     all_chunks = db.exec(chunk_stmt).all()
 
     if not all_chunks:
-        return _finalize_retrieval_payload(_build_retrieval_payload([]))
+        return []
 
-    for chunk in all_chunks:
-        if str(getattr(chunk, "file_id", "") or "").strip() == "":
-            raise RuntimeError("INVALID_CHUNK_SHAPE")
+    # RULE 4 — immediate boundary assertion
+    if any(not isinstance(chunk, RepoChunk) for chunk in all_chunks):
+        raise RuntimeError("INVALID_CHUNK_SHAPE")
+    if any(getattr(chunk, "file_id", None) is None for chunk in all_chunks):
+        raise RuntimeError("INVALID_CHUNK_SHAPE")
 
     if not keywords:
-        return _finalize_retrieval_payload(_build_retrieval_payload([]))
+        return []
 
     scored: list[tuple[int, RepoChunk]] = []
     for chunk in all_chunks:
@@ -427,6 +384,6 @@ def retrieve_relevant_chunks(
     if scored:
         selected = _apply_diversity(scored, max_total=max_chunks)
         bounded = _apply_token_budget(selected, max_tokens=max_tokens)
-        return _finalize_retrieval_payload(_build_retrieval_payload(bounded))
+        return bounded
 
-    return _finalize_retrieval_payload(_build_retrieval_payload([]))
+    return []

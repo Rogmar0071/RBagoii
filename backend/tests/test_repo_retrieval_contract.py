@@ -501,16 +501,10 @@ def test_chat_global_query_with_full_context_returns_structural_count(
         chunks = session.exec(
             select(RepoChunk).where(RepoChunk.repo_id == uuid.UUID(repo_id))
         ).all()
-    simulated_file_ids = [f"sim:{i}" for i in range(179)]
     monkeypatch.setattr(
         cr,
         "retrieve_relevant_chunks",
-        lambda *args, **kwargs: {
-            "chunks": chunks[:5],
-            "file_ids": simulated_file_ids,
-            "file_paths": [c.file_path for c in chunks[:5]],
-            "total_chunks": len(chunks[:5]),
-        },
+        lambda *args, **kwargs: chunks,
     )
     resp = client.post(
         "/api/chat",

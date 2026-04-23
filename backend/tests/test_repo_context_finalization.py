@@ -435,10 +435,8 @@ class TestRetrievalScopedToRepoIds:
                 db=session,
                 repo_ids=[repo_a.id],
             )
-            assert len(results["chunks"]) >= 1
-            assert results["total_chunks"] == len(results["chunks"])
-            assert len(results["file_ids"]) == len(results["chunks"])
-            paths_owners = [c.content for c in results["chunks"]]
+            assert len(results) >= 1
+            paths_owners = [c.content for c in results]
             assert any("hello from A" in c for c in paths_owners)
             assert all("goodbye from B" not in c for c in paths_owners)
 

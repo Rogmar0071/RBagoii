@@ -585,7 +585,7 @@ def _run_retrieval_query(
     db: Session,
     repo_ids: list[uuid.UUID] | None = None,
     conversation_id: str | None = None,
-) -> dict[str, Any]:
+) -> list[RepoChunk]:
     return retrieve_relevant_chunks(
         user_query=user_query,
         db=db,
@@ -609,60 +609,20 @@ def _requires_full_context(message: str) -> bool:
     return bool(_GLOBAL_QUERY_RE.search(message or ""))
 
 
-def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
-    if isinstance(result, dict):
-        if (
-            "chunks" not in result
-            or "file_ids" not in result
-            or "file_paths" not in result
-            or "total_chunks" not in result
-        ):
-            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-        chunks = list(result["chunks"])
-        file_ids = list(result["file_ids"])
-        file_paths = list(result["file_paths"])
-        total_chunks = int(result["total_chunks"])
-    elif isinstance(result, list):
-        chunks = []
-        file_ids = []
-        file_paths = []
-        for chunk in result:
-            file_path = str(getattr(chunk, "file_path", "") or "").strip()
-            if not file_path:
-                raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-            file_id = str(getattr(chunk, "file_id", "") or "").strip()
-            if not file_id:
-                raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-            chunks.append(chunk)
-            file_ids.append(file_id)
-            file_paths.append(file_path)
-        total_chunks = len(chunks)
-    else:
+def _normalize_retrieval_result(result: Any) -> list[RepoChunk]:
+    if not isinstance(result, list):
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
 
-    for chunk in chunks:
+    chunks: list[RepoChunk] = []
+    for chunk in result:
         if not isinstance(chunk, RepoChunk):
             raise RuntimeError("INVALID_CHUNK_SHAPE")
-        if str(getattr(chunk, "file_id", "") or "").strip() == "":
+        if getattr(chunk, "file_id", None) is None:
             raise RuntimeError("INVALID_CHUNK_SHAPE")
-
-    if chunks and not file_ids:
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if chunks and len(file_ids) != len(chunks):
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if chunks and len(file_paths) != len(chunks):
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if chunks and any(not str(path).strip() for path in file_paths):
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if chunks and total_chunks <= 0:
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-
-    return {
-        "chunks": chunks,
-        "file_ids": file_ids,
-        "file_paths": file_paths,
-        "total_chunks": total_chunks,
-    }
+        if not str(getattr(chunk, "file_path", "") or "").strip():
+            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+        chunks.append(chunk)
+    return chunks
 
 
 def _enforce_chunk_shape(chunks: list[Any]) -> None:
@@ -2093,12 +2053,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     assistant_message=assistant_message,
                                 )
                             )
-                        repo_chunks = list(retrieval_payload["chunks"])
-                        ctx_chunks = retrieval_payload["chunks"]
+                        repo_chunks = list(retrieval_payload)
+                        ctx_chunks = repo_chunks
                         _enforce_chunk_shape(ctx_chunks)
                         retrieved_count = len(repo_chunks)
-                        retrieved_chunks = int(retrieval_payload["total_chunks"])
-                        retrieved_files = len(set(retrieval_payload["file_ids"]))
+                        retrieved_chunks = len(repo_chunks)
+                        retrieved_files = len(
+                            {
+                                str(chunk.file_id)
+                                for chunk in repo_chunks
+                                if getattr(chunk, "file_id", None) is not None
+                            }
+                        )
                         repo_chunks_for_grounding = repo_chunks
                         context_integrity_state = _build_context_integrity_state(
                             conversation_id=active_conversation_id,
@@ -2487,12 +2453,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         assistant_message=assistant_message,
                                     )
                                 )
-                            repo_chunks = list(retrieval_payload["chunks"])
-                            ctx_chunks = retrieval_payload["chunks"]
+                            repo_chunks = list(retrieval_payload)
+                            ctx_chunks = repo_chunks
                             _enforce_chunk_shape(ctx_chunks)
                             retrieved_count = len(repo_chunks)
-                            retrieved_chunks = int(retrieval_payload["total_chunks"])
-                            retrieved_files = len(set(retrieval_payload["file_ids"]))
+                            retrieved_chunks = len(repo_chunks)
+                            retrieved_files = len(
+                                {
+                                    str(chunk.file_id)
+                                    for chunk in repo_chunks
+                                    if getattr(chunk, "file_id", None) is not None
+                                }
+                            )
                             repo_chunks_for_grounding = repo_chunks
                             context_integrity_state = _build_context_integrity_state(
                                 conversation_id=active_conversation_id,
@@ -2788,22 +2760,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 active_conversation_id,
                                 exc_info=True,
                             )
-
-                    # MQP-CONTRACT: FILE_RESOLUTION_DIAGNOSTIC_V1
-                    # Probe A: chunk file_ids
-                    print("DEBUG_CHUNK_FILE_IDS:", [str(c.file_id) for c in ctx_chunks[:5]])
-
-                    # Probe B: database visibility check
-                    from backend.app.models import RepoFile
-                    db_files = db.query(RepoFile).limit(5).all()
-                    print("DEBUG_DB_HAS_FILES:", len(db_files))
-
-                    # Probe C: direct join validation
-                    chunk_ids = [c.file_id for c in ctx_chunks[:5]]
-                    matched_files = db.query(RepoFile).filter(
-                        RepoFile.id.in_(chunk_ids)
-                    ).all()
-                    print("DEBUG_DIRECT_JOIN_COUNT:", len(matched_files))
 
                     files = resolve_files_from_chunks(ctx_chunks, db)
                     ctx_files = [f.path for f in files]
