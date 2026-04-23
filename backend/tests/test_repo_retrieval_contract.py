@@ -402,7 +402,7 @@ def test_chat_global_query_with_partial_context_returns_data_incomplete(client: 
     resp = client.post(
         "/api/chat",
         json={
-            "message": "how many files are in this repository?",
+            "message": "summarize repo",
             "conversation_id": str(uuid.uuid4()),
             "agent_mode": False,
             "context": {"repos": [repo_id]},
@@ -427,7 +427,7 @@ def test_chat_local_query_succeeds_with_partial_context(
     resp = client.post(
         "/api/chat",
         json={
-            "message": "what is in this file alpha.py",
+            "message": "explain alpha function behavior",
             "conversation_id": str(uuid.uuid4()),
             "agent_mode": False,
             "context": {"repos": [repo_id]},
@@ -450,7 +450,9 @@ def test_chat_global_query_with_full_context_returns_structural_count(
     from backend.app.models import RepoChunk
 
     with Session(db_module.get_engine()) as session:
-        chunks = session.exec(select(RepoChunk).where(RepoChunk.repo_id == uuid.UUID(repo_id))).all()
+        chunks = session.exec(
+            select(RepoChunk).where(RepoChunk.repo_id == uuid.UUID(repo_id))
+        ).all()
     simulated_file_ids = [f"sim:{i}" for i in range(179)]
     monkeypatch.setattr(
         cr,
