@@ -46,35 +46,31 @@ def validate_schema() -> None:
     print("SCHEMA ENFORCEMENT: Validating database schema...")
     
     try:
-        # Connect to database
-        conn = psycopg2.connect(database_url)
-        cursor = conn.cursor()
-        
-        # Validate each required column
-        failed_validations = []
-        
-        for table_name, column_name, description in required_columns:
-            cursor.execute(
-                """
-                SELECT column_name 
-                FROM information_schema.columns 
-                WHERE table_schema = 'public'
-                  AND table_name = %s 
-                  AND column_name = %s
-                """,
-                (table_name, column_name)
-            )
-            
-            result = cursor.fetchone()
-            
-            if result is None:
-                failed_validations.append(f"  ✗ {table_name}.{column_name} MISSING ({description})")
-                print(f"  ✗ {table_name}.{column_name} - MISSING", file=sys.stderr)
-            else:
-                print(f"  ✓ {table_name}.{column_name} - OK")
-        
-        cursor.close()
-        conn.close()
+        # Connect to database (using context manager for proper cleanup)
+        with psycopg2.connect(database_url) as conn:
+            with conn.cursor() as cursor:
+                # Validate each required column
+                failed_validations = []
+                
+                for table_name, column_name, description in required_columns:
+                    cursor.execute(
+                        """
+                        SELECT column_name 
+                        FROM information_schema.columns 
+                        WHERE table_schema = 'public'
+                          AND table_name = %s 
+                          AND column_name = %s
+                        """,
+                        (table_name, column_name)
+                    )
+                    
+                    result = cursor.fetchone()
+                    
+                    if result is None:
+                        failed_validations.append(f"  ✗ {table_name}.{column_name} MISSING ({description})")
+                        print(f"  ✗ {table_name}.{column_name} - MISSING", file=sys.stderr)
+                    else:
+                        print(f"  ✓ {table_name}.{column_name} - OK")
         
         # If any validation failed, abort startup
         if failed_validations:
