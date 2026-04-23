@@ -1494,6 +1494,7 @@ def process_ingest_job(job_id: str) -> None:
     from backend.app.execution_spine import require_execute_job_route
 
     require_execute_job_route("process_ingest_job")
+    logger.info("INGEST_PIPELINE_ENTRY job_id=%s", job_id)
     logger.error("TRACE_ENTRY: job=%s", job_id)
 
     job = _get_ingest_job(job_id)
