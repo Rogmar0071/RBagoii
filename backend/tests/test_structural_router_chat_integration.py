@@ -67,6 +67,7 @@ def _seed_repo(file_count: int = 200) -> str:
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
+                    file_id=uuid.uuid4(),
                     file_path=f"src/file_{i}.py",
                     content=f"# file {i}\n",
                     chunk_index=0,
@@ -165,7 +166,7 @@ def test_hybrid_query_is_split_structural_then_semantic(
             self.content = "x"
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.graph_group = str(uuid.uuid4())
+            self.file_id = uuid.uuid4()
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(
@@ -237,7 +238,7 @@ def test_adversarial_set_a_ambiguous_hybrid_shape_and_separation(
             self.content = "This file initializes startup behavior."
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.graph_group = str(uuid.uuid4())
+            self.file_id = uuid.uuid4()
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
@@ -273,7 +274,7 @@ def test_adversarial_set_b_structural_trap_routes_hybrid(
             self.content = "Important file summary."
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.graph_group = str(uuid.uuid4())
+            self.file_id = uuid.uuid4()
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
@@ -342,7 +343,7 @@ def test_adversarial_set_d_noisy_input_still_routes_hybrid(
             self.content = "Inside info."
             self.chunk_index = 0
             self.id = uuid.uuid4()
-            self.graph_group = str(uuid.uuid4())
+            self.file_id = uuid.uuid4()
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])

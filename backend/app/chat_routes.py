@@ -629,7 +629,7 @@ def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
             file_path = str(getattr(chunk, "file_path", "") or "").strip()
             if not file_path:
                 raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-            file_id = str(getattr(chunk, "graph_group", "") or "").strip()
+            file_id = str(getattr(chunk, "file_id", "") or "").strip()
             if not file_id:
                 raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
             chunks.append(chunk)

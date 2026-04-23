@@ -691,10 +691,14 @@ async def add_github_repo(
 
     chunk_count = 0
     for file_path, content in file_list:
+        source_file_id = uuid.uuid5(
+            uuid.NAMESPACE_URL, f"github-repo:{github_file.id}:{file_path}"
+        )
         for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             structure = extract_structure(chunk_text, file_path)
             chunk = RepoChunk(
                 chat_file_id=github_file.id,
+                file_id=source_file_id,
                 file_path=file_path,
                 content=chunk_text,
                 chunk_index=chunk_index,

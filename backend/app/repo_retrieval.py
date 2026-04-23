@@ -300,15 +300,16 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
     file_ids: list[str] = []
     file_paths: list[str] = []
     for chunk in chunks:
+        file_id = str(chunk.file_id or "").strip()
         file_path = str(chunk.file_path or "").strip()
-        if not file_path:
-            raise RuntimeError("INVALID_CHUNK_NO_FILE_PATH")
-        file_id = str(chunk.graph_group or "").strip()
-        if not file_id:
-            raise RuntimeError("INVALID_CHUNK_NO_FILE_ID")
+        if not file_id or not file_path:
+            continue
         valid_chunks.append(chunk)
         file_ids.append(file_id)
         file_paths.append(file_path)
+
+    if chunks and not file_ids:
+        raise RuntimeError("IDENTITY_PIPELINE_BROKEN")
 
     return {
         "chunks": valid_chunks,
@@ -335,7 +336,6 @@ def _finalize_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
 def retrieve_relevant_chunks(
     user_query: str,
     db: Session,
-    chat_file_ids: list[uuid.UUID] | None = None,
     repo_ids: list[uuid.UUID] | None = None,
     ingest_job_ids: list[uuid.UUID] | None = None,
     conversation_id: str | None = None,
@@ -350,7 +350,6 @@ def retrieve_relevant_chunks(
       1. repo_ids          — first-class Repo entities
       2. ingest_job_ids    — new unified IngestJob entities
       3. conversation_id   — all IngestJob chunks for a conversation
-      4. chat_file_ids     — legacy V1 ingestion path
 
     Pipeline:
     1. Normalise query / extract keywords
@@ -364,9 +363,8 @@ def retrieve_relevant_chunks(
     has_repo_ids = bool(repo_ids)
     has_ingest_ids = bool(ingest_job_ids)
     has_conversation = bool(conversation_id)
-    has_file_ids = bool(chat_file_ids)
 
-    if not has_repo_ids and not has_ingest_ids and not has_conversation and not has_file_ids:
+    if not has_repo_ids and not has_ingest_ids and not has_conversation:
         return _finalize_retrieval_payload(_build_retrieval_payload([]))
 
     lower_query = user_query.lower()
@@ -400,10 +398,7 @@ def retrieve_relevant_chunks(
             RepoChunk.ingest_job_id.in_(job_ids_for_conv)  # type: ignore[attr-defined]
         )
     else:
-        # Backward-compat path: query by chat_file_id
-        chunk_stmt = select(RepoChunk).where(
-            RepoChunk.chat_file_id.in_(chat_file_ids)  # type: ignore[attr-defined]
-        )
+        return _finalize_retrieval_payload(_build_retrieval_payload([]))
 
     all_chunks = db.exec(chunk_stmt).all()
 

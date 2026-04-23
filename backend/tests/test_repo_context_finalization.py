@@ -409,6 +409,7 @@ class TestRetrievalScopedToRepoIds:
 
             chunk_a = RepoChunk(
                 repo_id=repo_a.id,
+                file_id=uuid.uuid4(),
                 file_path="app.py",
                 content="def hello(): return 'hello from A'",
                 chunk_index=0,
@@ -417,6 +418,7 @@ class TestRetrievalScopedToRepoIds:
             )
             chunk_b = RepoChunk(
                 repo_id=repo_b.id,
+                file_id=uuid.uuid4(),
                 file_path="app.py",
                 content="def goodbye(): return 'goodbye from B'",
                 chunk_index=0,
@@ -576,6 +578,7 @@ class TestRepoStatusBlock:
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
+                    file_id=uuid.uuid4(),
                     file_path="app.py",
                     content="def status_repo():\n    return True",
                     chunk_index=0,

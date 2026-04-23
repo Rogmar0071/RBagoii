@@ -66,6 +66,7 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
         session.add(
             RepoChunk(
                 repo_id=repo_id,
+                file_id=uuid.uuid4(),
                 file_path="src/main.py",
                 content="def answer():\n    return 42\n",
                 chunk_index=0,
@@ -76,6 +77,7 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
         session.add(
             RepoChunk(
                 repo_id=repo_id,
+                file_id=uuid.uuid4(),
                 file_path="README.md",
                 content="Project contract and setup instructions.",
                 chunk_index=0,
@@ -111,6 +113,7 @@ def _seed_repo_with_many_chunks(
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
+                    file_id=uuid.uuid4(),
                     file_path=f"src/file_{i}.py",
                     content=f"# files inventory entry {i}\nTOTAL FILES marker\n",
                     chunk_index=0,
@@ -145,6 +148,7 @@ def _seed_repo_with_partial_surface(
         session.add(
             RepoChunk(
                 repo_id=repo_id,
+                file_id=uuid.uuid4(),
                 file_path="src/alpha.py",
                 content="def alpha():\n    return 'alpha'\n",
                 chunk_index=0,
@@ -155,6 +159,7 @@ def _seed_repo_with_partial_surface(
         session.add(
             RepoChunk(
                 repo_id=repo_id,
+                file_id=uuid.uuid4(),
                 file_path="src/beta.py",
                 content="def beta():\n    return 'beta'\n",
                 chunk_index=0,
