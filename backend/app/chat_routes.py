@@ -2769,7 +2769,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     if ctx_chunks and not ctx_files:
                         raise Exception("FILE_RESOLUTION_BROKEN")
 
-                    logger.info("CTX_FILES: count=%s sample=%s", len(ctx_files), ctx_files[:3])
+                    print("CTX_FILES:", ctx_files[:3])
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
@@ -3030,8 +3030,22 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         # must propagate as a real HTTP response — not be swallowed into SYSTEM_FAILURE.
         raise
     except Exception:
+        # PHASE 3 — API STABILITY LOCK: ALL execution paths MUST return HTTP 200.
+        # Log the unexpected error but return a structured 200 response instead of
+        # propagating as a 500.
+        import json as _json
+
         logger.exception("HARD FAIL:", exc_info=True)
-        raise
+        error_reply = _json.dumps(
+            {
+                "error": "SYSTEM_FAILURE",
+                "message": "Unexpected internal error",
+            }
+        )
+        return JSONResponse(
+            status_code=200,
+            content={"reply": error_reply, "error": "SYSTEM_FAILURE"},
+        )
 
 
 # ---------------------------------------------------------------------------
