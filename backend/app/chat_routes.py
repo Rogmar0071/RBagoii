@@ -2763,23 +2763,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 exc_info=True,
                             )
 
-                    # ---------------------------------------------------------
-                    # MQP-CONTRACT: REPO_CONTEXT_FILE_RESOLUTION_V1 (v3 lock)
-                    # CTX_FILES is built ONLY through the deterministic
-                    # chunk.file_id -> RepoFile.id join. Any failure here is
-                    # a HARD FAIL (FILE_RESOLUTION_BROKEN). No fallback.
-                    # The explicit post-call guard is intentional: it enforces
-                    # the invariant `len(chunks) > 0 -> len(files) > 0` even
-                    # if the resolver implementation ever drifts.
-                    # ---------------------------------------------------------
-                    ctx_files = resolve_files_from_chunks(ctx_chunks, db)
-                    CTX_FILES = [f.path for f in ctx_files]
-                    if ctx_chunks and not CTX_FILES:
-                        raise RuntimeError("FILE_RESOLUTION_BROKEN")
-                    logger.info(
-                        "CTX_FILES: count=%s sample=%s", len(CTX_FILES), CTX_FILES[:3]
-                    )
-                    print(f"CTX_FILES: count={len(CTX_FILES)} sample={CTX_FILES[:3]}")
+                    files = resolve_files_from_chunks(ctx_chunks, db)
+                    ctx_files = [f.path for f in files]
+
+                    if ctx_chunks and not ctx_files:
+                        raise Exception("FILE_RESOLUTION_BROKEN")
+
+                    logger.info("CTX_FILES: count=%s sample=%s", len(ctx_files), ctx_files[:3])
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
@@ -3039,73 +3029,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         # GLOBAL_REPO_ASSET_SYSTEM_LOCK_V3: HTTPException (e.g. 409 REPO_NOT_READY)
         # must propagate as a real HTTP response — not be swallowed into SYSTEM_FAILURE.
         raise
-    # PHASE 3 — API STABILITY LOCK: Final catch-all exception handler
-    # This should never be reached due to nested try/except, but provides ultimate safety
     except Exception as e:
-        # PROHIBITIONS: NO uncaught exceptions, NO 5xx responses
-        import json as _json
-
-        logger.exception("Unexpected exception in chat endpoint: %s", e)
-        error_reply = _json.dumps(
-            {
-                "error": "SYSTEM_FAILURE",
-                "detail": str(e),
-                "retry_count": 0,
-            }
-        )
-        # Try to persist error message if db is available
-        try:
-            db = _db_session()
-            active_conversation_id = (body or {}).get("conversation_id", "unknown")
-            context = ChatContext()
-            assistant_message = _persist_message(
-                db, "assistant", error_reply, context, conversation_id=active_conversation_id
-            )
-            user_message = _persist_message(
-                db,
-                "user",
-                (body or {}).get("message", ""),
-                context,
-                conversation_id=active_conversation_id,
-            )
-            if db is not None:
-                db.close()
-            logger.info(
-                "chat_response conversation_id=%s retrieved_count=%s error_code=%s",
-                active_conversation_id,
-                0,
-                "SYSTEM_FAILURE",
-            )
-            return _json_response(
-                ChatPostResponse(
-                    conversation_id=active_conversation_id,
-                    reply=error_reply,
-                    error_code="SYSTEM_FAILURE",
-                    retrieved_count=0,
-                    repo_count=0,
-                    total_chunks=0,
-                    retrieved_chunks=0,
-                    tools_available=_TOOLS_AVAILABLE,
-                    user_message=user_message,
-                    assistant_message=assistant_message,
-                )
-            )
-        except Exception:
-            # If even persistence fails, return minimal error response
-            # Don't expose internal exception details to clients
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "error": "SYSTEM_FAILURE",
-                    "detail": "An unexpected error occurred. Please try again later.",
-                    "retry_count": 0,
-                    "retrieved_count": 0,
-                    "repo_count": 0,
-                    "total_chunks": 0,
-                    "retrieved_chunks": 0,
-                    "conversation_id": (body or {}).get("conversation_id", "unknown"),
-                },
-            )
+        logger.exception("HARD FAIL:", exc_info=True)
+        raise
 
 
 # ---------------------------------------------------------------------------
