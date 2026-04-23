@@ -3062,14 +3062,14 @@ def run_repo_ingestion(repo_id: str) -> None:
             from backend.app.repo_chunk_extractor import extract_structure
 
             for file_path, content in file_list:
-                source_file_id = uuid.uuid5(
+                file_id = uuid.uuid5(
                     uuid.NAMESPACE_URL, f"repo:{r.id}:{file_path}"
                 )
                 for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
                     structure = extract_structure(chunk_text, file_path)
                     chunk = RepoChunk(
                         repo_id=r.id,
-                        file_id=source_file_id,
+                        file_id=file_id,
                         file_path=file_path,
                         content=chunk_text,
                         chunk_index=chunk_index,
