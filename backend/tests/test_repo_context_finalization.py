@@ -457,6 +457,7 @@ class TestTokenBudget:
         chunks = [
             RepoChunk(
                 repo_id=uuid.uuid4(),
+                file_id=uuid.uuid4(),
                 file_path=f"file{i}.py",
                 content="x" * 400,
                 chunk_index=0,
@@ -478,6 +479,7 @@ class TestTokenBudget:
         chunks = [
             RepoChunk(
                 repo_id=uuid.uuid4(),
+                file_id=uuid.uuid4(),
                 file_path=f"f{i}.py",
                 content="x",
                 chunk_index=0,
@@ -502,6 +504,7 @@ class TestEnhancedScoring:
 
         chunk_match = RepoChunk(
             repo_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
             file_path="src/auth.py",  # matches "auth" keyword
             content="generic content here",
             chunk_index=0,
@@ -509,6 +512,7 @@ class TestEnhancedScoring:
         )
         chunk_nomatch = RepoChunk(
             repo_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
             file_path="src/utils.py",
             content="generic content here",
             chunk_index=0,
@@ -525,6 +529,7 @@ class TestEnhancedScoring:
 
         chunk_first = RepoChunk(
             repo_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
             file_path="app.py",
             content="def login(): pass",
             chunk_index=0,
@@ -532,6 +537,7 @@ class TestEnhancedScoring:
         )
         chunk_deep = RepoChunk(
             repo_id=uuid.uuid4(),
+            file_id=uuid.uuid4(),
             file_path="app.py",
             content="def login(): pass",
             chunk_index=6,  # triggers -2 penalty (6 // 3 = 2, clamped to 2)
