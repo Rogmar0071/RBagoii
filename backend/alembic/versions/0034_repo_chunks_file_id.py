@@ -76,17 +76,13 @@ def upgrade() -> None:
         (c for c in inspector.get_columns("repo_chunks") if c["name"] == "file_id"),
         None,
     )
-    if file_col and file_col.get("nullable", True):
-        if bind.dialect.name == "sqlite":
-            with op.batch_alter_table("repo_chunks", recreate="always") as batch_op:
-                batch_op.alter_column("file_id", existing_type=sa.Uuid(), nullable=False)
-        else:
-            op.alter_column(
-                "repo_chunks",
-                "file_id",
-                existing_type=sa.Uuid(),
-                nullable=False,
-            )
+    if file_col and file_col.get("nullable", True) and bind.dialect.name != "sqlite":
+        op.alter_column(
+            "repo_chunks",
+            "file_id",
+            existing_type=sa.Uuid(),
+            nullable=False,
+        )
 
 
 def downgrade() -> None:
