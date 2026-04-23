@@ -2058,7 +2058,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             {
                                 str(chunk.file_id)
                                 for chunk in repo_chunks
-                                if getattr(chunk, "file_id", None) is not None
                             }
                         )
                         repo_chunks_for_grounding = repo_chunks
@@ -2458,7 +2457,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 {
                                     str(chunk.file_id)
                                     for chunk in repo_chunks
-                                    if getattr(chunk, "file_id", None) is not None
                                 }
                             )
                             repo_chunks_for_grounding = repo_chunks
