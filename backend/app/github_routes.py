@@ -33,6 +33,7 @@ from backend.app.models import (
     ConversationRepo,
     Repo,
     RepoChunk,
+    RepoFile,
     RepoIndexRegistry,
 )
 from backend.app.repo_retrieval import _extract_keywords, _score_chunk, _split_into_chunks
@@ -690,15 +691,23 @@ async def add_github_repo(
     from backend.app.repo_chunk_extractor import extract_structure
 
     chunk_count = 0
+    repo_file_ids: set[uuid.UUID] = set()
     for file_path, content in file_list:
-        file_id = uuid.uuid5(
-            uuid.NAMESPACE_URL, f"github-repo:{github_file.id}:{file_path}"
+        repo_file = RepoFile(
+            repo_id=github_file.id,
+            path=file_path,
+            language=None,
+            size_bytes=len(content.encode("utf-8")),
+            content_hash=None,
         )
+        session.add(repo_file)
+        session.flush()
+        repo_file_ids.add(repo_file.id)
         for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             structure = extract_structure(chunk_text, file_path)
             chunk = RepoChunk(
                 chat_file_id=github_file.id,
-                file_id=file_id,
+                file_id=repo_file.id,
                 file_path=file_path,
                 content=chunk_text,
                 chunk_index=chunk_index,
@@ -710,8 +719,18 @@ async def add_github_repo(
                 start_line=structure["start_line"],
                 end_line=structure["end_line"],
             )
+            if chunk.file_id is None:
+                raise RuntimeError("INVALID_CHUNK_WRITE")
             session.add(chunk)
             chunk_count += 1
+
+    created_chunks = session.exec(
+        select(RepoChunk).where(RepoChunk.chat_file_id == github_file.id)
+    ).all()
+    if any(chunk.file_id is None for chunk in created_chunks):
+        raise RuntimeError("INGEST_CORRUPTED")
+    if any(chunk.file_id not in repo_file_ids for chunk in created_chunks):
+        raise RuntimeError("INGEST_CORRUPTED")
 
     # Set ingestion status based on whether chunks were created
     github_file.ingestion_status = "success" if chunk_count > 0 else "failed"
