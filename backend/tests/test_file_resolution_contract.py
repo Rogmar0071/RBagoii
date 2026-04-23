@@ -241,16 +241,14 @@ def test_drift_no_ctx_file_ids_local_in_chat_routes() -> None:
 
 
 def test_drift_ctx_files_assignment_uses_resolver() -> None:
-    """The single CTX_FILES assignment must derive from resolve_files_from_chunks output."""
+    """The single ctx_files assignment must derive from resolve_files_from_chunks output."""
     src = _read_chat_routes_source()
-    # Exactly one assignment should exist, and it must list-comprehend over
-    # the resolver's output (RepoFile rows -> .path).
-    assert "CTX_FILES = [f.path for f in ctx_files]" in src, (
-        "CTX_FILES assignment must read `[f.path for f in ctx_files]` "
-        "where ctx_files = resolve_files_from_chunks(...)."
+    assert "ctx_files = [f.path for f in files]" in src, (
+        "ctx_files assignment must read `[f.path for f in files]` "
+        "where files = resolve_files_from_chunks(...)."
     )
-    assert "ctx_files = resolve_files_from_chunks(" in src, (
-        "ctx_files must come from resolve_files_from_chunks(...)."
+    assert "files = resolve_files_from_chunks(" in src, (
+        "files must come from resolve_files_from_chunks(...)."
     )
 
 
