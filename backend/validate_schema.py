@@ -45,6 +45,7 @@ def validate_schema() -> None:
         ("ingest_jobs", "median_chunks_per_file", "Ingestion metric: median chunks per file"),
         ("ingest_jobs", "chunk_variance_flagged", "Ingestion metric: chunk variance flag"),
         ("ingest_jobs", "chunk_variance_delta_pct", "Ingestion metric: chunk variance delta"),
+        ("repo_chunks", "file_id", "Canonical source file identity for chunk lineage"),
     ]
 
     print("SCHEMA ENFORCEMENT: Validating database schema...")

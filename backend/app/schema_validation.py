@@ -99,6 +99,13 @@ REQUIRED_INGEST_JOB_COLUMNS = {
     "updated_at",
 }
 
+REQUIRED_REPO_CHUNK_COLUMNS = {
+    "id",
+    "file_id",
+    "file_path",
+    "content",
+}
+
 
 # ---------------------------------------------------------------------------
 # Schema Validation Functions
@@ -136,6 +143,11 @@ def validate_ingest_jobs_schema(engine: sa.Engine) -> tuple[bool, list[str]]:
     If ANY column is missing, ingestion MUST FAIL before execution.
     """
     return validate_table_columns(engine, "ingest_jobs", REQUIRED_INGEST_JOB_COLUMNS)
+
+
+def validate_repo_chunks_schema(engine: sa.Engine) -> tuple[bool, list[str]]:
+    """Validate repo_chunks schema critical columns."""
+    return validate_table_columns(engine, "repo_chunks", REQUIRED_REPO_CHUNK_COLUMNS)
 
 
 def validate_schema_migrations_table(engine: sa.Engine) -> bool:
@@ -241,6 +253,18 @@ def validate_schema_on_startup(engine: sa.Engine) -> SchemaState:
             )
             error_msg = (
                 "SCHEMA VALIDATION FAILED - ingest_jobs table schema mismatch:\n"
+                + "\n".join(f"  - {err}" for err in errors)
+                + "\n\nMIGRATION REQUIRED. Run: alembic -c backend/alembic.ini upgrade head"
+            )
+            raise SchemaValidationError(error_msg)
+
+        is_valid, errors = validate_repo_chunks_schema(engine)
+        if not is_valid:
+            current_state = transition_schema(
+                engine, current_state, SchemaState.SCHEMA_INVALID
+            )
+            error_msg = (
+                "SCHEMA VALIDATION FAILED - repo_chunks table schema mismatch:\n"
                 + "\n".join(f"  - {err}" for err in errors)
                 + "\n\nMIGRATION REQUIRED. Run: alembic -c backend/alembic.ini upgrade head"
             )
