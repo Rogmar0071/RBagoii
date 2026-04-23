@@ -3,6 +3,7 @@ set -e
 
 echo "════════════════════════════════════════════════════════════════"
 echo "SCHEMA ENFORCEMENT: MQP-CONTRACT SCHEMA_ALIGNMENT_ENFORCEMENT_V1"
+echo "Worker Service Startup"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
 
@@ -31,7 +32,7 @@ echo "  Configuration: ${ALEMBIC_INI}"
 echo "  Command: alembic -c ${ALEMBIC_INI} upgrade head"
 
 if ! alembic -c "${ALEMBIC_INI}" upgrade head; then
-  echo "FATAL: Migration failed. Cannot start server with misaligned schema." >&2
+  echo "FATAL: Migration failed. Cannot start worker with misaligned schema." >&2
   exit 1
 fi
 echo "  ✓ Migrations applied successfully"
@@ -49,11 +50,11 @@ fi
 echo ""
 
 # ────────────────────────────────────────────────────────────────────
-# STEP 4: Start Application
+# STEP 4: Start Worker
 # ────────────────────────────────────────────────────────────────────
 echo "════════════════════════════════════════════════════════════════"
 echo "SCHEMA VALIDATION PASSED ✓"
-echo "Starting API server..."
+echo "Starting RQ worker..."
 echo "════════════════════════════════════════════════════════════════"
 echo ""
-exec uvicorn backend.app.main:app --host 0.0.0.0 --port "${PORT:-8000}"
+exec python -m rq worker --url "${REDIS_URL}" default
