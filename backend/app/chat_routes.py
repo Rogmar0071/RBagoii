@@ -1362,32 +1362,34 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         "invalid_request",
                         "Exactly one repo id is allowed in context.repos for active binding.",
                     )
-                selected_repo_uuid: uuid.UUID | None = None
-                for rid_str in context.repos:
-                    try:
-                        repo_uuid = uuid.UUID(rid_str)
-                    except ValueError:
-                        return _error(400, "invalid_request", "Invalid repo id in context.repos.")
-                    if db.get(Repo, repo_uuid) is None:
-                        return _error(
-                            404,
-                            "repo_not_found",
-                            "Requested repo binding target not found.",
+                rid_str = context.repos[0]
+                try:
+                    selected_repo_uuid = uuid.UUID(rid_str)
+                except ValueError:
+                    return _error(
+                        400,
+                        "invalid_request",
+                        "Invalid UUID format for repo id in context.repos.",
+                    )
+                if db.get(Repo, selected_repo_uuid) is None:
+                    return _error(
+                        404,
+                        "repo_not_found",
+                        "Requested repo binding target not found.",
+                    )
+                existing = db.exec(
+                    select(ConversationRepo).where(
+                        ConversationRepo.conversation_id == active_conversation_id,
+                        ConversationRepo.repo_id == selected_repo_uuid,
+                    )
+                ).first()
+                if existing is None:
+                    db.add(
+                        ConversationRepo(
+                            conversation_id=active_conversation_id,
+                            repo_id=selected_repo_uuid,
                         )
-                    existing = db.exec(
-                        select(ConversationRepo).where(
-                            ConversationRepo.conversation_id == active_conversation_id,
-                            ConversationRepo.repo_id == repo_uuid,
-                        )
-                    ).first()
-                    if existing is None:
-                        db.add(
-                            ConversationRepo(
-                                conversation_id=active_conversation_id,
-                                repo_id=repo_uuid,
-                            )
-                        )
-                    selected_repo_uuid = repo_uuid
+                    )
                 db.commit()
                 _ensure_conversation_context(
                     db,
