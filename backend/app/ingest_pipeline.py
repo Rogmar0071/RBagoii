@@ -987,6 +987,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         structure = extract_structure(chunk_text, filename)
         chunk = RepoChunk(
             ingest_job_id=job.id,
+            file_id=repo_file.id,
             file_path=file_path,
             content=chunk_text,
             chunk_index=idx,
@@ -994,15 +995,15 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             chunk_type=structure["chunk_type"],
             symbol=structure["symbol"],
             dependencies=structure["dependencies"],
-            graph_group=file_id,
+            graph_group=structure["graph_group"],
             start_line=structure["start_line"],
             end_line=structure["end_line"],
         )
-        if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
+        if chunk.file_id is None or not str(chunk.file_path or "").strip():
             raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
-            chunk.graph_group,
+            chunk.file_id,
             chunk.file_path,
             chunk.chunk_index,
         )
@@ -1082,6 +1083,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
         structure = extract_structure(chunk_text, filename)
         chunk = RepoChunk(
             ingest_job_id=job.id,
+            file_id=repo_file.id,
             file_path=file_path,
             content=chunk_text,
             chunk_index=idx,
@@ -1090,15 +1092,15 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
             chunk_type=structure["chunk_type"],
             symbol=structure["symbol"],
             dependencies=structure["dependencies"],
-            graph_group=file_id,
+            graph_group=structure["graph_group"],
             start_line=structure["start_line"],
             end_line=structure["end_line"],
         )
-        if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
+        if chunk.file_id is None or not str(chunk.file_path or "").strip():
             raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
-            chunk.graph_group,
+            chunk.file_id,
             chunk.file_path,
             chunk.chunk_index,
         )
@@ -1381,16 +1383,23 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         chunks = split_with_overlap(content)
         chunks_per_file[file_path] = len(chunks)
 
-        repo_file = repo_files_by_path.get(file_path)
-        file_id = str(getattr(repo_file, "id", "") or "").strip()
-        persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
-        if not file_id or not persisted_file_path:
-            raise RuntimeError("INGESTION_FILE_ID_MISSING")
-
         for idx, chunk_text in enumerate(chunks):
+            repo_file = repo_files_by_path.get(file_path)
+            if repo_file is None:
+                raise RuntimeError("REPO_FILE_NOT_FOUND_AT_LOOP")
+            file_id = str(getattr(repo_file, "id", "") or "").strip()
+            persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
+            if not file_id or not persisted_file_path:
+                raise RuntimeError("INGESTION_FILE_ID_MISSING_AT_LOOP")
             structure = extract_structure(chunk_text, file_path)
+            logger.info(
+                "CHUNK_CREATION_LOOP file_path=%s chunk_index=%s",
+                persisted_file_path,
+                idx,
+            )
             chunk = RepoChunk(
                 ingest_job_id=job.id,
+                file_id=repo_file.id,
                 file_path=persisted_file_path,
                 content=chunk_text,
                 chunk_index=idx,
@@ -1398,15 +1407,17 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 chunk_type=structure["chunk_type"],
                 symbol=structure["symbol"],
                 dependencies=structure["dependencies"],
-                graph_group=file_id,
+                graph_group=structure["graph_group"],
                 start_line=structure["start_line"],
                 end_line=structure["end_line"],
             )
-            if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
+            if chunk.file_id is None:
+                raise RuntimeError("INVALID_CHUNK_NO_FILE_ID")
+            if not str(chunk.file_path or "").strip():
                 raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
             logger.info(
                 "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
-                chunk.graph_group,
+                chunk.file_id,
                 chunk.file_path,
                 chunk.chunk_index,
             )
@@ -1494,6 +1505,7 @@ def process_ingest_job(job_id: str) -> None:
     from backend.app.execution_spine import require_execute_job_route
 
     require_execute_job_route("process_ingest_job")
+    logger.info("INGEST_PIPELINE_ENTRY job_id=%s", job_id)
     logger.error("TRACE_ENTRY: job=%s", job_id)
 
     job = _get_ingest_job(job_id)

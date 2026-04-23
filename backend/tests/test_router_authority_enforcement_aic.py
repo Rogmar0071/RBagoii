@@ -78,6 +78,7 @@ def _seed_repo(file_count: int = 200) -> str:
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
+                    file_id=uuid.uuid4(),
                     file_path=f"src/file_{i}.py",
                     content=f"# file {i}\n",
                     chunk_index=0,

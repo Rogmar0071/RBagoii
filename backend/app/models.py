@@ -450,6 +450,11 @@ class RepoChunk(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.Uuid, sa.ForeignKey("ingest_jobs.id"), nullable=True, index=True),
     )
+    # Canonical source-file identity for this chunk (RepoFile.id or equivalent source file id)
+    file_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, nullable=True, index=True),
+    )
     # Path of the source file within the repository (or filename for uploads)
     file_path: str = Field(sa_column=Column(sa.Text))
     # Chunk text content
