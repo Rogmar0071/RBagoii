@@ -1119,7 +1119,9 @@ def get_conversation_context_binding(conversation_id: str) -> JSONResponse:
         )
     try:
         ctx = db.exec(
-            select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
+            select(ConversationContext).where(
+                ConversationContext.conversation_id == conversation_id
+            )
         ).first()
         if ctx is None:
             return _error(404, "context_binding_not_found", "No active context binding found.")
@@ -1220,7 +1222,9 @@ def delete_conversation(
         for b in bindings:
             db.delete(b)
         ctx = db.exec(
-            select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
+            select(ConversationContext).where(
+                ConversationContext.conversation_id == conversation_id
+            )
         ).first()
         if ctx is not None:
             db.delete(ctx)
@@ -1365,7 +1369,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     except ValueError:
                         return _error(400, "invalid_request", "Invalid repo id in context.repos.")
                     if db.get(Repo, repo_uuid) is None:
-                        return _error(404, "repo_not_found", "Requested repo binding target not found.")
+                        return _error(
+                            404,
+                            "repo_not_found",
+                            "Requested repo binding target not found.",
+                        )
                     existing = db.exec(
                         select(ConversationRepo).where(
                             ConversationRepo.conversation_id == active_conversation_id,
