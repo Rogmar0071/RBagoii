@@ -301,20 +301,20 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
     for chunk in chunks:
         file_path = str(chunk.file_path or "").strip()
         if not file_path:
-            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE: missing file_path")
         file_id = (
             str(chunk.chat_file_id)
             if chunk.chat_file_id is not None
-            else f"{str(chunk.repo_id or '')}:{file_path}"
+            else f"{str(chunk.repo_id or '')}|{file_path}"
         )
         file_id = file_id.strip()
         if not file_id:
-            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE: empty file_id")
         file_ids.append(file_id)
         file_paths.append(file_path)
 
     if chunks and not file_ids:
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE: missing file_ids")
 
     return {
         "chunks": chunks,

@@ -620,9 +620,9 @@ def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
         file_ids = [
             (
                 str(getattr(chunk, "chat_file_id", "") or "").strip()
-                or f"{str(getattr(chunk, 'repo_id', '') or '')}:{path}"
+                or f"{str(getattr(chunk, 'repo_id', '') or '')}|{path}"
             )
-            for chunk, path in zip(chunks, file_paths, strict=False)
+            for chunk, path in zip(chunks, file_paths, strict=True)
             if path
         ]
         total_chunks = len(chunks)
@@ -663,6 +663,10 @@ def _build_context_integrity_state(
         ratio = 0.0
     else:
         ratio = retrieved_files / total_files
+        # Completeness thresholds:
+        # - < 0.60: too narrow to trust repository-wide claims
+        # - 0.60..0.94: usable for local/scope-limited answers
+        # - >= 0.95: treated as effectively full repository coverage
         if ratio < 0.6:
             status = CompletenessStatus.PARTIAL_CONTEXT
         elif ratio < 0.95:
@@ -2584,20 +2588,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     )
                                 metadata_block = (
                                     "\n\nCONTEXT METADATA:\n"
-                                            f"- Total files in repository: "
-                                            f"{context_integrity_state.total_files}\n"
+                                    f"- Total files in repository: "
+                                    f"{context_integrity_state.total_files}\n"
                                     f"- Files retrieved for this query: "
                                     f"{context_integrity_state.retrieved_files}\n"
                                     f"- Total chunks retrieved: "
                                     f"{context_integrity_state.retrieved_chunks}\n"
                                     f"- Context completeness: "
-                                            f"{context_integrity_state.completeness_status.value}"
-                                            "\n\n"
+                                    f"{context_integrity_state.completeness_status.value}\n\n"
                                     "INSTRUCTIONS:\n"
                                     "- Do NOT assume access to files beyond retrieved set\n"
-                                            "- If question requires full repository knowledge and "
-                                            "context is "
-                                            "incomplete, state limitation clearly\n"
+                                    "- If question requires full repository knowledge and "
+                                    "context is incomplete, state limitation clearly\n"
                                 )
                                 repo_block = "\n\n---\nREPO CONTEXT:\n"
                                 for chunk in repo_chunks:
