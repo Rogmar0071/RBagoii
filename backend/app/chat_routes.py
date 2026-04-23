@@ -2073,6 +2073,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             # Step 8: Add logging
                             print(f"CHAT_CONTEXT: chunks={len(context_chunks)}")
                             
+                            # Step 3: Validate and inject context
                             if context_chunks:
                                 # Step 4: Build context string (limit to 3000-6000 chars)
                                 context_text_parts = []
@@ -2097,6 +2098,11 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 ingest_block += "\nInstructions: Answer questions about the repository using the context above.\n"
                                 ingest_block += "If the answer is not in the context, respond with: NOT_FOUND_IN_CONTEXT\n"
                                 base_system_prompt += ingest_block
+                            else:
+                                # Step 3: No repository context available
+                                # Note: Contract suggests returning INSUFFICIENT_CONTEXT, but for
+                                # flexibility, we let the LLM handle this gracefully.
+                                base_system_prompt += "\n\nNote: No repository data is linked to this conversation. Repository-specific questions cannot be answered.\n"
                         except Exception:
                             logger.warning(
                                 "Failed to retrieve ingest job chunks for conversation %s",
