@@ -305,17 +305,16 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
             continue
         if chunk.chat_file_id is not None:
             file_id = str(chunk.chat_file_id).strip()
-        elif chunk.repo_id is not None:
-            file_id = f"{chunk.repo_id}|{file_path}"
-        elif chunk.ingest_job_id is not None:
-            file_id = f"{chunk.ingest_job_id}|{file_path}"
         else:
-            file_id = ""
+            file_id = str(chunk.graph_group or "").strip()
         if not file_id:
             continue
         valid_chunks.append(chunk)
         file_ids.append(file_id)
         file_paths.append(file_path)
+
+    if chunks and not valid_chunks:
+        raise Exception("NO_VALID_CHUNKS_WITH_FILE_ID")
 
     if valid_chunks and not file_ids:
         raise Exception("RETRIEVAL_INTEGRITY_VIOLATION")

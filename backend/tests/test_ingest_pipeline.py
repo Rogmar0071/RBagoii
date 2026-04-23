@@ -692,6 +692,48 @@ class TestDeleteIngestJob:
         assert resp.status_code in (401, 403)
 
 
+class TestChunkFileIdLineage:
+    def test_ingest_then_retrieve_preserves_file_id_lineage(self, client):
+        from sqlmodel import Session, select
+
+        from backend.app.database import get_engine
+        from backend.app.models import RepoChunk
+        from backend.app.repo_retrieval import retrieve_relevant_chunks
+
+        resp = client.post(
+            "/v1/ingest/file",
+            headers=_AUTH,
+            files={
+                "file": (
+                    "lineage_test.py",
+                    b"def lineage_marker():\n    return 'lineage token'\n",
+                    "text/x-python",
+                )
+            },
+        )
+        assert resp.status_code == 202, resp.text
+        job_id = uuid.UUID(resp.json()["job_id"])
+
+        with Session(get_engine()) as session:
+            stored_chunks = session.exec(
+                select(RepoChunk).where(RepoChunk.ingest_job_id == job_id)
+            ).all()
+            assert stored_chunks
+            for chunk in stored_chunks:
+                assert str(chunk.graph_group or "").strip()
+                assert str(chunk.file_path or "").strip()
+
+            retrieval = retrieve_relevant_chunks(
+                user_query="lineage token",
+                db=session,
+                ingest_job_ids=[job_id],
+            )
+
+        assert len(retrieval["chunks"]) == len(retrieval["file_ids"])
+        assert len(retrieval["chunks"]) > 0
+        assert all(str(fid).strip() for fid in retrieval["file_ids"])
+
+
 # ---------------------------------------------------------------------------
 # Invariant enforcement regression tests
 # ---------------------------------------------------------------------------

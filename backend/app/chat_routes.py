@@ -2776,11 +2776,16 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
 
                     if len(ctx_chunks) > 0 and (ctx_file_ids is None or len(ctx_file_ids) == 0):
-                        raise Exception("CHAT_CONTEXT_BROKEN")
+                        raise RuntimeError(
+                            f"CHAT_CONTEXT_BROKEN: chunks={len(ctx_chunks)} file_ids=0"
+                        )
                     if ctx_file_ids is not None and len(ctx_file_ids) != len(ctx_chunks):
-                        raise Exception("CHUNK_FILE_MISMATCH")
+                        raise RuntimeError(
+                            "CHUNK_FILE_MISMATCH: "
+                            f"chunks={len(ctx_chunks)} file_ids={len(ctx_file_ids)}"
+                        )
                     CTX_FILES = ctx_file_paths
-                    print(f"CTX_FILES: count={len(CTX_FILES)} sample={CTX_FILES[:3]}")
+                    logger.info("CTX_FILES: count=%s sample=%s", len(CTX_FILES), CTX_FILES[:3])
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
