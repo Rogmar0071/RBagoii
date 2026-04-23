@@ -100,7 +100,7 @@ def _make_invalid_chunk():
         chunk_index=0,
         token_estimate=1,
     )
-    chunk.file_id = None  # type: ignore[assignment]
+    object.__setattr__(chunk, "file_id", None)
     return chunk
 
 

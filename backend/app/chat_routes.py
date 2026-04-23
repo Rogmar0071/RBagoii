@@ -629,7 +629,7 @@ def _enforce_chunk_shape(chunks: list[Any]) -> None:
     for chunk in chunks:
         if not isinstance(chunk, RepoChunk):
             raise RuntimeError("INVALID_CHUNK_SHAPE")
-        if str(getattr(chunk, "file_id", "") or "").strip() == "":
+        if getattr(chunk, "file_id", None) is None:
             raise RuntimeError("INVALID_CHUNK_SHAPE")
 
 
