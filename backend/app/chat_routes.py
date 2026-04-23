@@ -2763,6 +2763,22 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 exc_info=True,
                             )
 
+                    # MQP-CONTRACT: FILE_RESOLUTION_DIAGNOSTIC_V1
+                    # Probe A: chunk file_ids
+                    print("DEBUG_CHUNK_FILE_IDS:", [str(c.file_id) for c in ctx_chunks[:5]])
+
+                    # Probe B: database visibility check
+                    from backend.app.models import RepoFile
+                    db_files = db.query(RepoFile).limit(5).all()
+                    print("DEBUG_DB_HAS_FILES:", len(db_files))
+
+                    # Probe C: direct join validation
+                    chunk_ids = [c.file_id for c in ctx_chunks[:5]]
+                    matched_files = db.query(RepoFile).filter(
+                        RepoFile.id.in_(chunk_ids)
+                    ).all()
+                    print("DEBUG_DIRECT_JOIN_COUNT:", len(matched_files))
+
                     files = resolve_files_from_chunks(ctx_chunks, db)
                     ctx_files = [f.path for f in files]
 
