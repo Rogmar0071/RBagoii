@@ -10,8 +10,8 @@ echo ""
 # STEP 1: Verify Alembic Installation
 # ────────────────────────────────────────────────────────────────────
 echo "STEP 1: Verifying migration system..."
-# Note: Using 'alembic' command directly (not 'python -m alembic')
-# This is the standard invocation method per Alembic documentation
+# Note: Using 'alembic' command (preferred invocation method)
+# Both 'alembic' and 'python -m alembic' work, but direct command is clearer
 if ! alembic --version; then
   echo "FATAL: alembic not installed" >&2
   echo "  python path: $(command -v python)" >&2

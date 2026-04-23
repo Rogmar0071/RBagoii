@@ -22,8 +22,11 @@ def validate_schema() -> None:
     """
     Validate that all required schema elements exist in the database.
     
-    Exits with code 0 if validation passes.
-    Exits with code 1 if validation fails.
+    This function does not return normally. It exits the process with:
+    - Exit code 0 if validation passes
+    - Exit code 1 if validation fails (DATABASE_URL missing, connection failed, or schema misaligned)
+    
+    Note: This function calls sys.exit() and does not raise exceptions.
     """
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
