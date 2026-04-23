@@ -24,6 +24,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from typing import Any, Literal
 
 import httpx
@@ -358,6 +359,26 @@ class ChatPostResponse(BaseModel):
             "llm_called": False,
         }
     )
+    details: dict[str, Any] | None = None
+
+
+class CompletenessStatus(str, Enum):
+    NO_CONTEXT = "NO_CONTEXT"
+    PARTIAL_CONTEXT = "PARTIAL_CONTEXT"
+    SUFFICIENT_CONTEXT = "SUFFICIENT_CONTEXT"
+    FULL_CONTEXT = "FULL_CONTEXT"
+
+
+class ContextIntegrityState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: str
+    repo_id: str | None
+    total_files: int | None
+    retrieved_files: int
+    retrieved_chunks: int
+    completeness_ratio: float
+    completeness_status: CompletenessStatus
 
 
 class ChatEditRequest(BaseModel):
@@ -563,12 +584,103 @@ def _run_retrieval_query(
     db: Session,
     repo_ids: list[uuid.UUID] | None = None,
     conversation_id: str | None = None,
-) -> list[Any]:
+) -> dict[str, Any]:
     return retrieve_relevant_chunks(
         user_query=user_query,
         db=db,
         repo_ids=repo_ids,
         conversation_id=conversation_id,
+    )
+
+
+_GLOBAL_QUERY_RE = re.compile(
+    r"\b(how many files|list all files|summarize repo|analyze entire repository|"
+    r"find all .+ across repo)\b",
+    re.IGNORECASE,
+)
+_ABSOLUTE_CLAIM_RE = re.compile(
+    r"\b(all files|entire repo|whole repository|across the repo|every file)\b",
+    re.IGNORECASE,
+)
+
+
+def _requires_full_context(message: str) -> bool:
+    return bool(_GLOBAL_QUERY_RE.search(message or ""))
+
+
+def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, dict):
+        chunks = list(result.get("chunks") or [])
+        file_ids = list(result.get("file_ids") or [])
+        file_paths = list(result.get("file_paths") or [])
+        total_chunks = int(result.get("total_chunks") or 0)
+    elif isinstance(result, list):
+        chunks = list(result)
+        file_paths = [str(getattr(chunk, "file_path", "") or "").strip() for chunk in chunks]
+        file_ids = [
+            (
+                str(getattr(chunk, "chat_file_id", "") or "").strip()
+                or f"{str(getattr(chunk, 'repo_id', '') or '')}|{path}"
+            )
+            for chunk, path in zip(chunks, file_paths, strict=True)
+            if path
+        ]
+        total_chunks = len(chunks)
+    else:
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+
+    if chunks and (not file_ids or len(file_ids) < len(chunks)):
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    if chunks and any(not str(path).strip() for path in file_paths):
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    if chunks and total_chunks <= 0:
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+
+    return {
+        "chunks": chunks,
+        "file_ids": file_ids,
+        "file_paths": file_paths,
+        "total_chunks": total_chunks,
+    }
+
+
+def _build_context_integrity_state(
+    *,
+    conversation_id: str,
+    repo_id: str | None,
+    total_files: int | None,
+    retrieved_files: int,
+    retrieved_chunks: int,
+) -> ContextIntegrityState:
+    if repo_id is None:
+        status = CompletenessStatus.NO_CONTEXT
+        ratio = 0.0
+    elif total_files is None:
+        status = CompletenessStatus.PARTIAL_CONTEXT
+        ratio = 0.0
+    elif total_files <= 0:
+        status = CompletenessStatus.PARTIAL_CONTEXT
+        ratio = 0.0
+    else:
+        ratio = retrieved_files / total_files
+        # Completeness thresholds:
+        # - < 0.60: too narrow to trust repository-wide claims
+        # - 0.60..0.94: usable for local/scope-limited answers
+        # - >= 0.95: treated as effectively full repository coverage
+        if ratio < 0.6:
+            status = CompletenessStatus.PARTIAL_CONTEXT
+        elif ratio < 0.95:
+            status = CompletenessStatus.SUFFICIENT_CONTEXT
+        else:
+            status = CompletenessStatus.FULL_CONTEXT
+    return ContextIntegrityState(
+        conversation_id=conversation_id,
+        repo_id=repo_id,
+        total_files=total_files,
+        retrieved_files=retrieved_files,
+        retrieved_chunks=retrieved_chunks,
+        completeness_ratio=ratio,
+        completeness_status=status,
     )
 
 
@@ -1348,11 +1460,14 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         db = _db_session()
         retrieved_count = 0
         repo_count = 0
+        total_files = 0
         total_chunks = 0
         retrieved_chunks = 0
+        retrieved_files = 0
         response_error_code: str | None = None
         repo_chunks_for_grounding: list[Any] = []
         has_explicit_repo_context = False
+        context_integrity_state: ContextIntegrityState | None = None
         try:
             _ensure_conversation(db, active_conversation_id)
             if db is not None and context.repos:
@@ -1407,6 +1522,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     repo_obj = db.get(Repo, rid)
                     if repo_obj is None:
                         continue
+                    total_files += int(repo_obj.total_files or 0)
                     total_chunks += int(repo_obj.total_chunks or 0)
             # RULE 5: always persist messages, regardless of force_new_session.
             # force_new_session=True skips history READ only (debug/testing override).
@@ -1426,6 +1542,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
             hybrid_structural_result: dict[str, Any] | None = None
             query_type = route_query(message)
+            requires_full_context = (
+                _requires_full_context(message) and query_type != QueryType.HYBRID
+            )
+            if requires_full_context and not conversation_repo_ids:
+                reply = "No repository bound to this conversation"
+                assistant_message = _persist_message(
+                    db,
+                    "assistant",
+                    reply,
+                    context,
+                    conversation_id=active_conversation_id,
+                )
+                return _json_response(
+                    ChatPostResponse(
+                        conversation_id=active_conversation_id,
+                        reply=reply,
+                        error_code="NO_CONTEXT",
+                        retrieved_count=0,
+                        repo_count=repo_count,
+                        total_chunks=total_chunks,
+                        retrieved_chunks=0,
+                        tools_available=_TOOLS_AVAILABLE,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                    )
+                )
             if query_type == QueryType.STRUCTURAL and (not conversation_repo_ids or db is None):
                 router_result, router_runtime = execute_query(
                     classification=QueryType.STRUCTURAL,
@@ -1484,7 +1626,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 )
             if conversation_repo_ids and db is not None:
                 if query_type in (QueryType.STRUCTURAL, QueryType.HYBRID):
-                    if query_type == QueryType.STRUCTURAL:
+                    if query_type == QueryType.STRUCTURAL and not requires_full_context:
                         def _router_structural(q: str) -> dict[str, Any]:
                             structural_payload = _run_structural_query(
                                 db=db,
@@ -1590,7 +1732,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         repo_ids=conversation_repo_ids,
                         query_text=message,
                     )
-                    if structural_result.get("error_code") is not None:
+                    if (
+                        structural_result.get("error_code") is not None
+                        and not requires_full_context
+                    ):
                         reply = "INSUFFICIENT_CONTEXT"
                         assistant_message = _persist_message(
                             db,
@@ -1621,8 +1766,20 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         )
                     ).all()
                     index_file_count = sum(int(row.total_files or 0) for row in registries)
-                    structural_file_count = int(structural_result["data"]["count"])
-                    if structural_file_count != index_file_count:
+                    structural_data = (
+                        structural_result.get("data")
+                        if isinstance(structural_result, dict)
+                        else None
+                    )
+                    structural_files = (
+                        list(structural_data.get("files") or []) if structural_data else []
+                    )
+                    structural_file_count = int(
+                        (structural_data.get("count") if structural_data else None)
+                        or total_files
+                        or 0
+                    )
+                    if structural_file_count != index_file_count and not requires_full_context:
                         reply = "INSUFFICIENT_CONTEXT"
                         assistant_message = _persist_message(
                             db,
@@ -1647,8 +1804,8 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         )
 
-                    if query_type == QueryType.STRUCTURAL:
-                        all_files = list(structural_result["data"]["files"])
+                    if query_type == QueryType.STRUCTURAL and not requires_full_context:
+                        all_files = structural_files
                         lower_message = message.lower()
                         force_full_list = "list all files" in lower_message
                         preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
@@ -1685,7 +1842,119 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         )
 
-                    hybrid_structural_result = structural_result
+                    if query_type == QueryType.STRUCTURAL and requires_full_context:
+                        context_integrity_state = _build_context_integrity_state(
+                            conversation_id=active_conversation_id,
+                            repo_id=(
+                                str(conversation_repo_ids[0]) if conversation_repo_ids else None
+                            ),
+                            total_files=total_files if total_files > 0 else None,
+                            retrieved_files=structural_file_count,
+                            retrieved_chunks=0,
+                        )
+                        if (
+                            context_integrity_state.completeness_status
+                            != CompletenessStatus.FULL_CONTEXT
+                        ):
+                            reply = "DATA_INCOMPLETE"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="DATA_INCOMPLETE",
+                                    retrieved_count=0,
+                                    type="structural",
+                                    file_count=structural_file_count,
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=0,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                    details={
+                                        "total_files": context_integrity_state.total_files,
+                                        "retrieved_files": context_integrity_state.retrieved_files,
+                                        "completeness_ratio": (
+                                            context_integrity_state.completeness_ratio
+                                        ),
+                                    },
+                                    execution_trace={
+                                        "classification": QueryType.STRUCTURAL.value,
+                                        "execution_path": [
+                                            "chat",
+                                            "route_query",
+                                            "execute_query",
+                                            "structural_handler",
+                                        ],
+                                        "structural_called": True,
+                                        "retrieval_called": False,
+                                        "llm_called": False,
+                                    },
+                                )
+                            )
+                        all_files = structural_files
+                        lower_message = message.lower()
+                        force_full_list = "list all files" in lower_message
+                        preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                        has_more = (
+                            len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                            and not force_full_list
+                        )
+                        reply = "STRUCTURAL_QUERY_RESULT"
+                        assistant_message = _persist_message(
+                            db,
+                            "assistant",
+                            reply,
+                            context,
+                            conversation_id=active_conversation_id,
+                        )
+                        return _json_response(
+                            ChatPostResponse(
+                                conversation_id=active_conversation_id,
+                                reply=reply,
+                                error_code=None,
+                                retrieved_count=0,
+                                type="structural",
+                                file_count=structural_file_count,
+                                files=None if has_more else all_files,
+                                preview=preview_files if has_more else None,
+                                has_more=has_more,
+                                source=str(structural_result.get("source") or "index_registry"),
+                                repo_count=repo_count,
+                                total_chunks=total_chunks,
+                                retrieved_chunks=0,
+                                tools_available=_TOOLS_AVAILABLE,
+                                user_message=user_message,
+                                assistant_message=assistant_message,
+                                execution_trace={
+                                    "classification": QueryType.STRUCTURAL.value,
+                                    "execution_path": [
+                                        "chat",
+                                        "route_query",
+                                        "execute_query",
+                                        "structural_handler",
+                                    ],
+                                    "structural_called": True,
+                                    "retrieval_called": False,
+                                    "llm_called": False,
+                                },
+                            )
+                        )
+
+                    if structural_data is None:
+                        hybrid_structural_result = {
+                            "data": {"count": structural_file_count, "files": structural_files},
+                            "source": str(structural_result.get("source") or "index_registry"),
+                        }
+                    else:
+                        hybrid_structural_result = structural_result
 
             enforce_retrieval_threshold = False
             if conversation_repo_ids and db is not None and query_type != QueryType.STRUCTURAL:
@@ -1758,14 +2027,129 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             try:
                 if not openai_api_key:
                     if conversation_repo_ids and db is not None:
-                        repo_chunks = _run_retrieval_query(
-                            user_query=message,
-                            db=db,
-                            repo_ids=conversation_repo_ids,
-                        )
+                        try:
+                            retrieval_payload = _normalize_retrieval_result(
+                                _run_retrieval_query(
+                                    user_query=message,
+                                    db=db,
+                                    repo_ids=conversation_repo_ids,
+                                )
+                            )
+                        except RuntimeError:
+                            reply = "RETRIEVAL_INTEGRITY_FAILURE"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="RETRIEVAL_INTEGRITY_FAILURE",
+                                    retrieved_count=0,
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=0,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                )
+                            )
+                        repo_chunks = list(retrieval_payload["chunks"])
                         retrieved_count = len(repo_chunks)
-                        retrieved_chunks = retrieved_count
+                        retrieved_chunks = int(retrieval_payload["total_chunks"])
+                        retrieved_files = len(set(retrieval_payload["file_ids"]))
                         repo_chunks_for_grounding = repo_chunks
+                        context_integrity_state = _build_context_integrity_state(
+                            conversation_id=active_conversation_id,
+                            repo_id=(
+                                str(conversation_repo_ids[0]) if conversation_repo_ids else None
+                            ),
+                            total_files=total_files if total_files > 0 else None,
+                            retrieved_files=retrieved_files,
+                            retrieved_chunks=retrieved_chunks,
+                        )
+                        if (
+                            requires_full_context
+                            and context_integrity_state.completeness_status
+                            != CompletenessStatus.FULL_CONTEXT
+                        ):
+                            reply = "DATA_INCOMPLETE"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code="DATA_INCOMPLETE",
+                                    retrieved_count=retrieved_count,
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=retrieved_chunks,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                    details={
+                                        "total_files": context_integrity_state.total_files,
+                                        "retrieved_files": context_integrity_state.retrieved_files,
+                                        "completeness_ratio": (
+                                            context_integrity_state.completeness_ratio
+                                        ),
+                                    },
+                                )
+                            )
+                        if (
+                            requires_full_context
+                            and context_integrity_state.completeness_status
+                            == CompletenessStatus.FULL_CONTEXT
+                            and hybrid_structural_result is not None
+                        ):
+                            all_files = list(hybrid_structural_result["data"]["files"])
+                            lower_message = message.lower()
+                            force_full_list = "list all files" in lower_message
+                            preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                            has_more = (
+                                len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                                and not force_full_list
+                            )
+                            reply = "STRUCTURAL_QUERY_RESULT"
+                            assistant_message = _persist_message(
+                                db,
+                                "assistant",
+                                reply,
+                                context,
+                                conversation_id=active_conversation_id,
+                            )
+                            return _json_response(
+                                ChatPostResponse(
+                                    conversation_id=active_conversation_id,
+                                    reply=reply,
+                                    error_code=None,
+                                    retrieved_count=retrieved_count,
+                                    type="structural",
+                                    file_count=int(hybrid_structural_result["data"]["count"]),
+                                    files=None if has_more else all_files,
+                                    preview=preview_files if has_more else None,
+                                    has_more=has_more,
+                                    source=str(
+                                        hybrid_structural_result.get("source") or "index_registry"
+                                    ),
+                                    repo_count=repo_count,
+                                    total_chunks=total_chunks,
+                                    retrieved_chunks=retrieved_chunks,
+                                    tools_available=_TOOLS_AVAILABLE,
+                                    user_message=user_message,
+                                    assistant_message=assistant_message,
+                                )
+                            )
                         if not repo_chunks:
                             reply = (
                                 "INSUFFICIENT_CONTEXT"
@@ -2030,19 +2414,136 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         break
 
                             # CONTRACT: when repo_ids are attached, retrieval MUST execute.
-                            repo_chunks = _run_retrieval_query(
-                                user_query=message,
-                                db=db,
-                                repo_ids=active_repo_ids,
-                            )
+                            try:
+                                retrieval_payload = _normalize_retrieval_result(
+                                    _run_retrieval_query(
+                                        user_query=message,
+                                        db=db,
+                                        repo_ids=active_repo_ids,
+                                    )
+                                )
+                            except RuntimeError:
+                                reply = "RETRIEVAL_INTEGRITY_FAILURE"
+                                assistant_message = _persist_message(
+                                    db,
+                                    "assistant",
+                                    reply,
+                                    context,
+                                    conversation_id=active_conversation_id,
+                                )
+                                return _json_response(
+                                    ChatPostResponse(
+                                        conversation_id=active_conversation_id,
+                                        reply=reply,
+                                        error_code="RETRIEVAL_INTEGRITY_FAILURE",
+                                        retrieved_count=0,
+                                        repo_count=repo_count,
+                                        total_chunks=total_chunks,
+                                        retrieved_chunks=0,
+                                        tools_available=_TOOLS_AVAILABLE,
+                                        user_message=user_message,
+                                        assistant_message=assistant_message,
+                                    )
+                                )
+                            repo_chunks = list(retrieval_payload["chunks"])
                             retrieved_count = len(repo_chunks)
-                            retrieved_chunks = retrieved_count
+                            retrieved_chunks = int(retrieval_payload["total_chunks"])
+                            retrieved_files = len(set(retrieval_payload["file_ids"]))
                             repo_chunks_for_grounding = repo_chunks
+                            context_integrity_state = _build_context_integrity_state(
+                                conversation_id=active_conversation_id,
+                                repo_id=str(active_repo_ids[0]) if active_repo_ids else None,
+                                total_files=total_files if total_files > 0 else None,
+                                retrieved_files=retrieved_files,
+                                retrieved_chunks=retrieved_chunks,
+                            )
 
                             print("REPO_CHUNKS:", len(repo_chunks))
 
                             if not repo_chunks:
                                 no_index_data = True
+
+                            if (
+                                requires_full_context
+                                and context_integrity_state.completeness_status
+                                != CompletenessStatus.FULL_CONTEXT
+                            ):
+                                reply = "DATA_INCOMPLETE"
+                                assistant_message = _persist_message(
+                                    db,
+                                    "assistant",
+                                    reply,
+                                    context,
+                                    conversation_id=active_conversation_id,
+                                )
+                                return _json_response(
+                                    ChatPostResponse(
+                                        conversation_id=active_conversation_id,
+                                        reply=reply,
+                                        error_code="DATA_INCOMPLETE",
+                                        retrieved_count=retrieved_count,
+                                        repo_count=repo_count,
+                                        total_chunks=total_chunks,
+                                        retrieved_chunks=retrieved_chunks,
+                                        tools_available=_TOOLS_AVAILABLE,
+                                        user_message=user_message,
+                                        assistant_message=assistant_message,
+                                        details={
+                                            "total_files": context_integrity_state.total_files,
+                                            "retrieved_files": (
+                                                context_integrity_state.retrieved_files
+                                            ),
+                                            "completeness_ratio": (
+                                                context_integrity_state.completeness_ratio
+                                            ),
+                                        },
+                                    )
+                                )
+                            if (
+                                requires_full_context
+                                and context_integrity_state.completeness_status
+                                == CompletenessStatus.FULL_CONTEXT
+                                and hybrid_structural_result is not None
+                            ):
+                                all_files = list(hybrid_structural_result["data"]["files"])
+                                lower_message = message.lower()
+                                force_full_list = "list all files" in lower_message
+                                preview_files = all_files[:_STRUCTURAL_FILE_PREVIEW_SIZE]
+                                has_more = (
+                                    len(all_files) > _STRUCTURAL_FILE_PAGINATION_THRESHOLD
+                                    and not force_full_list
+                                )
+                                reply = "STRUCTURAL_QUERY_RESULT"
+                                assistant_message = _persist_message(
+                                    db,
+                                    "assistant",
+                                    reply,
+                                    context,
+                                    conversation_id=active_conversation_id,
+                                )
+                                return _json_response(
+                                    ChatPostResponse(
+                                        conversation_id=active_conversation_id,
+                                        reply=reply,
+                                        error_code=None,
+                                        retrieved_count=retrieved_count,
+                                        type="structural",
+                                        file_count=int(hybrid_structural_result["data"]["count"]),
+                                        files=None if has_more else all_files,
+                                        preview=preview_files if has_more else None,
+                                        has_more=has_more,
+                                        source=str(
+                                            hybrid_structural_result.get("source")
+                                            or "index_registry"
+                                        ),
+                                        repo_count=repo_count,
+                                        total_chunks=total_chunks,
+                                        retrieved_chunks=retrieved_chunks,
+                                        tools_available=_TOOLS_AVAILABLE,
+                                        user_message=user_message,
+                                        assistant_message=assistant_message,
+                                    )
+                                )
 
                             if not no_index_data:
                                 has_invalid_context_injection = any(
@@ -2085,6 +2586,21 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                             assistant_message=assistant_message,
                                         )
                                     )
+                                metadata_block = (
+                                    "\n\nCONTEXT METADATA:\n"
+                                    f"- Total files in repository: "
+                                    f"{context_integrity_state.total_files}\n"
+                                    f"- Files retrieved for this query: "
+                                    f"{context_integrity_state.retrieved_files}\n"
+                                    f"- Total chunks retrieved: "
+                                    f"{context_integrity_state.retrieved_chunks}\n"
+                                    f"- Context completeness: "
+                                    f"{context_integrity_state.completeness_status.value}\n\n"
+                                    "INSTRUCTIONS:\n"
+                                    "- Do NOT assume access to files beyond retrieved set\n"
+                                    "- If question requires full repository knowledge and "
+                                    "context is incomplete, state limitation clearly\n"
+                                )
                                 repo_block = "\n\n---\nREPO CONTEXT:\n"
                                 for chunk in repo_chunks:
                                     repo_block += (
@@ -2092,7 +2608,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         f"FILE: {chunk.file_path}\n\n{chunk.content}\n"
                                     )
                                 repo_block += "---\n"
-                                base_system_prompt += repo_block
+                                base_system_prompt += metadata_block + repo_block
 
                     if has_explicit_repo_context and no_index_data:
                         reply = (
@@ -2287,11 +2803,27 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                         base_system_prompt=base_system_prompt,
                     )
 
+                    if (
+                        context_integrity_state is not None
+                        and context_integrity_state.completeness_status
+                        != CompletenessStatus.FULL_CONTEXT
+                        and _ABSOLUTE_CLAIM_RE.search(reply or "")
+                    ):
+                        response_error_code = "CONTEXT_VIOLATION"
+                        reply = (
+                            "CONTEXT VIOLATION: The system does not have full "
+                            "repository visibility to answer this request."
+                        )
+
                     # Append citations to the reply if retrieval was performed.
                     if search_results:
                         reply += _format_citations(search_results)
 
-                if has_explicit_repo_context and repo_chunks_for_grounding:
+                if (
+                    has_explicit_repo_context
+                    and repo_chunks_for_grounding
+                    and response_error_code != "CONTEXT_VIOLATION"
+                ):
                     if not _reply_references_repo_data(
                         reply=reply, repo_chunks=repo_chunks_for_grounding
                     ):

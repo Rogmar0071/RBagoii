@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_repo_contract")
@@ -115,6 +115,48 @@ def _seed_repo_with_many_chunks(
                     token_estimate=8,
                 )
             )
+        session.commit()
+    return str(repo_id)
+
+
+def _seed_repo_with_partial_surface(
+    conversation_id: str, repo_name: str = "repo-partial", total_files: int = 20
+) -> str:
+    import backend.app.database as db_module
+    from backend.app.models import Repo, RepoChunk
+
+    repo_id = uuid.uuid4()
+    with Session(db_module.get_engine()) as session:
+        repo = Repo(
+            id=repo_id,
+            conversation_id=conversation_id,
+            repo_url=f"https://github.com/acme/{repo_name}",
+            owner="acme",
+            name=repo_name,
+            branch="main",
+            ingestion_status="success",
+            total_files=total_files,
+            total_chunks=2,
+        )
+        session.add(repo)
+        session.add(
+            RepoChunk(
+                repo_id=repo_id,
+                file_path="src/alpha.py",
+                content="def alpha():\n    return 'alpha'\n",
+                chunk_index=0,
+                token_estimate=8,
+            )
+        )
+        session.add(
+            RepoChunk(
+                repo_id=repo_id,
+                file_path="src/beta.py",
+                content="def beta():\n    return 'beta'\n",
+                chunk_index=0,
+                token_estimate=8,
+            )
+        )
         session.commit()
     return str(repo_id)
 
@@ -337,3 +379,130 @@ def test_repo_retrieve_blocks_when_chunk_count_below_threshold(client: TestClien
     )
     assert resp.status_code == 409
     assert resp.json()["detail"] == "INSUFFICIENT_CONTEXT"
+
+
+def test_chat_global_query_without_repo_binding_returns_no_context(client: TestClient):
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "how many files are in this repository?",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["error_code"] == "NO_CONTEXT"
+    assert body["reply"] == "No repository bound to this conversation"
+
+
+def test_chat_global_query_with_partial_context_returns_data_incomplete(client: TestClient):
+    repo_id = _seed_repo_with_partial_surface(conversation_id=str(uuid.uuid4()), total_files=20)
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "summarize repo",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+            "context": {"repos": [repo_id]},
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["error_code"] == "DATA_INCOMPLETE"
+    assert body["details"]["total_files"] == 20
+    assert body["details"]["retrieved_files"] == 2
+
+
+def test_chat_local_query_succeeds_with_partial_context(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo_with_partial_surface(conversation_id=str(uuid.uuid4()), total_files=20)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "From src/alpha.py")
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "explain alpha function behavior",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+            "context": {"repos": [repo_id]},
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["error_code"] is None
+    assert "alpha.py" in body["reply"]
+
+
+def test_chat_global_query_with_full_context_returns_structural_count(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo_with_many_chunks(conversation_id=str(uuid.uuid4()), file_count=179)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    import backend.app.chat_routes as cr
+    import backend.app.database as db_module
+    from backend.app.models import RepoChunk
+
+    with Session(db_module.get_engine()) as session:
+        chunks = session.exec(
+            select(RepoChunk).where(RepoChunk.repo_id == uuid.UUID(repo_id))
+        ).all()
+    simulated_file_ids = [f"sim:{i}" for i in range(179)]
+    monkeypatch.setattr(
+        cr,
+        "retrieve_relevant_chunks",
+        lambda *args, **kwargs: {
+            "chunks": chunks[:5],
+            "file_ids": simulated_file_ids,
+            "file_paths": [c.file_path for c in chunks[:5]],
+            "total_chunks": len(chunks[:5]),
+        },
+    )
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "how many files are in this repository?",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+            "context": {"repos": [repo_id]},
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["reply"] == "STRUCTURAL_QUERY_RESULT"
+    assert body["file_count"] == 179
+
+
+def test_chat_blocks_llm_overclaim_when_context_not_full(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+):
+    repo_id = _seed_repo_with_partial_surface(conversation_id=str(uuid.uuid4()), total_files=20)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: "I checked all files in the entire repo and here is the answer.",
+    )
+    resp = client.post(
+        "/api/chat",
+        json={
+            "message": "explain architecture",
+            "conversation_id": str(uuid.uuid4()),
+            "agent_mode": False,
+            "context": {"repos": [repo_id]},
+        },
+        headers=AUTH,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["error_code"] == "CONTEXT_VIOLATION"
+    assert body["reply"].startswith("CONTEXT VIOLATION:")
