@@ -609,27 +609,25 @@ def _requires_full_context(message: str) -> bool:
 
 
 def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
-    if isinstance(result, dict):
-        chunks = list(result.get("chunks") or [])
-        file_ids = list(result.get("file_ids") or [])
-        file_paths = list(result.get("file_paths") or [])
-        total_chunks = int(result.get("total_chunks") or 0)
-    elif isinstance(result, list):
-        chunks = list(result)
-        file_paths = [str(getattr(chunk, "file_path", "") or "").strip() for chunk in chunks]
-        file_ids = [
-            (
-                str(getattr(chunk, "chat_file_id", "") or "").strip()
-                or f"{str(getattr(chunk, 'repo_id', '') or '')}|{path}"
-            )
-            for chunk, path in zip(chunks, file_paths, strict=True)
-            if path
-        ]
-        total_chunks = len(chunks)
-    else:
+    if not isinstance(result, dict):
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    if (
+        "chunks" not in result
+        or "file_ids" not in result
+        or "file_paths" not in result
+        or "total_chunks" not in result
+    ):
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    chunks = list(result["chunks"])
+    file_ids = list(result["file_ids"])
+    file_paths = list(result["file_paths"])
+    total_chunks = int(result["total_chunks"])
 
-    if chunks and (not file_ids or len(file_ids) < len(chunks)):
+    if chunks and not file_ids:
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    if chunks and len(file_ids) != len(chunks):
+        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    if chunks and len(file_paths) != len(chunks):
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
     if chunks and any(not str(path).strip() for path in file_paths):
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
@@ -1466,6 +1464,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         retrieved_files = 0
         response_error_code: str | None = None
         repo_chunks_for_grounding: list[Any] = []
+        ctx_chunks: list[Any] = []
+        ctx_file_ids: list[str] | None = None
+        ctx_file_paths: list[str] = []
         has_explicit_repo_context = False
         context_integrity_state: ContextIntegrityState | None = None
         try:
@@ -2059,6 +2060,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 )
                             )
                         repo_chunks = list(retrieval_payload["chunks"])
+                        ctx_chunks = retrieval_payload["chunks"]
+                        ctx_file_ids = retrieval_payload["file_ids"]
+                        ctx_file_paths = retrieval_payload["file_paths"]
                         retrieved_count = len(repo_chunks)
                         retrieved_chunks = int(retrieval_payload["total_chunks"])
                         retrieved_files = len(set(retrieval_payload["file_ids"]))
@@ -2446,6 +2450,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     )
                                 )
                             repo_chunks = list(retrieval_payload["chunks"])
+                            ctx_chunks = retrieval_payload["chunks"]
+                            ctx_file_ids = retrieval_payload["file_ids"]
+                            ctx_file_paths = retrieval_payload["file_paths"]
                             retrieved_count = len(repo_chunks)
                             retrieved_chunks = int(retrieval_payload["total_chunks"])
                             retrieved_files = len(set(retrieval_payload["file_ids"]))
@@ -2745,7 +2752,12 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 exc_info=True,
                             )
 
-                    print("CTX_FILES:", context.files)
+                    if len(ctx_chunks) > 0 and (ctx_file_ids is None or len(ctx_file_ids) == 0):
+                        raise Exception("CHAT_CONTEXT_BROKEN")
+                    if ctx_file_ids is not None and len(ctx_file_ids) != len(ctx_chunks):
+                        raise Exception("CHUNK_FILE_MISMATCH")
+                    CTX_FILES = ctx_file_paths
+                    print(f"CTX_FILES: count={len(CTX_FILES)} sample={CTX_FILES[:3]}")
 
                     # -------------------------------------------------------
                     # FILE_CONTEXT_INJECTION_V1 (V1 compat path):
