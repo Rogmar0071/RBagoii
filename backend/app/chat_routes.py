@@ -2764,13 +2764,18 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
 
                     # ---------------------------------------------------------
-                    # MQP-CONTRACT: REPO_CONTEXT_FILE_RESOLUTION_V1
+                    # MQP-CONTRACT: REPO_CONTEXT_FILE_RESOLUTION_V1 (v3 lock)
                     # CTX_FILES is built ONLY through the deterministic
                     # chunk.file_id -> RepoFile.id join. Any failure here is
                     # a HARD FAIL (FILE_RESOLUTION_BROKEN). No fallback.
+                    # The explicit post-call guard is intentional: it enforces
+                    # the invariant `len(chunks) > 0 -> len(files) > 0` even
+                    # if the resolver implementation ever drifts.
                     # ---------------------------------------------------------
                     ctx_files = resolve_files_from_chunks(ctx_chunks, db)
                     CTX_FILES = [f.path for f in ctx_files]
+                    if ctx_chunks and not CTX_FILES:
+                        raise RuntimeError("FILE_RESOLUTION_BROKEN")
                     logger.info(
                         "CTX_FILES: count=%s sample=%s", len(CTX_FILES), CTX_FILES[:3]
                     )

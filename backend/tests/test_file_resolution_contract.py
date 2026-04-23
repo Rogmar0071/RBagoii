@@ -205,3 +205,56 @@ def test_no_fallback_uses_only_file_id(session: Session) -> None:
     assert str(exc_info.value) == "FILE_RESOLUTION_BROKEN"
     # repo_id of the chunk must also not be used as a fallback
     assert rf.repo_id is not None
+
+
+# ---------------------------------------------------------------------------
+# Drift-prevention: static checks on the CTX_FILES code path (contract §9).
+# These tests fail the build if the forbidden non-authoritative identity
+# sources reappear inside chat_routes.py.
+# ---------------------------------------------------------------------------
+
+
+def _read_chat_routes_source() -> str:
+    import backend.app.chat_routes as cr
+    import inspect
+
+    return inspect.getsource(cr)
+
+
+def test_drift_no_ctx_file_paths_local_in_chat_routes() -> None:
+    """`ctx_file_paths` was the legacy chunk.file_path mirror. It must not exist."""
+    src = _read_chat_routes_source()
+    assert "ctx_file_paths" not in src, (
+        "ctx_file_paths re-introduced in chat_routes.py — "
+        "REPO_CONTEXT_FILE_RESOLUTION_V1 forbids non-authoritative file path mapping."
+    )
+
+
+def test_drift_no_ctx_file_ids_local_in_chat_routes() -> None:
+    """`ctx_file_ids` was the legacy parallel id list — replaced by resolve_files_from_chunks."""
+    src = _read_chat_routes_source()
+    assert "ctx_file_ids" not in src, (
+        "ctx_file_ids re-introduced in chat_routes.py — "
+        "REPO_CONTEXT_FILE_RESOLUTION_V1 forbids parallel identity sources."
+    )
+
+
+def test_drift_ctx_files_assignment_uses_resolver() -> None:
+    """The single CTX_FILES assignment must derive from resolve_files_from_chunks output."""
+    src = _read_chat_routes_source()
+    # Exactly one assignment should exist, and it must list-comprehend over
+    # the resolver's output (RepoFile rows -> .path).
+    assert "CTX_FILES = [f.path for f in ctx_files]" in src, (
+        "CTX_FILES assignment must read `[f.path for f in ctx_files]` "
+        "where ctx_files = resolve_files_from_chunks(...)."
+    )
+    assert "ctx_files = resolve_files_from_chunks(" in src, (
+        "ctx_files must come from resolve_files_from_chunks(...)."
+    )
+
+
+def test_drift_resolver_imported_in_chat_routes() -> None:
+    src = _read_chat_routes_source()
+    assert "from backend.app.file_resolution import resolve_files_from_chunks" in src, (
+        "chat_routes.py must import the canonical resolver."
+    )
