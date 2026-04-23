@@ -358,10 +358,11 @@ def retrieve_relevant_chunks(
         return []
 
     # RULE 4 — immediate boundary assertion
-    if any(not isinstance(chunk, RepoChunk) for chunk in all_chunks):
-        raise RuntimeError("INVALID_CHUNK_SHAPE")
-    if any(getattr(chunk, "file_id", None) is None for chunk in all_chunks):
-        raise RuntimeError("INVALID_CHUNK_SHAPE")
+    for chunk in all_chunks:
+        if not isinstance(chunk, RepoChunk):
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
+        if getattr(chunk, "file_id", None) is None:
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
 
     if not keywords:
         return []

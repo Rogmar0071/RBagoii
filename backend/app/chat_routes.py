@@ -613,15 +613,11 @@ def _normalize_retrieval_result(result: Any) -> list[RepoChunk]:
     if not isinstance(result, list):
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
 
-    chunks: list[RepoChunk] = []
-    for chunk in result:
-        if not isinstance(chunk, RepoChunk):
-            raise RuntimeError("INVALID_CHUNK_SHAPE")
-        if getattr(chunk, "file_id", None) is None:
-            raise RuntimeError("INVALID_CHUNK_SHAPE")
+    chunks: list[RepoChunk] = list(result)
+    _enforce_chunk_shape(chunks)
+    for chunk in chunks:
         if not str(getattr(chunk, "file_path", "") or "").strip():
             raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-        chunks.append(chunk)
     return chunks
 
 
@@ -2761,6 +2757,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 exc_info=True,
                             )
 
+                    logger.debug("FILE_RESOLUTION_INPUT: chunks=%s", len(ctx_chunks))
                     files = resolve_files_from_chunks(ctx_chunks, db)
                     ctx_files = [f.path for f in files]
 
