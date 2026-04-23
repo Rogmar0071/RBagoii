@@ -296,26 +296,23 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
     - file_paths
     - total_chunks
     """
-    valid_chunks: list[RepoChunk] = []
     file_ids: list[str] = []
     file_paths: list[str] = []
     for chunk in chunks:
         file_id = str(chunk.file_id or "").strip()
+        if not file_id:
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
         file_path = str(chunk.file_path or "").strip()
-        if not file_id or not file_path:
-            continue
-        valid_chunks.append(chunk)
+        if not file_path:
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
         file_ids.append(file_id)
         file_paths.append(file_path)
 
-    if chunks and not file_ids:
-        raise RuntimeError("IDENTITY_PIPELINE_BROKEN")
-
     return {
-        "chunks": valid_chunks,
+        "chunks": chunks,
         "file_ids": file_ids,
         "file_paths": file_paths,
-        "total_chunks": len(valid_chunks),
+        "total_chunks": len(chunks),
     }
 
 
@@ -404,6 +401,10 @@ def retrieve_relevant_chunks(
 
     if not all_chunks:
         return _finalize_retrieval_payload(_build_retrieval_payload([]))
+
+    for chunk in all_chunks:
+        if str(getattr(chunk, "file_id", "") or "").strip() == "":
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
 
     if not keywords:
         return _finalize_retrieval_payload(_build_retrieval_payload([]))

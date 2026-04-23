@@ -640,6 +640,12 @@ def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
     else:
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
 
+    for chunk in chunks:
+        if not isinstance(chunk, RepoChunk):
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
+        if str(getattr(chunk, "file_id", "") or "").strip() == "":
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
+
     if chunks and not file_ids:
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
     if chunks and len(file_ids) != len(chunks):
@@ -657,6 +663,14 @@ def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
         "file_paths": file_paths,
         "total_chunks": total_chunks,
     }
+
+
+def _enforce_chunk_shape(chunks: list[Any]) -> None:
+    for chunk in chunks:
+        if not isinstance(chunk, RepoChunk):
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
+        if str(getattr(chunk, "file_id", "") or "").strip() == "":
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
 
 
 def _build_context_integrity_state(
@@ -2051,8 +2065,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     repo_ids=conversation_repo_ids,
                                 )
                             )
-                        except RuntimeError:
-                            reply = "RETRIEVAL_INTEGRITY_FAILURE"
+                        except RuntimeError as exc:
+                            failure_code = (
+                                "INVALID_CHUNK_SHAPE"
+                                if str(exc) == "INVALID_CHUNK_SHAPE"
+                                else "RETRIEVAL_INTEGRITY_FAILURE"
+                            )
+                            reply = failure_code
                             assistant_message = _persist_message(
                                 db,
                                 "assistant",
@@ -2064,7 +2083,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 ChatPostResponse(
                                     conversation_id=active_conversation_id,
                                     reply=reply,
-                                    error_code="RETRIEVAL_INTEGRITY_FAILURE",
+                                    error_code=failure_code,
                                     retrieved_count=0,
                                     repo_count=repo_count,
                                     total_chunks=total_chunks,
@@ -2076,6 +2095,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         repo_chunks = list(retrieval_payload["chunks"])
                         ctx_chunks = retrieval_payload["chunks"]
+                        _enforce_chunk_shape(ctx_chunks)
                         retrieved_count = len(repo_chunks)
                         retrieved_chunks = int(retrieval_payload["total_chunks"])
                         retrieved_files = len(set(retrieval_payload["file_ids"]))
@@ -2439,8 +2459,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                         repo_ids=active_repo_ids,
                                     )
                                 )
-                            except RuntimeError:
-                                reply = "RETRIEVAL_INTEGRITY_FAILURE"
+                            except RuntimeError as exc:
+                                failure_code = (
+                                    "INVALID_CHUNK_SHAPE"
+                                    if str(exc) == "INVALID_CHUNK_SHAPE"
+                                    else "RETRIEVAL_INTEGRITY_FAILURE"
+                                )
+                                reply = failure_code
                                 assistant_message = _persist_message(
                                     db,
                                     "assistant",
@@ -2452,7 +2477,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                     ChatPostResponse(
                                         conversation_id=active_conversation_id,
                                         reply=reply,
-                                        error_code="RETRIEVAL_INTEGRITY_FAILURE",
+                                        error_code=failure_code,
                                         retrieved_count=0,
                                         repo_count=repo_count,
                                         total_chunks=total_chunks,
@@ -2464,6 +2489,7 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 )
                             repo_chunks = list(retrieval_payload["chunks"])
                             ctx_chunks = retrieval_payload["chunks"]
+                            _enforce_chunk_shape(ctx_chunks)
                             retrieved_count = len(repo_chunks)
                             retrieved_chunks = int(retrieval_payload["total_chunks"])
                             retrieved_files = len(set(retrieval_payload["file_ids"]))
