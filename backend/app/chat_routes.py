@@ -628,17 +628,10 @@ def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
         for chunk in result:
             file_path = str(getattr(chunk, "file_path", "") or "").strip()
             if not file_path:
-                continue
-            if getattr(chunk, "chat_file_id", None) is not None:
-                file_id = str(getattr(chunk, "chat_file_id")).strip()
-            elif getattr(chunk, "repo_id", None) is not None:
-                file_id = f"{getattr(chunk, 'repo_id')}|{file_path}"
-            elif getattr(chunk, "ingest_job_id", None) is not None:
-                file_id = f"{getattr(chunk, 'ingest_job_id')}|{file_path}"
-            else:
-                file_id = ""
+                raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+            file_id = str(getattr(chunk, "graph_group", "") or "").strip()
             if not file_id:
-                continue
+                raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
             chunks.append(chunk)
             file_ids.append(file_id)
             file_paths.append(file_path)

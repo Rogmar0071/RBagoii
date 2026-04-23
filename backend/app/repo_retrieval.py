@@ -302,19 +302,13 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
     for chunk in chunks:
         file_path = str(chunk.file_path or "").strip()
         if not file_path:
-            continue
-        if chunk.chat_file_id is not None:
-            file_id = str(chunk.chat_file_id).strip()
-        else:
-            file_id = str(chunk.graph_group or "").strip()
+            raise RuntimeError("INVALID_CHUNK_NO_FILE_PATH")
+        file_id = str(chunk.graph_group or "").strip()
         if not file_id:
-            continue
+            raise RuntimeError("INVALID_CHUNK_NO_FILE_ID")
         valid_chunks.append(chunk)
         file_ids.append(file_id)
         file_paths.append(file_path)
-
-    if chunks and not valid_chunks:
-        raise RuntimeError("NO_VALID_CHUNKS_WITH_FILE_ID")
 
     if valid_chunks and not file_ids:
         raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")

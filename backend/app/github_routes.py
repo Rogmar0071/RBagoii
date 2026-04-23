@@ -693,11 +693,6 @@ async def add_github_repo(
     for file_path, content in file_list:
         for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             structure = extract_structure(chunk_text, file_path)
-            logger.info(
-                "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
-                file_path,
-                "add_github_repo",
-            )
             chunk = RepoChunk(
                 chat_file_id=github_file.id,
                 file_path=file_path,

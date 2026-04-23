@@ -985,11 +985,6 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
-        logger.info(
-            "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
-            file_path,
-            "_ingest_file",
-        )
         chunk = RepoChunk(
             ingest_job_id=job.id,
             file_path=file_path,
@@ -1085,11 +1080,6 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
-        logger.info(
-            "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
-            file_path,
-            "_ingest_url",
-        )
         chunk = RepoChunk(
             ingest_job_id=job.id,
             file_path=file_path,
@@ -1391,18 +1381,19 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         chunks = split_with_overlap(content)
         chunks_per_file[file_path] = len(chunks)
 
-        repo_file = repo_files_by_path.get(file_path)
-        file_id = str(getattr(repo_file, "id", "") or "").strip()
-        persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
-        if not file_id or not persisted_file_path:
-            raise RuntimeError("INGESTION_FILE_ID_MISSING")
-
         for idx, chunk_text in enumerate(chunks):
+            repo_file = repo_files_by_path.get(file_path)
+            if repo_file is None:
+                raise RuntimeError("INGESTION_FILE_ID_MISSING_AT_LOOP")
+            file_id = str(getattr(repo_file, "id", "") or "").strip()
+            persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
+            if not file_id or not persisted_file_path:
+                raise RuntimeError("INGESTION_FILE_ID_MISSING_AT_LOOP")
             structure = extract_structure(chunk_text, file_path)
             logger.info(
-                "CHUNK_CREATION_CANDIDATE file_path=%s location=%s",
+                "CHUNK_CREATION_LOOP file_path=%s chunk_index=%s",
                 persisted_file_path,
-                "_ingest_repo",
+                idx,
             )
             chunk = RepoChunk(
                 ingest_job_id=job.id,
@@ -1417,7 +1408,9 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 start_line=structure["start_line"],
                 end_line=structure["end_line"],
             )
-            if not str(chunk.graph_group or "").strip() or not str(chunk.file_path or "").strip():
+            if not str(chunk.graph_group or "").strip():
+                raise RuntimeError("INVALID_CHUNK_NO_FILE_ID")
+            if not str(chunk.file_path or "").strip():
                 raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
             logger.info(
                 "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",

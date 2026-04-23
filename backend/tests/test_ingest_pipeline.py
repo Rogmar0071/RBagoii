@@ -838,21 +838,25 @@ class TestInvariantEnforcement:
                 f"got {job.error!r}"
             )
 
-    def test_process_ingest_job_logs_pipeline_entry(self, caplog):
+    def test_process_ingest_job_logs_pipeline_entry(self):
         """
         INVARIANT: worker entry must always emit INGEST_PIPELINE_ENTRY with job_id.
         """
-        import logging
         import uuid as _uuid
+        from unittest.mock import patch
 
         from backend.app.ingest_pipeline import process_ingest_job
 
         missing_job_id = str(_uuid.uuid4())
-        with caplog.at_level(logging.INFO):
+        with patch("backend.app.ingest_pipeline.logger.info") as info_log:
             process_ingest_job(missing_job_id)
 
-        assert (
-            f"INGEST_PIPELINE_ENTRY job_id={missing_job_id}" in caplog.text
+        assert any(
+            call.args
+            and call.args[0] == "INGEST_PIPELINE_ENTRY job_id=%s"
+            and len(call.args) > 1
+            and call.args[1] == missing_job_id
+            for call in info_log.call_args_list
         ), "INVARIANT_VIOLATION: missing INGEST_PIPELINE_ENTRY worker entry log"
 
     def test_enqueue_blocked_without_queued_state(self, client):
