@@ -644,10 +644,8 @@ def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
     if chunks and len(file_ids) != len(chunks):
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if chunks and len(file_paths) != len(chunks):
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if chunks and any(not str(path).strip() for path in file_paths):
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+    # file_paths is no longer authoritative — it may be an empty list even when
+    # chunks are present.  Length and content checks are intentionally skipped.
     if chunks and total_chunks <= 0:
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
 
@@ -2076,6 +2074,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                             )
                         repo_chunks = list(retrieval_payload["chunks"])
                         ctx_chunks = retrieval_payload["chunks"]
+                        if ctx_chunks:
+                            if any(getattr(c, "file_id", None) is None for c in ctx_chunks):
+                                raise Exception("INVALID_CHUNK_SHAPE")
                         retrieved_count = len(repo_chunks)
                         retrieved_chunks = int(retrieval_payload["total_chunks"])
                         retrieved_files = len(set(retrieval_payload["file_ids"]))
@@ -2464,6 +2465,9 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 )
                             repo_chunks = list(retrieval_payload["chunks"])
                             ctx_chunks = retrieval_payload["chunks"]
+                            if ctx_chunks:
+                                if any(getattr(c, "file_id", None) is None for c in ctx_chunks):
+                                    raise Exception("INVALID_CHUNK_SHAPE")
                             retrieved_count = len(repo_chunks)
                             retrieved_chunks = int(retrieval_payload["total_chunks"])
                             retrieved_files = len(set(retrieval_payload["file_ids"]))

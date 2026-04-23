@@ -291,31 +291,29 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
     Build retrieval payload with mandatory file identity metadata.
 
     Contract:
-    - chunks
-    - file_ids
-    - file_paths
+    - chunks : raw RepoChunk ORM objects (NO transformation)
+    - file_ids : derived strictly from chunk.file_id
+    - file_paths : always empty — no longer authoritative (resolved via file_resolution)
     - total_chunks
     """
-    valid_chunks: list[RepoChunk] = []
-    file_ids: list[str] = []
-    file_paths: list[str] = []
-    for chunk in chunks:
-        file_id = str(chunk.file_id or "").strip()
-        file_path = str(chunk.file_path or "").strip()
-        if not file_id or not file_path:
-            continue
-        valid_chunks.append(chunk)
-        file_ids.append(file_id)
-        file_paths.append(file_path)
+    # Hard shape enforcement: every chunk MUST carry a non-None file_id.
+    if chunks:
+        invalid = [c for c in chunks if getattr(c, "file_id", None) is None]
+        if invalid:
+            raise RuntimeError(
+                f"INVALID_CHUNK_SHAPE: missing file_id on {len(invalid)} chunks"
+            )
+
+    file_ids = [str(c.file_id) for c in chunks]
 
     if chunks and not file_ids:
         raise RuntimeError("IDENTITY_PIPELINE_BROKEN")
 
     return {
-        "chunks": valid_chunks,
+        "chunks": chunks,
         "file_ids": file_ids,
-        "file_paths": file_paths,
-        "total_chunks": len(valid_chunks),
+        "file_paths": [],  # no longer authoritative
+        "total_chunks": len(chunks),
     }
 
 
@@ -404,6 +402,13 @@ def retrieve_relevant_chunks(
 
     if not all_chunks:
         return _finalize_retrieval_payload(_build_retrieval_payload([]))
+
+    # HARD ENFORCEMENT: every chunk returned from DB MUST carry a non-None file_id.
+    invalid_chunks = [c for c in all_chunks if getattr(c, "file_id", None) is None]
+    if invalid_chunks:
+        raise Exception(
+            f"INVALID_CHUNK_SHAPE: missing file_id on {len(invalid_chunks)} chunks"
+        )
 
     if not keywords:
         return _finalize_retrieval_payload(_build_retrieval_payload([]))
