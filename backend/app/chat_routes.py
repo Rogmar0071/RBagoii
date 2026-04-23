@@ -48,6 +48,7 @@ from backend.app.mode_engine import (
 from backend.app.models import (
     ChatFile,
     Conversation,
+    ConversationContext,
     ConversationRepo,
     IngestJob,
     Repo,
@@ -702,22 +703,55 @@ def _ensure_conversation(db: Session | None, conversation_id: str) -> Conversati
     if db is None:
         return None
     conv = db.get(Conversation, conversation_id)
-    if conv is not None:
-        return conv
-    conv = Conversation(id=conversation_id)
-    db.add(conv)
-    db.commit()
-    db.refresh(conv)
+    if conv is None:
+        conv = Conversation(id=conversation_id)
+        db.add(conv)
+        db.commit()
+        db.refresh(conv)
+    _ensure_conversation_context(db, conversation_id)
     return conv
 
 
 def _conversation_repo_ids(db: Session | None, conversation_id: str) -> list[uuid.UUID]:
     if db is None:
         return []
-    rows = db.exec(
-        select(ConversationRepo).where(ConversationRepo.conversation_id == conversation_id)
-    ).all()
-    return sorted((row.repo_id for row in rows), key=str)
+    ctx = db.exec(
+        select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
+    ).first()
+    if ctx is None:
+        return []
+    if ctx.repo_id is None:
+        return []
+    return [ctx.repo_id]
+
+
+def _ensure_conversation_context(
+    db: Session | None,
+    conversation_id: str,
+    *,
+    repo_id: uuid.UUID | None = None,
+    update_repo: bool = False,
+) -> ConversationContext | None:
+    if db is None:
+        return None
+    ctx = db.exec(
+        select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
+    ).first()
+    if ctx is None:
+        ctx = ConversationContext(
+            conversation_id=conversation_id,
+            repo_id=repo_id if update_repo else None,
+        )
+        db.add(ctx)
+        db.commit()
+        db.refresh(ctx)
+        return ctx
+    if update_repo and ctx.repo_id != repo_id:
+        ctx.repo_id = repo_id
+        db.add(ctx)
+        db.commit()
+        db.refresh(ctx)
+    return ctx
 
 
 def _call_openai_chat(
@@ -1060,10 +1094,46 @@ def create_conversation() -> JSONResponse:
     if db is not None:
         try:
             db.add(Conversation(id=conversation_id))
+            db.add(ConversationContext(conversation_id=conversation_id, repo_id=None))
             db.commit()
         finally:
             db.close()
     return JSONResponse(status_code=200, content={"conversation_id": conversation_id})
+
+
+@router.get(
+    "/chat/conversation/{conversation_id}/context",
+    status_code=200,
+    dependencies=[Depends(require_auth)],
+)
+def get_conversation_context_binding(conversation_id: str) -> JSONResponse:
+    """
+    Return the active context binding for a conversation.
+    """
+    db = _db_session()
+    if db is None:
+        return _error(
+            503,
+            "service_unavailable",
+            "DATABASE_URL is not configured; context binding is unavailable.",
+        )
+    try:
+        ctx = db.exec(
+            select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
+        ).first()
+        if ctx is None:
+            return _error(404, "context_binding_not_found", "No active context binding found.")
+        return JSONResponse(
+            status_code=200,
+            content={
+                "conversation_id": conversation_id,
+                "repo_id": str(ctx.repo_id) if ctx.repo_id is not None else None,
+                "created_at": ctx.created_at.isoformat() if ctx.created_at else None,
+                "updated_at": ctx.updated_at.isoformat() if ctx.updated_at else None,
+            },
+        )
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1219,11 @@ def delete_conversation(
         ).all()
         for b in bindings:
             db.delete(b)
+        ctx = db.exec(
+            select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
+        ).first()
+        if ctx is not None:
+            db.delete(ctx)
 
         # Remove conversation record if present.
         conv = db.get(Conversation, conversation_id)
@@ -1277,13 +1352,20 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
         try:
             _ensure_conversation(db, active_conversation_id)
             if db is not None and context.repos:
+                if len(context.repos) != 1:
+                    return _error(
+                        400,
+                        "invalid_request",
+                        "Exactly one repo id is allowed in context.repos for active binding.",
+                    )
+                selected_repo_uuid: uuid.UUID | None = None
                 for rid_str in context.repos:
                     try:
                         repo_uuid = uuid.UUID(rid_str)
                     except ValueError:
-                        continue
+                        return _error(400, "invalid_request", "Invalid repo id in context.repos.")
                     if db.get(Repo, repo_uuid) is None:
-                        continue
+                        return _error(404, "repo_not_found", "Requested repo binding target not found.")
                     existing = db.exec(
                         select(ConversationRepo).where(
                             ConversationRepo.conversation_id == active_conversation_id,
@@ -1297,7 +1379,16 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                                 repo_id=repo_uuid,
                             )
                         )
+                    selected_repo_uuid = repo_uuid
                 db.commit()
+                _ensure_conversation_context(
+                    db,
+                    active_conversation_id,
+                    repo_id=selected_repo_uuid,
+                    update_repo=True,
+                )
+            elif db is not None:
+                _ensure_conversation_context(db, active_conversation_id)
             conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
             has_explicit_repo_context = bool(conversation_repo_ids)
             repo_count = len(conversation_repo_ids)

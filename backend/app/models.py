@@ -625,6 +625,54 @@ class RepoIndexRegistry(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# conversation_contexts
+# ---------------------------------------------------------------------------
+
+
+class ConversationContext(SQLModel, table=True):
+    """
+    CONVERSATION_CONTEXT_BINDING_V1.1.
+
+    Deterministic active context binding for a conversation.
+    Exactly one row per conversation_id; repo_id is nullable for non-repo scopes.
+    """
+
+    __tablename__ = "conversation_contexts"
+    __table_args__ = (
+        sa.UniqueConstraint("conversation_id", name="uq_conversation_contexts_conversation_id"),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    conversation_id: str = Field(
+        sa_column=Column(
+            sa.Text,
+            sa.ForeignKey("conversations.id"),
+            nullable=False,
+            index=True,
+        )
+    )
+    repo_id: Optional[uuid.UUID] = Field(
+        default=None,
+        sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), nullable=True, index=True),
+    )
+    created_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),
+    )
+    updated_at: Optional[datetime] = Field(
+        default=None,
+        sa_column=Column(sa.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow),
+    )
+
+    def __init__(self, **data):
+        if "created_at" not in data or data["created_at"] is None:
+            data["created_at"] = _utcnow()
+        if "updated_at" not in data or data["updated_at"] is None:
+            data["updated_at"] = _utcnow()
+        super().__init__(**data)
+
+
+# ---------------------------------------------------------------------------
 # conversation_repos
 # ---------------------------------------------------------------------------
 

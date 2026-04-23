@@ -27,7 +27,14 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
-from backend.app.models import ChatFile, ConversationRepo, Repo, RepoChunk, RepoIndexRegistry
+from backend.app.models import (
+    ChatFile,
+    ConversationContext,
+    ConversationRepo,
+    Repo,
+    RepoChunk,
+    RepoIndexRegistry,
+)
 from backend.app.repo_retrieval import _extract_keywords, _score_chunk, _split_into_chunks
 from backend.app.structural_handler import handle_structural_query
 
@@ -984,6 +991,14 @@ def remove_repo(
     # Remove ConversationRepo bindings
     binding_stmt = select(ConversationRepo).where(ConversationRepo.repo_id == repo_uuid)
     for binding in session.exec(binding_stmt).all():
+        ctx = session.exec(
+            select(ConversationContext).where(
+                ConversationContext.conversation_id == binding.conversation_id
+            )
+        ).first()
+        if ctx is not None and ctx.repo_id == repo_uuid:
+            ctx.repo_id = None
+            session.add(ctx)
         session.delete(binding)
 
     session.delete(repo)
@@ -1262,6 +1277,23 @@ def add_repo(
                     "repo_id": str(repo.id),
                 }
             )
+
+        context_binding = session.exec(
+            select(ConversationContext).where(
+                ConversationContext.conversation_id == req.conversation_id
+            )
+        ).first()
+        if context_binding is None:
+            session.add(
+                ConversationContext(
+                    id=uuid.uuid4(),
+                    conversation_id=req.conversation_id,
+                    repo_id=repo.id,
+                )
+            )
+        else:
+            context_binding.repo_id = repo.id
+            session.add(context_binding)
 
         repo_id_str = str(repo.id)
         current_status = repo.ingestion_status
