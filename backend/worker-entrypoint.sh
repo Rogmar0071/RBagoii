@@ -1,27 +1,58 @@
 #!/bin/bash
 set -e
 
-echo "Running Alembic migrations (worker)..."
-echo "  pwd: $(pwd)"
+echo "════════════════════════════════════════════════════════════════"
+echo "SCHEMA ENFORCEMENT: MQP-CONTRACT SCHEMA_ALIGNMENT_ENFORCEMENT_V1"
+echo "Worker Service Startup"
+echo "════════════════════════════════════════════════════════════════"
+echo ""
 
-ALEMBIC_INI="backend/alembic.ini"
-echo "  alembic ini: ${ALEMBIC_INI}"
-
-# Show the real reason if this fails (don't redirect to /dev/null)
+# ────────────────────────────────────────────────────────────────────
+# STEP 1: Verify Alembic Installation
+# ────────────────────────────────────────────────────────────────────
+echo "STEP 1: Verifying migration system..."
 if ! alembic --version; then
-  echo "ERROR: alembic command failed (alembic may not be installed)." >&2
+  echo "FATAL: alembic not installed" >&2
   echo "  python path: $(command -v python)" >&2
   python -V >&2
   python -m pip show alembic >&2 || true
   exit 1
 fi
+echo "  ✓ Alembic available"
+echo ""
 
-echo "  cmd: alembic -c ${ALEMBIC_INI} upgrade head"
+# ────────────────────────────────────────────────────────────────────
+# STEP 2: Apply Database Migrations
+# ────────────────────────────────────────────────────────────────────
+echo "STEP 2: Applying database migrations..."
+ALEMBIC_INI="backend/alembic.ini"
+echo "  Configuration: ${ALEMBIC_INI}"
+echo "  Command: alembic -c ${ALEMBIC_INI} upgrade head"
+
 if ! alembic -c "${ALEMBIC_INI}" upgrade head; then
-  echo "ERROR: Migration failed. Cannot start worker with misaligned schema." >&2
+  echo "FATAL: Migration failed. Cannot start worker with misaligned schema." >&2
   exit 1
 fi
+echo "  ✓ Migrations applied successfully"
+echo ""
 
-echo "Migration completed successfully."
+# ────────────────────────────────────────────────────────────────────
+# STEP 3: Validate Schema Alignment (CRITICAL)
+# ────────────────────────────────────────────────────────────────────
+echo "STEP 3: Validating schema alignment..."
+if ! python backend/validate_schema.py; then
+  echo "FATAL: Schema validation failed" >&2
+  echo "Database schema does not match application expectations" >&2
+  exit 1
+fi
+echo ""
+
+# ────────────────────────────────────────────────────────────────────
+# STEP 4: Start Worker
+# ────────────────────────────────────────────────────────────────────
+echo "════════════════════════════════════════════════════════════════"
+echo "SCHEMA VALIDATION PASSED ✓"
 echo "Starting RQ worker..."
+echo "════════════════════════════════════════════════════════════════"
+echo ""
 exec python -m rq worker --url "${REDIS_URL}" default

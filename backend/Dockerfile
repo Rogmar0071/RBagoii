@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt
 # Copy backend application code and migration files.
 COPY backend/alembic.ini ./backend/alembic.ini
 COPY backend/alembic/ ./backend/alembic/
+COPY backend/validate_schema.py ./backend/validate_schema.py
 COPY backend/entrypoint.sh ./backend/entrypoint.sh
 COPY backend/worker-entrypoint.sh ./backend/worker-entrypoint.sh
 COPY backend/app/ ./backend/app/
