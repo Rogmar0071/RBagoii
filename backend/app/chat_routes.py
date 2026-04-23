@@ -609,19 +609,42 @@ def _requires_full_context(message: str) -> bool:
 
 
 def _normalize_retrieval_result(result: Any) -> dict[str, Any]:
-    if not isinstance(result, dict):
+    if isinstance(result, dict):
+        if (
+            "chunks" not in result
+            or "file_ids" not in result
+            or "file_paths" not in result
+            or "total_chunks" not in result
+        ):
+            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
+        chunks = list(result["chunks"])
+        file_ids = list(result["file_ids"])
+        file_paths = list(result["file_paths"])
+        total_chunks = int(result["total_chunks"])
+    elif isinstance(result, list):
+        chunks = []
+        file_ids = []
+        file_paths = []
+        for chunk in result:
+            file_path = str(getattr(chunk, "file_path", "") or "").strip()
+            if not file_path:
+                continue
+            if getattr(chunk, "chat_file_id", None) is not None:
+                file_id = str(getattr(chunk, "chat_file_id")).strip()
+            elif getattr(chunk, "repo_id", None) is not None:
+                file_id = f"{getattr(chunk, 'repo_id')}|{file_path}"
+            elif getattr(chunk, "ingest_job_id", None) is not None:
+                file_id = f"{getattr(chunk, 'ingest_job_id')}|{file_path}"
+            else:
+                file_id = ""
+            if not file_id:
+                continue
+            chunks.append(chunk)
+            file_ids.append(file_id)
+            file_paths.append(file_path)
+        total_chunks = len(chunks)
+    else:
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    if (
-        "chunks" not in result
-        or "file_ids" not in result
-        or "file_paths" not in result
-        or "total_chunks" not in result
-    ):
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
-    chunks = list(result["chunks"])
-    file_ids = list(result["file_ids"])
-    file_paths = list(result["file_paths"])
-    total_chunks = int(result["total_chunks"])
 
     if chunks and not file_ids:
         raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE")
