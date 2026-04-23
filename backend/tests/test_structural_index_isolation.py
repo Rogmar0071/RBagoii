@@ -47,7 +47,7 @@ def client() -> TestClient:
 
 def _seed_repo(file_count: int = 200) -> str:
     import backend.app.database as db_module
-    from backend.app.models import Repo, RepoChunk, RepoIndexRegistry
+    from backend.app.models import Repo, RepoChunk, RepoFile, RepoIndexRegistry
 
     repo_id = uuid.uuid4()
     with Session(db_module.get_engine()) as session:
@@ -64,10 +64,20 @@ def _seed_repo(file_count: int = 200) -> str:
             )
         )
         for i in range(file_count):
+            file_id = uuid.uuid4()
+            session.add(
+                RepoFile(
+                    id=file_id,
+                    repo_id=repo_id,
+                    path=f"src/file_{i}.py",
+                    language="python",
+                    size_bytes=10,
+                )
+            )
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
-                    file_id=uuid.uuid4(),
+                    file_id=file_id,
                     file_path=f"src/file_{i}.py",
                     content=f"# file {i}\n",
                     chunk_index=0,
@@ -124,7 +134,7 @@ def test_phase2_debug_endpoint_returns_full_list(client: TestClient):
 
 def test_phase3_completeness_guard_enforced(client: TestClient):
     import backend.app.database as db_module
-    from backend.app.models import Repo, RepoChunk, RepoIndexRegistry
+    from backend.app.models import Repo, RepoChunk, RepoFile, RepoIndexRegistry
 
     repo_id = uuid.uuid4()
     with Session(db_module.get_engine()) as session:
@@ -141,10 +151,20 @@ def test_phase3_completeness_guard_enforced(client: TestClient):
             )
         )
         for i in range(3):
+            file_id = uuid.uuid4()
+            session.add(
+                RepoFile(
+                    id=file_id,
+                    repo_id=repo_id,
+                    path=f"src/file_{i}.py",
+                    language="python",
+                    size_bytes=10,
+                )
+            )
             session.add(
                 RepoChunk(
                     repo_id=repo_id,
-                    file_id=uuid.uuid4(),
+                    file_id=file_id,
                     file_path=f"src/file_{i}.py",
                     content=f"# file {i}\n",
                     chunk_index=0,
