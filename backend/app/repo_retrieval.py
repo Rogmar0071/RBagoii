@@ -310,9 +310,6 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
         file_ids.append(file_id)
         file_paths.append(file_path)
 
-    if valid_chunks and not file_ids:
-        raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")
-
     return {
         "chunks": valid_chunks,
         "file_ids": file_ids,
