@@ -70,6 +70,7 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
                 content="def answer():\n    return 42\n",
                 chunk_index=0,
                 token_estimate=8,
+                graph_group=str(uuid.uuid4()),
             )
         )
         session.add(
@@ -79,6 +80,7 @@ def _seed_repo_with_chunks(conversation_id: str, repo_name: str = "repo-a") -> s
                 content="Project contract and setup instructions.",
                 chunk_index=0,
                 token_estimate=8,
+                graph_group=str(uuid.uuid4()),
             )
         )
         session.commit()
@@ -113,6 +115,7 @@ def _seed_repo_with_many_chunks(
                     content=f"# files inventory entry {i}\nTOTAL FILES marker\n",
                     chunk_index=0,
                     token_estimate=8,
+                    graph_group=str(uuid.uuid4()),
                 )
             )
         session.commit()
@@ -146,6 +149,7 @@ def _seed_repo_with_partial_surface(
                 content="def alpha():\n    return 'alpha'\n",
                 chunk_index=0,
                 token_estimate=8,
+                graph_group=str(uuid.uuid4()),
             )
         )
         session.add(
@@ -155,6 +159,7 @@ def _seed_repo_with_partial_surface(
                 content="def beta():\n    return 'beta'\n",
                 chunk_index=0,
                 token_estimate=8,
+                graph_group=str(uuid.uuid4()),
             )
         )
         session.commit()

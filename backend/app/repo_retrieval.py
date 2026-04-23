@@ -296,32 +296,49 @@ def _build_retrieval_payload(chunks: list[RepoChunk]) -> dict[str, Any]:
     - file_paths
     - total_chunks
     """
+    valid_chunks: list[RepoChunk] = []
     file_ids: list[str] = []
     file_paths: list[str] = []
     for chunk in chunks:
         file_path = str(chunk.file_path or "").strip()
         if not file_path:
-            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE: missing file_path")
-        file_id = (
-            str(chunk.chat_file_id)
-            if chunk.chat_file_id is not None
-            else f"{str(chunk.repo_id or '')}|{file_path}"
-        )
-        file_id = file_id.strip()
+            continue
+        if chunk.chat_file_id is not None:
+            file_id = str(chunk.chat_file_id).strip()
+        else:
+            file_id = str(chunk.graph_group or "").strip()
         if not file_id:
-            raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE: empty file_id")
+            continue
+        valid_chunks.append(chunk)
         file_ids.append(file_id)
         file_paths.append(file_path)
 
-    if chunks and not file_ids:
-        raise RuntimeError("RETRIEVAL_INTEGRITY_FAILURE: missing file_ids")
+    if chunks and not valid_chunks:
+        raise RuntimeError("NO_VALID_CHUNKS_WITH_FILE_ID")
+
+    if valid_chunks and not file_ids:
+        raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")
 
     return {
-        "chunks": chunks,
+        "chunks": valid_chunks,
         "file_ids": file_ids,
         "file_paths": file_paths,
-        "total_chunks": len(chunks),
+        "total_chunks": len(valid_chunks),
     }
+
+
+def _finalize_retrieval_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    chunks = list(payload["chunks"])
+    file_ids = list(payload["file_ids"])
+    if chunks and not file_ids:
+        raise RuntimeError("RETRIEVAL_INTEGRITY_VIOLATION")
+    logger.info(
+        "RETRIEVAL_RESULT: chunks_count=%s file_ids_count=%s sample_file_id=%s",
+        len(chunks),
+        len(file_ids),
+        file_ids[0] if file_ids else None,
+    )
+    return payload
 
 
 def retrieve_relevant_chunks(
@@ -359,7 +376,7 @@ def retrieve_relevant_chunks(
     has_file_ids = bool(chat_file_ids)
 
     if not has_repo_ids and not has_ingest_ids and not has_conversation and not has_file_ids:
-        return _build_retrieval_payload([])
+        return _finalize_retrieval_payload(_build_retrieval_payload([]))
 
     lower_query = user_query.lower()
     keywords = _extract_keywords(user_query)
@@ -387,7 +404,7 @@ def retrieve_relevant_chunks(
             ).all()
         ]
         if not job_ids_for_conv:
-            return []
+            return _finalize_retrieval_payload(_build_retrieval_payload([]))
         chunk_stmt = select(RepoChunk).where(
             RepoChunk.ingest_job_id.in_(job_ids_for_conv)  # type: ignore[attr-defined]
         )
@@ -400,10 +417,10 @@ def retrieve_relevant_chunks(
     all_chunks = db.exec(chunk_stmt).all()
 
     if not all_chunks:
-        return _build_retrieval_payload([])
+        return _finalize_retrieval_payload(_build_retrieval_payload([]))
 
     if not keywords:
-        return _build_retrieval_payload([])
+        return _finalize_retrieval_payload(_build_retrieval_payload([]))
 
     scored: list[tuple[int, RepoChunk]] = []
     for chunk in all_chunks:
@@ -423,6 +440,6 @@ def retrieve_relevant_chunks(
     if scored:
         selected = _apply_diversity(scored, max_total=max_chunks)
         bounded = _apply_token_budget(selected, max_tokens=max_tokens)
-        return _build_retrieval_payload(bounded)
+        return _finalize_retrieval_payload(_build_retrieval_payload(bounded))
 
-    return _build_retrieval_payload([])
+    return _finalize_retrieval_payload(_build_retrieval_payload([]))

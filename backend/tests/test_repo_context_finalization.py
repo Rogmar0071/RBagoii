@@ -413,6 +413,7 @@ class TestRetrievalScopedToRepoIds:
                 content="def hello(): return 'hello from A'",
                 chunk_index=0,
                 token_estimate=10,
+                graph_group=str(uuid.uuid4()),
             )
             chunk_b = RepoChunk(
                 repo_id=repo_b.id,
@@ -420,6 +421,7 @@ class TestRetrievalScopedToRepoIds:
                 content="def goodbye(): return 'goodbye from B'",
                 chunk_index=0,
                 token_estimate=10,
+                graph_group=str(uuid.uuid4()),
             )
             session.add(chunk_a)
             session.add(chunk_b)
@@ -578,6 +580,7 @@ class TestRepoStatusBlock:
                     content="def status_repo():\n    return True",
                     chunk_index=0,
                     token_estimate=8,
+                    graph_group=str(uuid.uuid4()),
                 )
             )
             session.commit()
