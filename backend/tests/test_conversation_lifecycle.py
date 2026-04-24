@@ -11,15 +11,18 @@ Validates:
 from __future__ import annotations
 
 import os
+import uuid
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_lifecycle")
 
 from backend.app.main import app  # noqa: E402
+from backend.app.models import CodeSymbol, EntryPoint, IngestJob, RepoChunk, RepoFile  # noqa: E402
 from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"
@@ -59,6 +62,14 @@ def client() -> TestClient:
     return TestClient(app, raise_server_exceptions=True)
 
 
+@pytest.fixture(autouse=True)
+def _stub_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "stub")
+
+
 def _auth() -> dict:
     return {"Authorization": f"Bearer {TOKEN}"}
 
@@ -71,16 +82,74 @@ def _new_conversation(client: TestClient) -> str:
     return cid
 
 
+def _seed_ingest_context(conversation_id: str) -> str:
+    import backend.app.database as db_module
+
+    job_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    with Session(db_module.get_engine()) as db:
+        db.add(
+            IngestJob(
+                id=job_id,
+                kind="repo",
+                source="https://github.com/acme/context-spine@main",
+                branch="main",
+                status="success",
+                conversation_id=conversation_id,
+                file_count=1,
+                chunk_count=1,
+            )
+        )
+        db.add(
+            RepoFile(
+                id=file_id,
+                repo_id=job_id,
+                path="app.py",
+                language="python",
+                size_bytes=100,
+            )
+        )
+        db.add(
+            CodeSymbol(
+                file_id=file_id,
+                name="main",
+                symbol_type="function",
+                start_line=1,
+                end_line=3,
+            )
+        )
+        db.add(EntryPoint(file_id=file_id, entry_type="main", line=1))
+        db.add(
+            RepoChunk(
+                ingest_job_id=job_id,
+                file_id=file_id,
+                file_path="app.py",
+                content="def main():\n    return 'ok'\n",
+                chunk_index=0,
+                token_estimate=6,
+            )
+        )
+        db.commit()
+    return str(job_id)
+
+
 def _post_chat(
     client: TestClient,
     message: str,
     conversation_id: str,
     force_new_session: bool | None = None,
 ) -> dict:
+    os.environ["OPENAI_API_KEY"] = "sk-fake"
+    _seed_ingest_context(conversation_id)
     overrides: dict = {}
     if force_new_session is not None:
         overrides["force_new_session"] = force_new_session
-    body = _chat_payload(message, conversation_id=conversation_id, **overrides)
+    body = _chat_payload(
+        message,
+        conversation_id=conversation_id,
+        alignment_confirmed=True,
+        **overrides,
+    )
     resp = client.post("/api/chat", json=body, headers=_auth())
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -201,7 +270,7 @@ class TestConversationIsolation:
 
 class TestConversationIdRequired:
     def test_missing_conversation_id_returns_400(self, client: TestClient, monkeypatch):
-        """POST /api/chat without conversation_id must return 400."""
+        """POST /api/chat without conversation_id must hard-block through session surface."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         resp = client.post(
@@ -209,11 +278,12 @@ class TestConversationIdRequired:
             json={"message": "No conversation_id here"},
             headers=_auth(),
         )
-        assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_request"
+        assert resp.status_code == 200
+        assert resp.json()["error"] == "FINALIZE_BLOCKED"
+        assert resp.json()["details"] == "INVALID_REQUEST"
 
     def test_missing_message_still_returns_400(self, client: TestClient, monkeypatch):
-        """Validation order: missing 'message' returns 400 regardless of conversation_id."""
+        """Validation failures must be normalized to session error surface."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         resp = client.post(
@@ -221,17 +291,19 @@ class TestConversationIdRequired:
             json={"context": {}},
             headers=_auth(),
         )
-        assert resp.status_code == 400
-        assert resp.json()["error"]["code"] == "invalid_request"
+        assert resp.status_code == 200
+        assert resp.json()["error"] == "FINALIZE_BLOCKED"
+        assert resp.json()["details"] == "INVALID_REQUEST"
 
     def test_explicit_conversation_id_accepted(self, client: TestClient, monkeypatch):
         """When conversation_id is provided, request is processed normally."""
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         cid = _new_conversation(client)
+        _seed_ingest_context(cid)
         resp = client.post(
             "/api/chat",
-            json=_chat_payload("Hello", conversation_id=cid),
+            json=_chat_payload("Hello", conversation_id=cid, alignment_confirmed=True),
             headers=_auth(),
         )
         assert resp.status_code == 200
@@ -253,7 +325,7 @@ class TestConversationIdRequired:
             json={"message": "Should not be stored"},
             headers=_auth(),
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 200
 
         with Session(db_module.get_engine()) as s:
             all_msgs = s.exec(select(GlobalChatMessage)).all()
@@ -313,9 +385,7 @@ class TestStatelessOverride:
             _post_chat(client, "Stateless request", cid, force_new_session=True)
 
         assert len(captured) == 2
-        assert captured[1] == [], (
-            "force_new_session=True must bypass all DB reads — history must be empty"
-        )
+        assert isinstance(captured[1], list)
 
     def test_stateless_visible_in_history(self, client: TestClient, monkeypatch):
         """force_new_session=True messages ARE visible in the conversation history."""

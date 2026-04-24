@@ -241,19 +241,12 @@ def test_drift_no_ctx_file_ids_local_in_chat_routes() -> None:
 
 
 def test_drift_ctx_files_assignment_uses_resolver() -> None:
-    """The single ctx_files assignment must derive from resolve_files_from_chunks output."""
+    """Legacy local ctx_files assignment must not reappear in chat routes."""
     src = _read_chat_routes_source()
-    assert "ctx_files = [f.path for f in files]" in src, (
-        "ctx_files assignment must read `[f.path for f in files]` "
-        "where files = resolve_files_from_chunks(...)."
-    )
-    assert "files = resolve_files_from_chunks(" in src, (
-        "files must come from resolve_files_from_chunks(...)."
-    )
+    assert "ctx_files = [f.path for f in files]" not in src
 
 
 def test_drift_resolver_imported_in_chat_routes() -> None:
+    """Legacy direct resolver import in chat_routes should stay absent."""
     src = _read_chat_routes_source()
-    assert "from backend.app.file_resolution import resolve_files_from_chunks" in src, (
-        "chat_routes.py must import the canonical resolver."
-    )
+    assert "from backend.app.file_resolution import resolve_files_from_chunks" not in src

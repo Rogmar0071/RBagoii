@@ -59,3 +59,17 @@ def _mock_github_api_metadata():
     """
     with patch("httpx.Client", side_effect=_make_fake_client):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_openai_chat_default(monkeypatch: pytest.MonkeyPatch):
+    """
+    Default LLM stub for backend tests.
+
+    Prevents network-dependent OpenAI calls and keeps chat-path tests
+    deterministic unless a test overrides `_call_openai_chat` explicitly.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "Stub reply")

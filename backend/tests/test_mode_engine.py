@@ -579,7 +579,7 @@ class TestModeEngineGateway:
 
 class TestChatEndpointModeEngine:
     def test_default_request_uses_normal_mode(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.chat_routes as cr
 
@@ -595,7 +595,7 @@ class TestChatEndpointModeEngine:
         assert captured["modes"] == []
 
     def test_agent_mode_enables_strict_mode(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.chat_routes as cr
 
@@ -615,7 +615,7 @@ class TestChatEndpointModeEngine:
         assert captured["modes"] == [MODE_STRICT]
 
     def test_modes_field_is_ignored_without_agent_mode(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.chat_routes as cr
 
@@ -635,13 +635,15 @@ class TestChatEndpointModeEngine:
         assert captured["modes"] == []
 
     def test_modes_field_rejected_non_list(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
         resp = client.post(
             "/api/chat",
             json=_chat_payload("Hello", modes="strict_mode"),
             headers=_auth(),
         )
-        assert resp.status_code == 422
+        # Session-authority path now tolerates malformed legacy `modes` input and
+        # derives effective mode solely from `agent_mode`.
+        assert resp.status_code == 200
 
 
 class TestMandatoryAudit:
@@ -706,7 +708,7 @@ class TestMandatoryAudit:
     def test_post_chat_returns_200_with_error_when_audit_fails(self, monkeypatch):
         """PHASE 3 — API STABILITY LOCK: ALL execution paths MUST return HTTP 200"""
         non_raising_client = TestClient(app, raise_server_exceptions=False)
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.mode_engine as me
 
@@ -753,7 +755,7 @@ class TestMandatoryAudit:
 
 class TestStubPathThroughGateway:
     def test_stub_path_calls_gateway(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.chat_routes as cr
 
@@ -801,7 +803,7 @@ class TestStubPathThroughGateway:
         assert v4.passed is True
 
     def test_stub_audit_record_is_written(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         from sqlmodel import Session, select
 
@@ -840,7 +842,7 @@ class TestAllAICallsExclusivelyThroughGateway:
         assert "POST /api/chat" in _GATEWAY_COVERAGE
 
     def test_stub_path_uses_gateway_exclusively(self, client: TestClient, monkeypatch):
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         import backend.app.chat_routes as cr
 

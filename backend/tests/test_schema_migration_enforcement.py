@@ -245,13 +245,13 @@ class TestMigrationSystemValidation:
                     "(version_num VARCHAR(32) PRIMARY KEY)"
                 )
             )
-            conn.execute(sa.text("INSERT INTO alembic_version VALUES ('0033')"))
+            conn.execute(sa.text("INSERT INTO alembic_version VALUES ('0035')"))
             conn.commit()
 
         from backend.app.schema_validation import get_current_migration_version
 
         version = get_current_migration_version(test_engine)
-        assert version == "0033"
+        assert version == "0035"
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +283,7 @@ class TestStartupValidation:
                     "(version_num VARCHAR(32) PRIMARY KEY)"
                 )
             )
-            conn.execute(sa.text("INSERT INTO alembic_version VALUES ('0033')"))
+            conn.execute(sa.text("INSERT INTO alembic_version VALUES ('0035')"))
             conn.commit()
 
         from backend.app.schema_validation import (
