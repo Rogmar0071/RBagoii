@@ -183,21 +183,22 @@ def test_hybrid_query_is_split_structural_then_semantic(
 ):
     repo_id = _seed_repo(200)
     import backend.app.chat_routes as cr
+    from backend.app.models import RepoChunk
 
-    class _Chunk:
-        def __init__(self):
-            self.repo_id = uuid.uuid4()
-            self.file_path = "src/file_1.py"
-            self.content = "x"
-            self.chunk_index = 0
-            self.id = uuid.uuid4()
-            self.file_id = _any_file_id(repo_id)
+    chunk = RepoChunk(
+        repo_id=uuid.uuid4(),
+        file_id=_any_file_id(repo_id),
+        file_path="src/file_1.py",
+        content="x",
+        chunk_index=0,
+        token_estimate=1,
+    )
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     monkeypatch.setattr(
         cr,
         "retrieve_relevant_chunks",
-        lambda *args, **kwargs: [_Chunk()],
+        lambda *args, **kwargs: [chunk],
     )
     monkeypatch.setattr(
         cr,
@@ -255,18 +256,19 @@ def test_adversarial_set_a_ambiguous_hybrid_shape_and_separation(
 ):
     repo_id = _seed_repo(200)
     import backend.app.chat_routes as cr
+    from backend.app.models import RepoChunk
 
-    class _Chunk:
-        def __init__(self):
-            self.repo_id = uuid.uuid4()
-            self.file_path = "src/file_7.py"
-            self.content = "This file initializes startup behavior."
-            self.chunk_index = 0
-            self.id = uuid.uuid4()
-            self.file_id = _any_file_id(repo_id)
+    chunk = RepoChunk(
+        repo_id=uuid.uuid4(),
+        file_id=_any_file_id(repo_id),
+        file_path="src/file_7.py",
+        content="This file initializes startup behavior.",
+        chunk_index=0,
+        token_estimate=1,
+    )
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [chunk])
     monkeypatch.setattr(
         cr,
         "_call_openai_chat",
@@ -291,18 +293,19 @@ def test_adversarial_set_b_structural_trap_routes_hybrid(
 ):
     repo_id = _seed_repo(200)
     import backend.app.chat_routes as cr
+    from backend.app.models import RepoChunk
 
-    class _Chunk:
-        def __init__(self):
-            self.repo_id = uuid.uuid4()
-            self.file_path = "src/file_10.py"
-            self.content = "Important file summary."
-            self.chunk_index = 0
-            self.id = uuid.uuid4()
-            self.file_id = _any_file_id(repo_id)
+    chunk = RepoChunk(
+        repo_id=uuid.uuid4(),
+        file_id=_any_file_id(repo_id),
+        file_path="src/file_10.py",
+        content="Important file summary.",
+        chunk_index=0,
+        token_estimate=1,
+    )
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [chunk])
     monkeypatch.setattr(
         cr, "_call_openai_chat", lambda *args, **kwargs: "Important files explained."
     )
@@ -360,18 +363,19 @@ def test_adversarial_set_d_noisy_input_still_routes_hybrid(
 ):
     repo_id = _seed_repo(200)
     import backend.app.chat_routes as cr
+    from backend.app.models import RepoChunk
 
-    class _Chunk:
-        def __init__(self):
-            self.repo_id = uuid.uuid4()
-            self.file_path = "src/file_3.py"
-            self.content = "Inside info."
-            self.chunk_index = 0
-            self.id = uuid.uuid4()
-            self.file_id = _any_file_id(repo_id)
+    chunk = RepoChunk(
+        repo_id=uuid.uuid4(),
+        file_id=_any_file_id(repo_id),
+        file_path="src/file_3.py",
+        content="Inside info.",
+        chunk_index=0,
+        token_estimate=1,
+    )
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
-    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [_Chunk()])
+    monkeypatch.setattr(cr, "retrieve_relevant_chunks", lambda *args, **kwargs: [chunk])
     monkeypatch.setattr(cr, "_call_openai_chat", lambda *args, **kwargs: "Inside explanation.")
 
     resp = _chat(client, repo_id=repo_id, message="uh just like how many files and stuff inside")

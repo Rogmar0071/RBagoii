@@ -102,6 +102,11 @@ class TestIngestionTruthLock:
 
     def test_201_when_files_present(self, client: TestClient):
         """POST /api/chat/{id}/github/repos → 201 when files are successfully retrieved."""
+        from sqlmodel import Session, select
+
+        import backend.app.database as db_module
+        from backend.app.models import RepoChunk, RepoFile
+
         cid = str(uuid.uuid4())
         fake_files = [("README.md", "# Hello\nThis is a test repo.")]
 
@@ -120,6 +125,19 @@ class TestIngestionTruthLock:
         body = resp.json()
         assert body["repo_id"] == body["id"]
         assert body["ingestion_status"] == "success"
+
+        github_file_id = uuid.UUID(body["id"])
+        with Session(db_module.get_engine()) as session:
+            chunks = session.exec(
+                select(RepoChunk).where(RepoChunk.chat_file_id == github_file_id)
+            ).all()
+            repo_files = session.exec(
+                select(RepoFile).where(RepoFile.repo_id == github_file_id)
+            ).all()
+            assert len(chunks) > 0
+            assert len(repo_files) == 1
+            repo_file_ids = {repo_file.id for repo_file in repo_files}
+            assert all(chunk.file_id in repo_file_ids for chunk in chunks)
 
 
 # ---------------------------------------------------------------------------

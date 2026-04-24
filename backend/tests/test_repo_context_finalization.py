@@ -240,7 +240,7 @@ class TestDeprecatedIngestionEndpoint:
         from sqlmodel import Session, select
 
         import backend.app.database as db_module
-        from backend.app.models import Repo, RepoChunk
+        from backend.app.models import Repo, RepoChunk, RepoFile
 
         cid = str(uuid.uuid4())
         fake_files = [
@@ -271,8 +271,13 @@ class TestDeprecatedIngestionEndpoint:
 
             chunks = session.exec(select(RepoChunk).where(RepoChunk.repo_id == repo_id)).all()
             assert len(chunks) > 0
+            repo_file_ids = {
+                repo_file.id
+                for repo_file in session.exec(select(RepoFile)).all()
+            }
             for chunk in chunks:
                 assert chunk.repo_id == repo_id
+                assert chunk.file_id in repo_file_ids
 
         stdout = capsys.readouterr().out
         assert "INGEST START:" in stdout
@@ -435,10 +440,8 @@ class TestRetrievalScopedToRepoIds:
                 db=session,
                 repo_ids=[repo_a.id],
             )
-            assert len(results["chunks"]) >= 1
-            assert results["total_chunks"] == len(results["chunks"])
-            assert len(results["file_ids"]) == len(results["chunks"])
-            paths_owners = [c.content for c in results["chunks"]]
+            assert len(results) >= 1
+            paths_owners = [c.content for c in results]
             assert any("hello from A" in c for c in paths_owners)
             assert all("goodbye from B" not in c for c in paths_owners)
 

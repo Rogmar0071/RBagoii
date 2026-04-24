@@ -2922,11 +2922,11 @@ def run_repo_ingestion(repo_id: str) -> None:
     import warnings
 
     import httpx as _httpx
-    from sqlmodel import Session
+    from sqlmodel import Session, select
 
     from backend.app.database import get_engine
     from backend.app.github_routes import GITHUB_TOKEN, _fetch_repo_file_list
-    from backend.app.models import Repo, RepoChunk
+    from backend.app.models import Repo, RepoChunk, RepoFile
     from backend.app.repo_retrieval import _split_into_chunks
 
     # DEPRECATION WARNING
@@ -3062,14 +3062,20 @@ def run_repo_ingestion(repo_id: str) -> None:
             from backend.app.repo_chunk_extractor import extract_structure
 
             for file_path, content in file_list:
-                file_id = uuid.uuid5(
-                    uuid.NAMESPACE_URL, f"repo:{r.id}:{file_path}"
+                repo_file = RepoFile(
+                    repo_id=r.id,
+                    path=file_path,
+                    language=None,
+                    size_bytes=len(content.encode("utf-8")),
+                    content_hash=None,
                 )
+                session.add(repo_file)
+                session.flush()
                 for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
                     structure = extract_structure(chunk_text, file_path)
                     chunk = RepoChunk(
                         repo_id=r.id,
-                        file_id=file_id,
+                        file_id=repo_file.id,
                         file_path=file_path,
                         content=chunk_text,
                         chunk_index=chunk_index,
@@ -3081,11 +3087,23 @@ def run_repo_ingestion(repo_id: str) -> None:
                         start_line=structure["start_line"],
                         end_line=structure["end_line"],
                     )
+                    if chunk.file_id is None:
+                        raise RuntimeError("INVALID_CHUNK_WRITE")
                     session.add(chunk)
                     chunk_count += 1
 
             if chunk_count == 0:
                 raise ValueError("Repository ingestion produced no text chunks")
+            created_chunks = session.exec(
+                select(RepoChunk).where(RepoChunk.repo_id == r.id)
+            ).all()
+            repo_file_ids = set(
+                session.exec(select(RepoFile.id).where(RepoFile.repo_id == r.id)).all()
+            )
+            if any(chunk.file_id is None for chunk in created_chunks):
+                raise RuntimeError("INGEST_CORRUPTED")
+            if any(chunk.file_id not in repo_file_ids for chunk in created_chunks):
+                raise RuntimeError("INGEST_CORRUPTED")
 
             r.ingestion_status = "success"
             r.total_files = len(file_list)

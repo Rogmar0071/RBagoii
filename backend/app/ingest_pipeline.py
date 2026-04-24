@@ -854,6 +854,32 @@ def _transition(job_id: str, next_state: str, **payload: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _assert_chunk_write_integrity(chunk: Any) -> None:
+    if getattr(chunk, "file_id", None) is None:
+        raise RuntimeError("INVALID_CHUNK_WRITE")
+
+
+def _assert_post_ingest_chunk_integrity(session: Any, ingest_job_id: uuid.UUID) -> None:
+    from sqlmodel import select
+
+    from backend.app.models import RepoChunk, RepoFile
+
+    ingested_chunks = session.exec(
+        select(RepoChunk).where(RepoChunk.ingest_job_id == ingest_job_id)
+    ).all()
+    null_file_id_count = sum(1 for chunk in ingested_chunks if chunk.file_id is None)
+    if null_file_id_count > 0:
+        raise RuntimeError("INGEST_CORRUPTED")
+    if not ingested_chunks:
+        return
+
+    repo_file_ids = set(
+        session.exec(select(RepoFile.id).where(RepoFile.repo_id == ingest_job_id)).all()
+    )
+    if any(chunk.file_id not in repo_file_ids for chunk in ingested_chunks):
+        raise RuntimeError("INGEST_CORRUPTED")
+
+
 def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     """
     Ingest a file from blob_data stored in the database.
@@ -999,7 +1025,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             start_line=structure["start_line"],
             end_line=structure["end_line"],
         )
-        if chunk.file_id is None or not str(chunk.file_path or "").strip():
+        _assert_chunk_write_integrity(chunk)
+        if not str(chunk.file_path or "").strip():
             raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
@@ -1009,6 +1036,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         )
         session.add(chunk)
 
+    _assert_post_ingest_chunk_integrity(session, job.id)
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
@@ -1096,7 +1124,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
             start_line=structure["start_line"],
             end_line=structure["end_line"],
         )
-        if chunk.file_id is None or not str(chunk.file_path or "").strip():
+        _assert_chunk_write_integrity(chunk)
+        if not str(chunk.file_path or "").strip():
             raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
@@ -1106,6 +1135,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
         )
         session.add(chunk)
 
+    _assert_post_ingest_chunk_integrity(session, job.id)
     # Commit chunks to database
     session.commit()
 
@@ -1411,8 +1441,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 start_line=structure["start_line"],
                 end_line=structure["end_line"],
             )
-            if chunk.file_id is None:
-                raise RuntimeError("INVALID_CHUNK_NO_FILE_ID")
+            _assert_chunk_write_integrity(chunk)
             if not str(chunk.file_path or "").strip():
                 raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
             logger.info(
@@ -1480,6 +1509,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     job.chunk_variance_delta_pct = variance_delta_pct
     session.add(job)
 
+    _assert_post_ingest_chunk_integrity(session, job.id)
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)
