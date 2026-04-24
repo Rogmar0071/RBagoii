@@ -216,6 +216,11 @@ class ContextGraph:
     links: List[ContextLink] = field(default_factory=list)
     execution_paths: List[List[str]] = field(default_factory=list)  # lists of file_ids
 
+    @property
+    def nodes(self) -> List[ContextLink]:
+        # CHAT_EXECUTION_AUTHORITY_LOCK_V1_1: session-only retrieval surface.
+        return list(self.links)
+
 
 # ---------------------------------------------------------------------------
 # Stage 5 output — ContextGaps
@@ -302,6 +307,9 @@ class FinalContext:
     context_graph: ContextGraph
     aligned_intent_contract: AlignedIntentContract
     validated_execution_paths: List[List[str]] = field(default_factory=list)
+    # CHAT_EXECUTION_AUTHORITY_LOCK_V1_1: execution classification is carried
+    # directly by final context (session authority source).
+    query_type: str = "SESSION"
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +336,7 @@ class ActiveContextSession:
     session_id: str
     job_id: str
     final_context: FinalContext
+    intent_hash: Optional[str] = None
     activated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     # Internal pipeline token — must be a _PipelineToken instance.
     # Default is None so that missing-token attempts are caught in __post_init__.
