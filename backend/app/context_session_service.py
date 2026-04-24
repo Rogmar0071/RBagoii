@@ -54,13 +54,13 @@ def ensure_active_context_session(
         db.refresh(ctx)
 
     if not str(job_id or "").strip():
-        raise RuntimeError("FINALIZE_BLOCKED: no repository/job bound to conversation")
+        raise RuntimeError("FINALIZE_BLOCKED: no repository or job ID bound to conversation")
 
     # Validate UUID shape early for deterministic failure semantics.
     try:
         uuid.UUID(job_id)
     except ValueError as exc:
-        raise RuntimeError("FINALIZE_BLOCKED: invalid repository/job id") from exc
+        raise RuntimeError("FINALIZE_BLOCKED: repository/job ID must be a valid UUID") from exc
 
     active_session = run_context_pipeline(
         job_id=job_id,

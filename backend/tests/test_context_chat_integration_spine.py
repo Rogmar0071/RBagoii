@@ -11,7 +11,14 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_context_chat_spine")
 
 from backend.app.main import app  # noqa: E402
-from backend.app.models import CodeSymbol, EntryPoint, Repo, RepoChunk, RepoFile, RepoIndexRegistry  # noqa: E402
+from backend.app.models import (  # noqa: E402
+    CodeSymbol,
+    EntryPoint,
+    Repo,
+    RepoChunk,
+    RepoFile,
+    RepoIndexRegistry,
+)
 from backend.tests.test_utils import _chat_payload  # noqa: E402
 
 TOKEN = "test-secret-key"

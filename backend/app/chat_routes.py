@@ -1536,11 +1536,16 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     },
                 )
             except Exception as e:
+                logger.warning(
+                    "context session activation blocked for conversation=%s: %s",
+                    active_conversation_id,
+                    type(e).__name__,
+                )
                 return JSONResponse(
                     status_code=200,
                     content={
                         "error": "FINALIZE_BLOCKED",
-                        "details": str(e),
+                        "details": "CONTEXT_PIPELINE_FAILURE",
                     },
                 )
 
