@@ -71,6 +71,19 @@ def ensure_active_context_session(
         db.commit()
         db.refresh(ctx)
 
+    current_hash = compute_intent_hash(message, alignment_refinement)
+    if not alignment_confirmed:
+        return ContextSessionResult(
+            status="ALIGNMENT_REQUIRED",
+            summary={
+                "alignment_required": True,
+                "conversation_id": conversation_id,
+                "user_intent": message,
+                "intent_hash": current_hash,
+                "alignment_refinement": alignment_refinement,
+            },
+        )
+
     job = db.exec(
         select(IngestJob)
         .where(IngestJob.conversation_id == conversation_id)
@@ -79,8 +92,6 @@ def ensure_active_context_session(
     ).first()
     if job is None:
         return ContextSessionResult(status="FINALIZE_BLOCKED", details="NO_INGEST_CONTEXT")
-
-    current_hash = compute_intent_hash(message, alignment_refinement)
 
     if ctx.active_context_session_id:
         existing = _get_cached_session(ctx.active_context_session_id)

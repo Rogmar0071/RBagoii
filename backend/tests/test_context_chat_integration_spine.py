@@ -135,6 +135,20 @@ def test_chat_blocks_without_ingest(client: TestClient):
     assert body.get("error") in {None, "FINALIZE_BLOCKED"}
 
 
+def test_alignment_required_precedes_ingest_readiness(client: TestClient):
+    cid = client.post("/api/chat/conversation/new", headers=_auth()).json()["conversation_id"]
+    resp = client.post(
+        "/api/chat",
+        json=_chat_payload("hello", conversation_id=cid, alignment_confirmed=False),
+        headers=_auth(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "ALIGNMENT_REQUIRED"
+    assert isinstance(body["summary"], dict)
+    assert "error" not in body
+
+
 def test_session_reuse_same_intent(client: TestClient, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
     cid = client.post("/api/chat/conversation/new", headers=_auth()).json()["conversation_id"]
