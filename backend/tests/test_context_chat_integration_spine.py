@@ -252,8 +252,12 @@ def test_forbidden_patterns_not_present_in_chat_routes():
     text = (root / "backend/app/chat_routes.py").read_text(encoding="utf-8")
     assert "retrieve_relevant_chunks(" not in text
     assert "handle_structural_query(" not in text
+    assert "session_result = ensure_active_context_session(" in text
+    assert 'if session_result.status == "ALIGNMENT_REQUIRED":' in text
+    assert 'if session_result.status == "FINALIZE_BLOCKED":' in text
     guard_idx = text.index("if active_session is None:")
     execution_input_idx = text.index("execution_input = active_session.final_context")
     gateway_idx = text.index("reply, _audit = mode_engine_gateway(")
     llm_call_idx = text.index("return _run_chat_llm(")
-    assert guard_idx < execution_input_idx < llm_call_idx < gateway_idx
+    assert guard_idx < execution_input_idx < gateway_idx
+    assert guard_idx < llm_call_idx
