@@ -659,6 +659,10 @@ class ConversationContext(SQLModel, table=True):
         default=None,
         sa_column=Column(sa.Uuid, sa.ForeignKey("repos.id"), nullable=True, index=True),
     )
+    active_context_session_id: Optional[str] = Field(
+        default=None,
+        sa_column=Column(sa.Text, nullable=True),
+    )
     created_at: Optional[datetime] = Field(
         default=None,
         sa_column=Column(sa.DateTime(timezone=True), default=_utcnow),

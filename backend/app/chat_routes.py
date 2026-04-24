@@ -41,6 +41,8 @@ from backend.app.artifact_utils import (
     resolve_context_surface,
 )
 from backend.app.auth import require_auth
+from backend.app.context_pipeline import AlignmentRequiredError
+from backend.app.context_session_service import ensure_active_context_session
 from backend.app.file_resolution import resolve_files_from_chunks
 from backend.app.mode_engine import (
     MODE_STRICT,
@@ -303,6 +305,8 @@ class ChatPostRequest(BaseModel):
     conversation_id: str
     # Backward-compatible top-level alias for repo context.
     repo_ids: list[str] | None = None
+    alignment_confirmed: bool | None = None
+    alignment_refinement: str | None = None
 
     @field_validator("message")
     @classmethod
@@ -845,6 +849,7 @@ def _ensure_conversation_context(
         return ctx
     if update_repo and ctx.repo_id != repo_id:
         ctx.repo_id = repo_id
+        ctx.active_context_session_id = None
         db.add(ctx)
         db.commit()
         db.refresh(ctx)
@@ -1227,6 +1232,7 @@ def get_conversation_context_binding(conversation_id: str) -> JSONResponse:
             content={
                 "conversation_id": conversation_id,
                 "repo_id": str(ctx.repo_id) if ctx.repo_id is not None else None,
+                "active_context_session_id": ctx.active_context_session_id,
                 "created_at": ctx.created_at.isoformat() if ctx.created_at else None,
                 "updated_at": ctx.updated_at.isoformat() if ctx.updated_at else None,
             },
@@ -1501,15 +1507,81 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             elif db is not None:
                 _ensure_conversation_context(db, active_conversation_id)
             conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
-            has_explicit_repo_context = bool(conversation_repo_ids)
-            repo_count = len(conversation_repo_ids)
-            if conversation_repo_ids and db is not None:
-                for rid in conversation_repo_ids:
-                    repo_obj = db.get(Repo, rid)
-                    if repo_obj is None:
-                        continue
-                    total_files += int(repo_obj.total_files or 0)
-                    total_chunks += int(repo_obj.total_chunks or 0)
+            if db is None:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "error": "FINALIZE_BLOCKED",
+                        "details": "DATABASE_UNAVAILABLE",
+                    },
+                )
+
+            # MQP CONTRACT: CONTEXT–CHAT INTEGRATION SPINE v1.0
+            # Hard gate: ALL chat execution MUST pass through context activation.
+            try:
+                active_session = ensure_active_context_session(
+                    db=db,
+                    conversation_id=active_conversation_id,
+                    job_id=str(conversation_repo_ids[0]) if conversation_repo_ids else "",
+                    user_intent=message,
+                    alignment_confirmed=bool(request.alignment_confirmed is True),
+                    alignment_refinement=request.alignment_refinement,
+                )
+            except AlignmentRequiredError as e:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "ALIGNMENT_REQUIRED",
+                        "summary": e.summary,
+                    },
+                )
+            except Exception as e:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "error": "FINALIZE_BLOCKED",
+                        "details": str(e),
+                    },
+                )
+
+            if not active_session:
+                return JSONResponse(
+                    status_code=200,
+                    content={"error": "CONTEXT_NOT_ACTIVATED"},
+                )
+
+            if (
+                active_session.final_context is None
+                or active_session.final_context.context_graph is None
+                or not active_session.final_context.validated_execution_paths
+            ):
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "error": "FINALIZE_BLOCKED",
+                        "details": "Active context session is incomplete",
+                    },
+                )
+
+            try:
+                active_repo_id = uuid.UUID(active_session.job_id)
+            except ValueError:
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "error": "FINALIZE_BLOCKED",
+                        "details": "Active context session has invalid job id",
+                    },
+                )
+
+            # Enforce execution authority from active session only.
+            conversation_repo_ids = [active_repo_id]
+            has_explicit_repo_context = True
+            repo_count = 1
+            repo_obj = db.get(Repo, active_repo_id)
+            if repo_obj is not None:
+                total_files = int(repo_obj.total_files or 0)
+                total_chunks = int(repo_obj.total_chunks or 0)
             # RULE 5: always persist messages, regardless of force_new_session.
             # force_new_session=True skips history READ only (debug/testing override).
             user_message = _persist_message(
