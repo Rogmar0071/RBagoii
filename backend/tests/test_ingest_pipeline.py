@@ -733,6 +733,70 @@ class TestChunkFileIdLineage:
         assert all(chunk.file_id is not None for chunk in retrieval)
 
 
+class TestChunkFileIdentityIntegrity:
+    def test_assert_chunk_file_integrity_passes_for_persisted_file_identity(self):
+        from types import SimpleNamespace
+
+        from backend.app.ingest_pipeline import _assert_chunk_file_integrity
+
+        file_id = uuid.uuid4()
+        repo_file = SimpleNamespace(id=file_id)
+        chunk = SimpleNamespace(file_id=file_id, file_path="src/main.py")
+
+        _assert_chunk_file_integrity(repo_file, chunk)
+
+    @pytest.mark.parametrize(
+        ("repo_file", "chunk", "error"),
+        [
+            (
+                None,
+                type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
+                "INTEGRITY_FAIL:NO_REPO_FILE",
+            ),
+            (
+                type("RepoFile", (), {"id": None})(),
+                type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
+                "INTEGRITY_FAIL:UNPERSISTED_FILE",
+            ),
+            (
+                type("RepoFile", (), {"id": uuid.uuid4()})(),
+                type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
+                "INTEGRITY_FAIL:FILE_ID_MISMATCH",
+            ),
+        ],
+    )
+    def test_assert_chunk_file_integrity_fails_on_identity_violations(
+        self, repo_file, chunk, error
+    ):
+        from backend.app.ingest_pipeline import _assert_chunk_file_integrity
+
+        with pytest.raises(RuntimeError, match=error):
+            _assert_chunk_file_integrity(repo_file, chunk)
+
+    def test_assert_chunk_file_integrity_fails_on_empty_path(self):
+        from types import SimpleNamespace
+
+        from backend.app.ingest_pipeline import _assert_chunk_file_integrity
+
+        file_id = uuid.uuid4()
+        repo_file = SimpleNamespace(id=file_id)
+        chunk = SimpleNamespace(file_id=file_id, file_path="   ")
+
+        with pytest.raises(RuntimeError, match="INTEGRITY_FAIL:EMPTY_FILE_PATH"):
+            _assert_chunk_file_integrity(repo_file, chunk)
+
+    def test_worker_sources_enforce_repo_file_id_as_chunk_authority(self):
+        import inspect
+
+        from backend.app import ingest_pipeline as p
+
+        for fn in (p._ingest_file, p._ingest_url, p._ingest_repo):
+            source = inspect.getsource(fn)
+            assert "REPO_FILE_ID_NOT_ASSIGNED" in source
+            assert "CHUNK_FILE_ID_MISMATCH" in source
+            assert "_assert_chunk_file_integrity(" in source
+
+
 # ---------------------------------------------------------------------------
 # Invariant enforcement regression tests
 # ---------------------------------------------------------------------------
