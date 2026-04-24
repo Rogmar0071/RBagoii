@@ -16,7 +16,7 @@ import uuid
 
 from sqlmodel import Session, select
 
-from backend.app.models import RepoChunk
+from backend.app.models import RepoChunk, RepoFile
 
 logger = logging.getLogger(__name__)
 
@@ -365,6 +365,19 @@ def retrieve_relevant_chunks(
             raise RuntimeError("INVALID_CHUNK_SHAPE")
         if not str(getattr(chunk, "file_path", "") or "").strip():
             raise RuntimeError("INVALID_CHUNK_SHAPE")
+
+    file_ids = {chunk.file_id for chunk in all_chunks if getattr(chunk, "file_id", None)}
+    resolved_files = {
+        rf.id: rf
+        for rf in db.exec(select(RepoFile).where(RepoFile.id.in_(file_ids))).all()  # type: ignore[attr-defined]
+    }
+    for chunk in all_chunks:
+        source_file = resolved_files.get(chunk.file_id)
+        if source_file is None:
+            raise RuntimeError("UNVERIFIED_IDENTITY")
+        if str(source_file.path or "") != str(chunk.file_path or ""):
+            raise RuntimeError("UNVERIFIED_IDENTITY")
+        setattr(chunk, "_authority_verified", True)
 
     if not keywords:
         return []

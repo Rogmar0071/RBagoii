@@ -501,6 +501,9 @@ class RepoChunk(SQLModel, table=True):
     )
 
     def __init__(self, **data):
+        from backend.app.identity_authority import assert_constructor_authority
+
+        assert_constructor_authority()
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         super().__init__(**data)
@@ -571,6 +574,9 @@ class Repo(SQLModel, table=True):
     )
 
     def __init__(self, **data):
+        from backend.app.identity_authority import assert_constructor_authority
+
+        assert_constructor_authority()
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         if "updated_at" not in data or data["updated_at"] is None:
@@ -669,6 +675,9 @@ class ConversationContext(SQLModel, table=True):
     )
 
     def __init__(self, **data):
+        from backend.app.identity_authority import assert_constructor_authority
+
+        assert_constructor_authority()
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         if "updated_at" not in data or data["updated_at"] is None:
@@ -709,6 +718,9 @@ class ConversationRepo(SQLModel, table=True):
     )
 
     def __init__(self, **data):
+        from backend.app.identity_authority import assert_constructor_authority
+
+        assert_constructor_authority()
         if "created_at" not in data or data["created_at"] is None:
             data["created_at"] = _utcnow()
         super().__init__(**data)
@@ -925,6 +937,12 @@ class RepoFile(SQLModel, table=True):
     language: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
     size_bytes: int = Field(default=0)
     content_hash: Optional[str] = Field(default=None, sa_column=Column(sa.Text, nullable=True))
+
+    def __init__(self, **data):
+        from backend.app.identity_authority import assert_constructor_authority
+
+        assert_constructor_authority()
+        super().__init__(**data)
 
 
 class CodeSymbol(SQLModel, table=True):

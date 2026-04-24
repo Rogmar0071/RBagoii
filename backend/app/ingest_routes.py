@@ -41,6 +41,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from backend.app.auth import require_auth
+from backend.app.identity_authority import create_repo
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +364,8 @@ def ingest_repo(
             select(Repo).where(Repo.repo_url == body.repo_url, Repo.branch == body.branch)
         ).first()
         if repo is None:
-            repo = Repo(
+            repo = create_repo(
+                session=session,
                 repo_url=body.repo_url,
                 owner=owner,
                 name=repo_name,
@@ -371,7 +373,6 @@ def ingest_repo(
                 conversation_id=body.conversation_id,
                 ingestion_status="pending",
             )
-            session.add(repo)
             session.commit()
             session.refresh(repo)
 

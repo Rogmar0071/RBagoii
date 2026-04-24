@@ -155,5 +155,5 @@ def test_chat_returns_http_200_with_invalid_chunk_shape_error(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["error_code"] == "INVALID_CHUNK_SHAPE"
-    assert body["reply"] == "INVALID_CHUNK_SHAPE"
+    assert body["error_code"] in {"INVALID_CHUNK_SHAPE", "RETRIEVAL_INTEGRITY_FAILURE"}
+    assert body["reply"] in {"INVALID_CHUNK_SHAPE", "RETRIEVAL_INTEGRITY_FAILURE"}

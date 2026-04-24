@@ -2970,7 +2970,6 @@ def run_repo_ingestion(repo_id: str) -> None:
         branch = repo.branch
         repo.ingestion_status = "running"
         repo.updated_at = datetime.now(timezone.utc)
-        session.add(repo)
         session.commit()
 
     # -----------------------------------------------------------------------
@@ -3059,24 +3058,24 @@ def run_repo_ingestion(repo_id: str) -> None:
             if r is None:
                 raise RuntimeError(f"Repo {repo_id} disappeared during ingestion")
 
+            from backend.app.identity_authority import create_repo_chunk, create_repo_file
             from backend.app.repo_chunk_extractor import extract_structure
 
             for file_path, content in file_list:
-                repo_file = RepoFile(
-                    repo_id=r.id,
+                repo_file = create_repo_file(
+                    session=session,
+                    repo=r,
                     path=file_path,
                     language=None,
                     size_bytes=len(content.encode("utf-8")),
                     content_hash=None,
                 )
-                session.add(repo_file)
-                session.flush()
                 for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
                     structure = extract_structure(chunk_text, file_path)
-                    chunk = RepoChunk(
+                    chunk = create_repo_chunk(
+                        session=session,
+                        repo_file=repo_file,
                         repo_id=r.id,
-                        file_id=repo_file.id,
-                        file_path=file_path,
                         content=chunk_text,
                         chunk_index=chunk_index,
                         token_estimate=max(1, len(chunk_text) // 4),
@@ -3089,7 +3088,6 @@ def run_repo_ingestion(repo_id: str) -> None:
                     )
                     if chunk.file_id is None:
                         raise RuntimeError("INVALID_CHUNK_WRITE")
-                    session.add(chunk)
                     chunk_count += 1
 
             if chunk_count == 0:
@@ -3248,8 +3246,6 @@ def run_repo_validation(repo_id: str) -> None:
                 repo.validation_signals = result["signals"]
                 repo.validated_at = datetime.now(timezone.utc)
 
-                session.add(repo)
-
             logger.info(
                 {
                     "event": "validation_completed",
@@ -3276,7 +3272,6 @@ def run_repo_validation(repo_id: str) -> None:
                 if repo:
                     repo.validation_status = "failed"
                     repo.validated_at = datetime.now(timezone.utc)
-                    fail_session.add(repo)
                     fail_session.commit()
 
 

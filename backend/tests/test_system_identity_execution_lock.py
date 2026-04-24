@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,13 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 
 from backend.app.chat_routes import _conversation_repo_ids  # noqa: E402
 from backend.app.file_resolution import FileResolutionError, resolve_files_from_chunks  # noqa: E402
+from backend.app.identity_authority import (  # noqa: E402
+    bind_conversation_context,
+    bind_conversation_repo,
+    create_repo,
+    create_repo_chunk,
+    create_repo_file,
+)
 from backend.app.ingest_pipeline import _assert_chunk_file_integrity, _ingest_repo  # noqa: E402
 from backend.app.models import (  # noqa: E402
     Conversation,
@@ -46,6 +54,15 @@ def session() -> Session:
 
     with Session(db_module.get_engine()) as s:
         yield s
+
+
+def _run_as_backend_app(source: str) -> RuntimeError:
+    try:
+        forbidden_file = "/home/runner/work/RBagoii/RBagoii/backend/app/_forbidden.py"
+        exec(compile(source, forbidden_file, "exec"), {})
+    except RuntimeError as exc:
+        return exc
+    raise AssertionError("Expected RuntimeError was not raised")
 
 
 def _repo_manifest() -> bytes:
@@ -200,3 +217,85 @@ def test_file_resolution_never_uses_fallback(session: Session) -> None:
     with pytest.raises(FileResolutionError) as exc_info:
         resolve_files_from_chunks([chunk], session)
     assert str(exc_info.value) == "FILE_RESOLUTION_BROKEN"
+
+
+def test_direct_repo_file_constructor_outside_authority_fails() -> None:
+    exc = _run_as_backend_app(
+        "from backend.app.models import RepoFile\n"
+        "RepoFile(repo_id='00000000-0000-0000-0000-000000000001', path='a.py', "
+        "language='python', size_bytes=1)"
+    )
+    assert str(exc) == "IDENTITY_CONSTRUCTOR_VIOLATION"
+
+
+def test_direct_repo_chunk_constructor_outside_authority_fails() -> None:
+    exc = _run_as_backend_app(
+        "from backend.app.models import RepoChunk\n"
+        "RepoChunk(file_id='00000000-0000-0000-0000-000000000001', file_path='a.py', "
+        "content='x', chunk_index=0, token_estimate=1)"
+    )
+    assert str(exc) == "IDENTITY_CONSTRUCTOR_VIOLATION"
+
+
+def test_manual_repo_id_assignment_fails(session: Session) -> None:
+    with pytest.raises(RuntimeError) as exc_info:
+        create_repo_file(
+            session=session,
+            repo=SimpleNamespace(id=uuid.uuid4()),
+            path="manual.py",
+            language="python",
+            size_bytes=1,
+            content_hash=None,
+        )
+    assert str(exc_info.value) == "IDENTITY_FORGERY"
+
+
+def test_authority_creation_path_assigns_verified_lineage(session: Session) -> None:
+    session.add(Conversation(id="conv-a"))
+    session.commit()
+
+    repo = create_repo(
+        session=session,
+        repo_url="https://github.com/example/authority",
+        owner="example",
+        name="authority",
+        branch="main",
+    )
+    repo_file = create_repo_file(
+        session=session,
+        repo=repo,
+        path="src/main.py",
+        language="python",
+        size_bytes=10,
+        content_hash="abc",
+    )
+    chunk = create_repo_chunk(
+        session=session,
+        repo_file=repo_file,
+        repo_id=repo.id,
+        content="print('ok')",
+        chunk_index=0,
+        token_estimate=3,
+    )
+    bind_conversation_repo(session=session, conversation_id="conv-a", repo=repo)
+    ctx = bind_conversation_context(session=session, conversation_id="conv-a", repo=repo)
+    session.commit()
+    assert repo.id is not None
+    assert repo_file.id is not None
+    assert chunk.file_id == repo_file.id
+    assert getattr(chunk, "_authority_verified", False) is True
+    assert ctx.repo_id == repo.id
+
+
+def test_zero_bypass_scan_forbidden_constructors_in_backend_app() -> None:
+    app_root = Path("/home/runner/work/RBagoii/RBagoii/backend/app")
+    violations: list[str] = []
+    forbidden = ("Repo(", "RepoFile(", "RepoChunk(", "ConversationRepo(", "ConversationContext(")
+    for path in app_root.rglob("*.py"):
+        if path.name in {"identity_authority.py", "models.py"}:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                violations.append(f"{path}:{token}")
+    assert violations == [], f"IDENTITY_BYPASS_DETECTED: {violations}"

@@ -74,6 +74,8 @@ from typing import Any
 
 from sqlalchemy import inspect as sa_inspect
 
+from backend.app.identity_authority import create_repo, create_repo_chunk, create_repo_file
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -930,6 +932,29 @@ def _resolve_repo_identity_id(session: Any, job: Any) -> uuid.UUID:
     return repo.id
 
 
+def _resolve_or_create_repo_for_job(session: Any, job: Any, *, owner_hint: str = "system") -> Any:
+    from backend.app.models import Repo
+
+    if getattr(job, "repo_id", None):
+        repo = session.get(Repo, job.repo_id)
+        if repo is not None:
+            return repo
+    synthetic_url = f"ingest://{job.kind}/{job.id}"
+    repo = create_repo(
+        session=session,
+        repo_url=synthetic_url,
+        owner=owner_hint,
+        name=f"{job.kind}-{str(job.id)[:8]}",
+        branch=getattr(job, "branch", None) or "main",
+        conversation_id=getattr(job, "conversation_id", None),
+        ingestion_status="running",
+    )
+    job.repo_id = repo.id
+    session.add(job)
+    session.flush()
+    return repo
+
+
 def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     """
     Ingest a file from blob_data stored in the database.
@@ -955,8 +980,6 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     from backend.app.models import (
         CodeSymbol,
         EntryPoint,
-        RepoChunk,
-        RepoFile,
         SymbolCallEdge,
     )
     from backend.app.repo_chunk_extractor import extract_structure
@@ -1003,15 +1026,16 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     graph = extract_graph(filename, data)
 
     # PHASE 1 — File registration
-    repo_file = RepoFile(
-        repo_id=job.id,
+    identity_repo = _resolve_or_create_repo_for_job(session, job, owner_hint="upload")
+
+    repo_file = create_repo_file(
+        session=session,
+        repo=identity_repo,
         path=filename,
         language=graph["language"],
         size_bytes=len(data),
         content_hash=hash_content(data),
     )
-    session.add(repo_file)
-    session.flush()  # materialise id before FK children
     _assert_repo_file_persisted(repo_file)
 
     # PHASE 2 — Symbol extraction
@@ -1065,10 +1089,10 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
-        chunk = RepoChunk(
+        chunk = create_repo_chunk(
+            session=session,
+            repo_file=repo_file,
             ingest_job_id=job.id,
-            file_id=repo_file.id,
-            file_path=file_path,
             content=chunk_text,
             chunk_index=idx,
             token_estimate=max(1, len(chunk_text) // 4),
@@ -1095,9 +1119,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             chunk.file_path,
             chunk.chunk_index,
         )
-        session.add(chunk)
 
-    _assert_post_ingest_chunk_integrity(session, job.id, job.id)
+    _assert_post_ingest_chunk_integrity(session, job.id, identity_repo.id)
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
@@ -1115,7 +1138,6 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     Worker reads from blob_data ONLY. URL was already fetched and stored.
     """
     from backend.app.graph_extractor import hash_content
-    from backend.app.models import RepoChunk, RepoFile
     from backend.app.repo_chunk_extractor import extract_structure
 
     if session is None:
@@ -1156,15 +1178,16 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
         return 0, 0
 
 
-    repo_file = RepoFile(
-        repo_id=job.id,
+    identity_repo = _resolve_or_create_repo_for_job(session, job, owner_hint="url")
+
+    repo_file = create_repo_file(
+        session=session,
+        repo=identity_repo,
         path=filename,
         language=None,
         size_bytes=len(content_bytes),
         content_hash=hash_content(content_bytes),
     )
-    session.add(repo_file)
-    session.flush()
     _assert_repo_file_persisted(repo_file)
     file_id = str(repo_file.id or "").strip()
     file_path = str(repo_file.path or "").strip()
@@ -1174,10 +1197,10 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     chunks = split_with_overlap(text)
     for idx, chunk_text in enumerate(chunks):
         structure = extract_structure(chunk_text, filename)
-        chunk = RepoChunk(
+        chunk = create_repo_chunk(
+            session=session,
+            repo_file=repo_file,
             ingest_job_id=job.id,
-            file_id=repo_file.id,
-            file_path=file_path,
             content=chunk_text,
             chunk_index=idx,
             token_estimate=max(1, len(chunk_text) // 4),
@@ -1205,9 +1228,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
             chunk.file_path,
             chunk.chunk_index,
         )
-        session.add(chunk)
 
-    _assert_post_ingest_chunk_integrity(session, job.id, job.id)
+    _assert_post_ingest_chunk_integrity(session, job.id, identity_repo.id)
     # Commit chunks to database
     session.commit()
 
@@ -1250,6 +1272,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         EntryPoint,
         FileDependency,
         IngestJob,
+        Repo,
         RepoChunk,
         RepoFile,
         SymbolCallEdge,
@@ -1303,6 +1326,9 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     symbols_by_path: dict[str, list[tuple]] = {}      # path → [(name, sym_type, line, CodeSymbol)]
 
     repo_identity_id = _resolve_repo_identity_id(session, job)
+    identity_repo = session.get(Repo, repo_identity_id)
+    if identity_repo is None:
+        raise RuntimeError("INVALID_REPO_IDENTITY")
 
     # Deterministic replay: replace previous file/chunk surface for this Repo id.
     from sqlmodel import select as _select
@@ -1330,15 +1356,14 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         content_bytes = content.encode("utf-8")
         graph = extract_graph(file_path, content_bytes)
 
-        repo_file = RepoFile(
-            repo_id=repo_identity_id,
+        repo_file = create_repo_file(
+            session=session,
+            repo=identity_repo,
             path=file_path,
             language=graph["language"],
             size_bytes=len(content_bytes),
             content_hash=hash_content(content_bytes),
         )
-        session.add(repo_file)
-        session.flush()
         _assert_repo_file_persisted(repo_file)
 
         repo_files_by_path[file_path] = repo_file
@@ -1521,11 +1546,11 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 persisted_file_path,
                 idx,
             )
-            chunk = RepoChunk(
+            chunk = create_repo_chunk(
+                session=session,
+                repo_file=repo_file,
                 repo_id=repo_identity_id,
                 ingest_job_id=job.id,
-                file_id=repo_file.id,
-                file_path=persisted_file_path,
                 content=chunk_text,
                 chunk_index=idx,
                 token_estimate=max(1, len(chunk_text) // 4),
@@ -1548,7 +1573,6 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 chunk.file_path,
                 chunk.chunk_index,
             )
-            session.add(chunk)
             chunk_count += 1
 
         file_count += 1

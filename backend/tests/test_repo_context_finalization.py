@@ -384,7 +384,7 @@ class TestRetrievalScopedToRepoIds:
         from sqlmodel import Session
 
         import backend.app.database as db_module
-        from backend.app.models import Repo, RepoChunk
+        from backend.app.models import Repo, RepoChunk, RepoFile
         from backend.app.repo_retrieval import retrieve_relevant_chunks
 
         with Session(db_module.get_engine()) as session:
@@ -412,9 +412,27 @@ class TestRetrievalScopedToRepoIds:
             session.add(repo_b)
             session.flush()
 
+            file_a = RepoFile(
+                repo_id=repo_a.id,
+                path="app.py",
+                language="python",
+                size_bytes=10,
+                content_hash=None,
+            )
+            file_b = RepoFile(
+                repo_id=repo_b.id,
+                path="app.py",
+                language="python",
+                size_bytes=10,
+                content_hash=None,
+            )
+            session.add(file_a)
+            session.add(file_b)
+            session.flush()
+
             chunk_a = RepoChunk(
                 repo_id=repo_a.id,
-                file_id=uuid.uuid4(),
+                file_id=file_a.id,
                 file_path="app.py",
                 content="def hello(): return 'hello from A'",
                 chunk_index=0,
@@ -423,7 +441,7 @@ class TestRetrievalScopedToRepoIds:
             )
             chunk_b = RepoChunk(
                 repo_id=repo_b.id,
-                file_id=uuid.uuid4(),
+                file_id=file_b.id,
                 file_path="app.py",
                 content="def goodbye(): return 'goodbye from B'",
                 chunk_index=0,

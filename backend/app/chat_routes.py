@@ -42,6 +42,10 @@ from backend.app.artifact_utils import (
 )
 from backend.app.auth import require_auth
 from backend.app.file_resolution import resolve_files_from_chunks
+from backend.app.identity_authority import (
+    bind_conversation_context,
+    bind_conversation_repo,
+)
 from backend.app.mode_engine import (
     MODE_STRICT,
     apply_mode_conflict_resolution,  # noqa: F401 — exported for test introspection
@@ -837,17 +841,22 @@ def _ensure_conversation_context(
         select(ConversationContext).where(ConversationContext.conversation_id == conversation_id)
     ).first()
     if ctx is None:
-        ctx = ConversationContext(
+        repo = db.get(Repo, repo_id) if (update_repo and repo_id is not None) else None
+        ctx = bind_conversation_context(
+            session=db,
             conversation_id=conversation_id,
-            repo_id=repo_id if update_repo else None,
+            repo=repo,
         )
-        db.add(ctx)
         db.commit()
         db.refresh(ctx)
         return ctx
     if update_repo and ctx.repo_id != repo_id:
-        ctx.repo_id = repo_id
-        db.add(ctx)
+        repo = db.get(Repo, repo_id) if repo_id is not None else None
+        ctx = bind_conversation_context(
+            session=db,
+            conversation_id=conversation_id,
+            repo=repo,
+        )
         db.commit()
         db.refresh(ctx)
     return ctx
@@ -1193,7 +1202,11 @@ def create_conversation() -> JSONResponse:
     if db is not None:
         try:
             db.add(Conversation(id=conversation_id))
-            db.add(ConversationContext(conversation_id=conversation_id, repo_id=None))
+            bind_conversation_context(
+                session=db,
+                conversation_id=conversation_id,
+                repo=None,
+            )
             db.commit()
         finally:
             db.close()
@@ -1487,11 +1500,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     )
                 ).first()
                 if existing is None:
-                    db.add(
-                        ConversationRepo(
-                            conversation_id=active_conversation_id,
-                            repo_id=selected_repo_uuid,
-                        )
+                    bind_conversation_repo(
+                        session=db,
+                        conversation_id=active_conversation_id,
+                        repo=db.get(Repo, selected_repo_uuid),
                     )
                 db.commit()
                 _ensure_conversation_context(

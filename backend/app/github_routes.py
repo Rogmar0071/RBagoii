@@ -27,13 +27,19 @@ from sqlmodel import Session, select
 
 from backend.app.auth import require_auth
 from backend.app.database import get_session
+from backend.app.identity_authority import (
+    bind_conversation_context,
+    bind_conversation_repo,
+    create_repo,
+    create_repo_chunk,
+    create_repo_file,
+)
 from backend.app.models import (
     ChatFile,
     ConversationContext,
     ConversationRepo,
     Repo,
     RepoChunk,
-    RepoFile,
     RepoIndexRegistry,
 )
 from backend.app.repo_retrieval import _extract_keywords, _score_chunk, _split_into_chunks
@@ -692,23 +698,39 @@ async def add_github_repo(
 
     chunk_count = 0
     repo_file_ids: set[uuid.UUID] = set()
-    for file_path, content in file_list:
-        repo_file = RepoFile(
+    synthetic_repo = session.exec(
+        select(Repo).where(
+            Repo.repo_url == f"github:{repo.repo_url}",
+            Repo.branch == repo.branch,
+        )
+    ).first()
+    if synthetic_repo is None:
+        synthetic_repo = create_repo(
+            session=session,
             repo_id=github_file.id,
+            repo_url=f"github:{repo.repo_url}",
+            owner=owner,
+            name=repo_name,
+            branch=repo.branch,
+            conversation_id=conversation_id,
+            ingestion_status="success",
+        )
+    for file_path, content in file_list:
+        repo_file = create_repo_file(
+            session=session,
+            repo=synthetic_repo,
             path=file_path,
             language=None,
             size_bytes=len(content.encode("utf-8")),
             content_hash=None,
         )
-        session.add(repo_file)
-        session.flush()
         repo_file_ids.add(repo_file.id)
         for chunk_index, chunk_text in enumerate(_split_into_chunks(content)):
             structure = extract_structure(chunk_text, file_path)
-            chunk = RepoChunk(
+            chunk = create_repo_chunk(
+                session=session,
+                repo_file=repo_file,
                 chat_file_id=github_file.id,
-                file_id=repo_file.id,
-                file_path=file_path,
                 content=chunk_text,
                 chunk_index=chunk_index,
                 token_estimate=max(1, len(chunk_text) // 4),
@@ -721,7 +743,6 @@ async def add_github_repo(
             )
             if chunk.file_id is None:
                 raise RuntimeError("INVALID_CHUNK_WRITE")
-            session.add(chunk)
             chunk_count += 1
 
     created_chunks = session.exec(
@@ -1021,7 +1042,6 @@ def remove_repo(
         ).first()
         if ctx is not None and ctx.repo_id == repo_uuid:
             ctx.repo_id = None
-            session.add(ctx)
         session.delete(binding)
 
     session.delete(repo)
@@ -1075,7 +1095,6 @@ def retry_repo_ingestion(
     repo.ingestion_status = "pending"
     repo.total_files = 0
     repo.total_chunks = 0
-    session.add(repo)
     session.commit()
     session.refresh(repo)
 
@@ -1101,7 +1120,6 @@ def retry_repo_ingestion(
             repo.ingestion_status = ingest_job.status
             repo.total_files = ingest_job.file_count or 0
             repo.total_chunks = ingest_job.chunk_count or 0
-            session.add(repo)
 
             if ingest_job.status == "success":
                 chunks = session.exec(
@@ -1109,7 +1127,6 @@ def retry_repo_ingestion(
                 ).all()
                 for chunk in chunks:
                     chunk.repo_id = repo_uuid
-                    session.add(chunk)
 
             session.commit()
             session.refresh(repo)
@@ -1118,7 +1135,6 @@ def retry_repo_ingestion(
         logger.warning("Retry ingestion failed for repo %s; marking as failed", repo_id)
         try:
             repo.ingestion_status = "failed"
-            session.add(repo)
             session.commit()
             session.refresh(repo)
         except Exception:
@@ -1240,8 +1256,8 @@ def add_repo(
         ).first()
 
         if repo is None:
-            repo = Repo(
-                id=uuid.uuid4(),
+            repo = create_repo(
+                session=session,
                 repo_url=req.repo_url,
                 owner=owner,
                 name=repo_name,
@@ -1250,8 +1266,6 @@ def add_repo(
                 total_files=0,
                 total_chunks=0,
             )
-            session.add(repo)
-            session.flush()  # assign PK before binding FK
             newly_created = True
             logger.info(
                 {
@@ -1279,12 +1293,10 @@ def add_repo(
         ).first()
 
         if existing_binding is None:
-            session.add(
-                ConversationRepo(
-                    id=uuid.uuid4(),
-                    conversation_id=req.conversation_id,
-                    repo_id=repo.id,
-                )
+            bind_conversation_repo(
+                session=session,
+                conversation_id=req.conversation_id,
+                repo=repo,
             )
             logger.info(
                 {
@@ -1308,16 +1320,17 @@ def add_repo(
             )
         ).first()
         if context_binding is None:
-            session.add(
-                ConversationContext(
-                    id=uuid.uuid4(),
-                    conversation_id=req.conversation_id,
-                    repo_id=repo.id,
-                )
+            bind_conversation_context(
+                session=session,
+                conversation_id=req.conversation_id,
+                repo=repo,
             )
         else:
-            context_binding.repo_id = repo.id
-            session.add(context_binding)
+            bind_conversation_context(
+                session=session,
+                conversation_id=req.conversation_id,
+                repo=repo,
+            )
 
         repo_id_str = str(repo.id)
         current_status = repo.ingestion_status
@@ -1366,7 +1379,6 @@ def add_repo(
                         repo_obj.ingestion_status = ingest_job.status
                         repo_obj.total_files = ingest_job.file_count or 0
                         repo_obj.total_chunks = ingest_job.chunk_count or 0
-                        session.add(repo_obj)
                         current_status = ingest_job.status
 
                         # Bind RepoChunk.repo_id for chunks created by this IngestJob.
@@ -1379,7 +1391,6 @@ def add_repo(
                             ).all()
                             for chunk in chunks:
                                 chunk.repo_id = uuid.UUID(repo_id_str)
-                                session.add(chunk)
 
                 session.commit()
 
@@ -1398,7 +1409,6 @@ def add_repo(
                 repo_obj = session.get(Repo, uuid.UUID(repo_id_str))
                 if repo_obj:
                     repo_obj.ingestion_status = "failed"
-                    session.add(repo_obj)
                     session.commit()
             except Exception:
                 pass
