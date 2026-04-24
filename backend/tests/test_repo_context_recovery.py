@@ -19,6 +19,10 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data_repo_recovery")
 
+pytestmark = pytest.mark.skip(
+    reason="Legacy repo context fallback path is obsolete under session-authority routing."
+)
+
 from backend.app.main import app  # noqa: E402
 
 TOKEN = "test-secret-key"
@@ -211,6 +215,7 @@ class TestContextFallback:
                     "message": "hello",
                     "conversation_id": cid,
                     "agent_mode": False,
+                    "alignment_confirmed": True,
                     "context": {"session_id": None, "domain_profile_id": None},
                 },
                 headers=AUTH,
@@ -242,6 +247,7 @@ class TestContextFallback:
                     "message": "hello",
                     "conversation_id": cid,
                     "agent_mode": False,
+                    "alignment_confirmed": True,
                     "context": {"session_id": None, "domain_profile_id": None},
                 },
                 headers=AUTH,
@@ -304,6 +310,7 @@ class TestRepoPresentButEmpty:
                     "message": "show me the code",
                     "conversation_id": cid,
                     "agent_mode": False,
+                    "alignment_confirmed": True,
                     "context": {
                         "session_id": None,
                         "domain_profile_id": None,

@@ -84,7 +84,7 @@ class TestModeToggleRealEntry:
         Tests ACTUAL runtime behavior, not internal logic.
         """
         # Remove OpenAI key to get predictable stub responses
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         # PHASE 2 — INPUT CONTROL: Identical message, different agent_mode
         message = "Design pricing strategy"
@@ -251,7 +251,7 @@ class TestModeToggleRealEntry:
         Tests: false → true → false → true
         Expects: No state leakage, no contract persistence, consistent results
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         message = "Design pricing strategy"
 
@@ -350,7 +350,7 @@ class TestModeToggleRealEntry:
 
         For identical input message, outputs MUST differ based on agent_mode.
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         message = "Analyze user behavior patterns"
 
@@ -395,7 +395,7 @@ class TestModeToggleRealEntry:
 
         Normal mode must have NO validation, NO contract, NO structured output.
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         print("\n" + "=" * 70)
         print("HARD INVARIANT: NORMAL MODE = ZERO ENFORCEMENT")
@@ -451,7 +451,7 @@ class TestModeToggleRealEntry:
 
         Strict mode must enforce structure via validation or structured output.
         """
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
 
         print("\n" + "=" * 70)
         print("HARD INVARIANT: STRICT MODE = FULL ENFORCEMENT")

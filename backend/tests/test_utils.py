@@ -8,9 +8,10 @@ import uuid
 
 
 def _seed_ingest_context(conversation_id: str) -> None:
+    from sqlmodel import Session
+
     import backend.app.database as db_module
     from backend.app.models import CodeSymbol, EntryPoint, IngestJob, RepoChunk, RepoFile
-    from sqlmodel import Session
 
     with Session(db_module.get_engine()) as db:
         exists = db.get(IngestJob, uuid.UUID(conversation_id))
