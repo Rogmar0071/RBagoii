@@ -1506,6 +1506,13 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
             except RuntimeError as exc:
                 if str(exc) == "INVALID_CONTEXT_REPO":
+                    user_message = _persist_message(
+                        db,
+                        "user",
+                        message,
+                        context,
+                        conversation_id=active_conversation_id,
+                    )
                     assistant_message = _persist_message(
                         db,
                         "assistant",

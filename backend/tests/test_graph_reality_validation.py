@@ -74,9 +74,10 @@ def _configure_sqlite(monkeypatch, tmp_path):
 
 def _make_repo_job(session_factory, files: list[tuple[str, str]], repo_name: str) -> str:
     """Ingest files under a given repo name and return job_id."""
+    from sqlmodel import select
+
     from backend.app.ingest_pipeline import transition
     from backend.app.models import IngestJob, Repo
-    from sqlmodel import select
 
     manifest = {
         "repo_url": f"https://github.com/test/{repo_name}",
@@ -103,6 +104,7 @@ def _make_repo_job(session_factory, files: list[tuple[str, str]], repo_name: str
         ).first()
         if repo is None:
             repo = Repo(
+                id=job.id,
                 repo_url=repo_url,
                 owner=manifest["owner"],
                 name=manifest["name"],

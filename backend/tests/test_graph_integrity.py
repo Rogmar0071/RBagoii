@@ -107,9 +107,10 @@ def read_root():
 
 def _make_repo_job(session_factory, files: list[tuple[str, str]]) -> str:
     """Create and process a repo IngestJob with the given files.  Returns job_id."""
+    from sqlmodel import select
+
     from backend.app.ingest_pipeline import transition
     from backend.app.models import IngestJob, Repo
-    from sqlmodel import select
 
     manifest = {
         "repo_url": "https://github.com/test/graph-repo",
@@ -136,6 +137,7 @@ def _make_repo_job(session_factory, files: list[tuple[str, str]]) -> str:
         ).first()
         if repo is None:
             repo = Repo(
+                id=job.id,
                 repo_url=repo_url,
                 owner=manifest["owner"],
                 name=manifest["name"],

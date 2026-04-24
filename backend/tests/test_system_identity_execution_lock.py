@@ -13,7 +13,14 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 from backend.app.chat_routes import _conversation_repo_ids  # noqa: E402
 from backend.app.file_resolution import FileResolutionError, resolve_files_from_chunks  # noqa: E402
 from backend.app.ingest_pipeline import _assert_chunk_file_integrity, _ingest_repo  # noqa: E402
-from backend.app.models import Conversation, ConversationContext, IngestJob, Repo, RepoChunk, RepoFile  # noqa: E402
+from backend.app.models import (  # noqa: E402
+    Conversation,
+    ConversationContext,
+    IngestJob,
+    Repo,
+    RepoChunk,
+    RepoFile,
+)
 from backend.app.repo_retrieval import retrieve_relevant_chunks  # noqa: E402
 
 
@@ -48,7 +55,9 @@ def _repo_manifest() -> bytes:
             "owner": "example",
             "name": "identity-repo",
             "branch": "main",
-            "files": [{"path": "src/main.py", "content": "def main():\n    return 1\n", "size": 24}],
+            "files": [
+                {"path": "src/main.py", "content": "def main():\n    return 1\n", "size": 24}
+            ],
             "skipped_files": [],
         }
     ).encode("utf-8")

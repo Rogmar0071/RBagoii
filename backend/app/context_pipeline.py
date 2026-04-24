@@ -403,10 +403,13 @@ def _stage_normalize(job_id: str, session: Any) -> NormalizedArtifactSet:
         CodeSymbol,
         EntryPoint,
         FileDependency,
+        IngestJob,
         RepoFile,
     )
 
-    repo_uuid = uuid.UUID(job_id)
+    job_uuid = uuid.UUID(job_id)
+    ingest_job = session.get(IngestJob, job_uuid)
+    repo_uuid = ingest_job.repo_id if ingest_job and ingest_job.repo_id else job_uuid
     repo_files = list(session.exec(select(RepoFile).where(RepoFile.repo_id == repo_uuid)))
 
     artifacts = [
@@ -461,11 +464,14 @@ def _stage_structural_graph(job_id: str, session: Any) -> StructuralGraph:
         CodeSymbol,
         EntryPoint,
         FileDependency,
+        IngestJob,
         RepoFile,
         SymbolCallEdge,
     )
 
-    repo_uuid = uuid.UUID(job_id)
+    job_uuid = uuid.UUID(job_id)
+    ingest_job = session.get(IngestJob, job_uuid)
+    repo_uuid = ingest_job.repo_id if ingest_job and ingest_job.repo_id else job_uuid
     graph = StructuralGraph(job_id=job_id)
 
     # ---- RepoFile rows ----

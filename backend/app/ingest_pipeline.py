@@ -911,7 +911,9 @@ def _assert_post_ingest_chunk_integrity(
     if not ingested_chunks:
         return
 
-    repo_file_ids = set(session.exec(select(RepoFile.id).where(RepoFile.repo_id == repo_identity_id)).all())
+    repo_file_ids = set(
+        session.exec(select(RepoFile.id).where(RepoFile.repo_id == repo_identity_id)).all()
+    )
     if any(chunk.file_id not in repo_file_ids for chunk in ingested_chunks):
         raise RuntimeError("INGEST_CORRUPTED")
 
@@ -1301,6 +1303,22 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     symbols_by_path: dict[str, list[tuple]] = {}      # path → [(name, sym_type, line, CodeSymbol)]
 
     repo_identity_id = _resolve_repo_identity_id(session, job)
+
+    # Deterministic replay: replace previous file/chunk surface for this Repo id.
+    from sqlmodel import select as _select
+
+    existing_chunks = session.exec(
+        _select(RepoChunk).where(RepoChunk.repo_id == repo_identity_id)
+    ).all()
+    for existing_chunk in existing_chunks:
+        session.delete(existing_chunk)
+    existing_repo_files = session.exec(
+        _select(RepoFile).where(RepoFile.repo_id == repo_identity_id)
+    ).all()
+    for existing_repo_file in existing_repo_files:
+        session.delete(existing_repo_file)
+    if existing_chunks or existing_repo_files:
+        session.flush()
 
     for file_entry in files:
         file_path = file_entry["path"]

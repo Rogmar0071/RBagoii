@@ -205,7 +205,7 @@ class TestBlobStorage:
 
         with Session(get_engine()) as session:
             repo = Repo(
-                id=uuid.uuid4(),
+                id=job.id,
                 repo_url=manifest["repo_url"],
                 owner=manifest["owner"],
                 name=manifest["name"],
@@ -336,7 +336,7 @@ class TestBlobStorage:
                 ).first()
                 if repo is None:
                     repo = Repo(
-                        id=uuid.uuid4(),
+                        id=job.id,
                         repo_url=manifest["repo_url"],
                         owner=manifest["owner"],
                         name=manifest["name"],

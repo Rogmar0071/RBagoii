@@ -643,7 +643,7 @@ class TestDeleteIngestJob:
         """
         import uuid as _uuid
 
-        from sqlmodel import Session, select
+        from sqlmodel import Session
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, RepoChunk
@@ -740,7 +740,7 @@ class TestChunkFileIdentityIntegrity:
         from backend.app.ingest_pipeline import _assert_chunk_file_integrity
 
         file_id = uuid.uuid4()
-        repo_file = SimpleNamespace(id=file_id)
+        repo_file = SimpleNamespace(id=file_id, path="src/main.py")
         chunk = SimpleNamespace(file_id=file_id, file_path="src/main.py")
 
         _assert_chunk_file_integrity(repo_file, chunk)
@@ -751,17 +751,17 @@ class TestChunkFileIdentityIntegrity:
             (
                 None,
                 type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
-                "INTEGRITY_FAIL:NO_REPO_FILE",
+                "INVALID_REPO_FILE_IDENTITY",
             ),
             (
                 type("RepoFile", (), {"id": None})(),
                 type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
-                "INTEGRITY_FAIL:UNPERSISTED_FILE",
+                "REPO_FILE_ID_NOT_ASSIGNED",
             ),
             (
                 type("RepoFile", (), {"id": uuid.uuid4()})(),
                 type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
-                "INTEGRITY_FAIL:FILE_ID_MISMATCH",
+                "CHUNK_FILE_ID_MISMATCH",
             ),
         ],
     )
@@ -782,7 +782,7 @@ class TestChunkFileIdentityIntegrity:
         repo_file = SimpleNamespace(id=file_id)
         chunk = SimpleNamespace(file_id=file_id, file_path="   ")
 
-        with pytest.raises(RuntimeError, match="INTEGRITY_FAIL:EMPTY_FILE_PATH"):
+        with pytest.raises(RuntimeError, match="INVALID_CHUNK_SHAPE"):
             _assert_chunk_file_integrity(repo_file, chunk)
 
     @pytest.mark.parametrize(
@@ -1512,7 +1512,7 @@ class TestInvalidPathPrevention:
 class TestDeterministicStateLayer:
     @staticmethod
     def _create_job(status: str, conversation_id: str | None = None) -> str:
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, Repo
@@ -1535,6 +1535,7 @@ class TestDeterministicStateLayer:
             ).first()
             if repo is None:
                 repo = Repo(
+                    id=job.id,
                     repo_url="https://github.com/example/repo",
                     owner="example",
                     name="repo",
