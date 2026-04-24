@@ -10,6 +10,16 @@ from sqlmodel import Session, select
 from backend.app.context_pipeline import AlignmentRequiredError, run_context_pipeline
 from backend.app.models import ConversationContext, IngestJob
 
+# Process-local registry for active sessions.
+# Lifecycle:
+# - Populated when ensure_active_context_session() activates a session.
+# - Reused for deterministic same-intent lookups in the same process.
+# - Evicted when intent hash changes for the conversation or when stale.
+# Concurrency:
+# - Guarded by _REGISTRY_LOCK for thread-safe access within a process.
+# Scope limits:
+# - Intentionally not shared across workers/process restarts.
+# - Entries are bounded by active conversations handled by this process.
 _ACTIVE_CONTEXT_SESSION_REGISTRY: dict[str, Any] = {}
 _REGISTRY_LOCK = threading.Lock()
 

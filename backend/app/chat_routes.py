@@ -564,7 +564,7 @@ def _run_structural_query(
     repo_ids: list[uuid.UUID],
     query_text: str,
 ) -> dict[str, Any]:
-    _ = (db, repo_ids, query_text)
+    del db, repo_ids, query_text
     raise RuntimeError("SESSION_REQUIRED")
 
 
@@ -575,7 +575,7 @@ def _run_retrieval_query(
     repo_ids: list[uuid.UUID] | None = None,
     conversation_id: str | None = None,
 ) -> list[RepoChunk]:
-    _ = (user_query, db, repo_ids, conversation_id)
+    del user_query, db, repo_ids, conversation_id
     raise RuntimeError("SESSION_REQUIRED")
 
 
@@ -829,6 +829,9 @@ def _ensure_conversation_context(
         db.refresh(ctx)
         return ctx
     if update_repo and ctx.repo_id != repo_id:
+        # CHAT_EXECUTION_AUTHORITY_LOCK_V1_1:
+        # repo rebinding changes structural source of truth, so any existing
+        # active context session must be invalidated.
         ctx.repo_id = repo_id
         ctx.active_context_session_id = None
         db.add(ctx)

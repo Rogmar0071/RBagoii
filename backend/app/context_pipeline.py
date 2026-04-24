@@ -218,7 +218,9 @@ class ContextGraph:
 
     @property
     def nodes(self) -> List[ContextLink]:
-        # CHAT_EXECUTION_AUTHORITY_LOCK_V1_1: session-only retrieval surface.
+        # CHAT_EXECUTION_AUTHORITY_LOCK_V1_1 compatibility alias:
+        # chat execution consumes `final_context.context_graph.nodes`, while the
+        # canonical internal field remains `links`.
         return list(self.links)
 
 

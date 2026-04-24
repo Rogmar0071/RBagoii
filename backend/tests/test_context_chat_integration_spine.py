@@ -202,8 +202,7 @@ def test_no_execution_without_session():
 
 
 def test_forbidden_patterns_not_present_in_chat_routes():
-    text = Path("/home/runner/work/RBagoii/RBagoii/backend/app/chat_routes.py").read_text(
-        encoding="utf-8"
-    )
+    root = Path(__file__).resolve().parents[2]
+    text = (root / "backend/app/chat_routes.py").read_text(encoding="utf-8")
     assert "retrieve_relevant_chunks(" not in text
     assert "handle_structural_query(" not in text
