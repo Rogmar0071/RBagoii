@@ -10,6 +10,7 @@ import pytest
 from sqlmodel import Session
 
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
+APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 
 from backend.app.chat_routes import _conversation_repo_ids  # noqa: E402
 from backend.app.file_resolution import FileResolutionError, resolve_files_from_chunks  # noqa: E402
@@ -58,7 +59,7 @@ def session() -> Session:
 
 def _run_as_backend_app(source: str) -> RuntimeError:
     try:
-        forbidden_file = "/home/runner/work/RBagoii/RBagoii/backend/app/_forbidden.py"
+        forbidden_file = str(APP_ROOT / "_forbidden.py")
         exec(compile(source, forbidden_file, "exec"), {})
     except RuntimeError as exc:
         return exc
@@ -288,10 +289,9 @@ def test_authority_creation_path_assigns_verified_lineage(session: Session) -> N
 
 
 def test_zero_bypass_scan_forbidden_constructors_in_backend_app() -> None:
-    app_root = Path("/home/runner/work/RBagoii/RBagoii/backend/app")
     violations: list[str] = []
     forbidden = ("Repo(", "RepoFile(", "RepoChunk(", "ConversationRepo(", "ConversationContext(")
-    for path in app_root.rglob("*.py"):
+    for path in APP_ROOT.rglob("*.py"):
         if path.name in {"identity_authority.py", "models.py"}:
             continue
         text = path.read_text(encoding="utf-8")

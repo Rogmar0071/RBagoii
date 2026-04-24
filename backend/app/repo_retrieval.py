@@ -361,16 +361,20 @@ def retrieve_relevant_chunks(
     for chunk in all_chunks:
         if not isinstance(chunk, RepoChunk):
             raise RuntimeError("INVALID_CHUNK_SHAPE")
-        if not str(getattr(chunk, "file_id", "") or "").strip():
+        if getattr(chunk, "file_id", None) is None:
             raise RuntimeError("INVALID_CHUNK_SHAPE")
         if not str(getattr(chunk, "file_path", "") or "").strip():
             raise RuntimeError("INVALID_CHUNK_SHAPE")
 
     file_ids = {chunk.file_id for chunk in all_chunks if getattr(chunk, "file_id", None)}
-    resolved_files = {
-        rf.id: rf
-        for rf in db.exec(select(RepoFile).where(RepoFile.id.in_(file_ids))).all()  # type: ignore[attr-defined]
-    }
+    resolved_files = {}
+    if file_ids:
+        resolved_files = {
+            rf.id: rf
+            for rf in db.exec(
+                select(RepoFile).where(RepoFile.id.in_(file_ids))  # type: ignore[attr-defined]
+            ).all()
+        }
     for chunk in all_chunks:
         source_file = resolved_files.get(chunk.file_id)
         if source_file is None:
