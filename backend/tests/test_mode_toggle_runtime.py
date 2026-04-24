@@ -21,16 +21,19 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_mode_toggle")
 
 from backend.app.main import app
-from backend.tests.test_utils import _chat_payload
+from backend.app.models import CodeSymbol, EntryPoint, IngestJob, RepoChunk, RepoFile
+from backend.tests.test_utils import _chat_payload as _base_chat_payload
 
 TOKEN = "test-secret-key"
 
@@ -61,6 +64,18 @@ def _set_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(m, "API_KEY", TOKEN)
 
 
+@pytest.fixture(autouse=True)
+def _stub_chat_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    import backend.app.chat_routes as cr
+
+    monkeypatch.setattr(
+        cr,
+        "_call_openai_chat",
+        lambda *args, **kwargs: "Stub response for mode toggle tests.",
+    )
+
+
 @pytest.fixture()
 def client() -> TestClient:
     """Create test client."""
@@ -70,6 +85,66 @@ def client() -> TestClient:
 def _auth() -> dict[str, str]:
     """Return auth header."""
     return {"Authorization": f"Bearer {TOKEN}"}
+
+
+def _seed_ingest_context(conversation_id: str) -> str:
+    import backend.app.database as db_module
+
+    job_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    with Session(db_module.get_engine()) as db:
+        db.add(
+            IngestJob(
+                id=job_id,
+                kind="repo",
+                source="https://github.com/acme/context-spine@main",
+                branch="main",
+                status="success",
+                conversation_id=conversation_id,
+                file_count=1,
+                chunk_count=1,
+            )
+        )
+        db.add(
+            RepoFile(
+                id=file_id,
+                repo_id=job_id,
+                path="app.py",
+                language="python",
+                size_bytes=100,
+            )
+        )
+        db.add(
+            CodeSymbol(
+                file_id=file_id,
+                name="main",
+                symbol_type="function",
+                start_line=1,
+                end_line=3,
+            )
+        )
+        db.add(EntryPoint(file_id=file_id, entry_type="main", line=1))
+        db.add(
+            RepoChunk(
+                ingest_job_id=job_id,
+                file_id=file_id,
+                file_path="app.py",
+                content="def main():\n    return 'ok'\n",
+                chunk_index=0,
+                token_estimate=6,
+            )
+        )
+        db.commit()
+    return str(job_id)
+
+
+def _chat_payload(message: str = "test", **overrides) -> dict:
+    cid = overrides.get("conversation_id") or str(uuid.uuid4())
+    _seed_ingest_context(cid)
+    overrides["conversation_id"] = cid
+    overrides.setdefault("alignment_confirmed", True)
+    os.environ.setdefault("OPENAI_API_KEY", "sk-fake")
+    return _base_chat_payload(message, **overrides)
 
 
 # ===========================================================================
@@ -236,19 +311,13 @@ class TestPhase3ValidationToggle:
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ):
         """Normal mode should NOT run validation, even for free text AI output."""
-        # Mock OpenAI to return free text
-        mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(message=MagicMock(content="Here's my free text response"))
-        ]
+        import backend.app.chat_routes as cr
 
-        with patch("backend.app.chat_routes.httpx.post") as mock_post:
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                json=lambda: {
-                    "choices": [{"message": {"content": "Here's my free text response"}}]
-                },
-            )
+        with patch.object(
+            cr,
+            "_call_openai_chat",
+            return_value="Here's my free text response",
+        ):
 
             monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
 
@@ -370,11 +439,9 @@ class TestPhase4GovernanceToggle:
             }
         )
 
-        with patch("backend.app.chat_routes.httpx.post") as mock_post:
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                json=lambda: {"choices": [{"message": {"content": valid_response}}]},
-            )
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value=valid_response):
 
             monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
 
@@ -410,11 +477,9 @@ class TestPhase5OutputDifference:
         # Mock OpenAI to return same response for both
         ai_response = "Here's my pricing strategy idea..."
 
-        with patch("backend.app.chat_routes.httpx.post") as mock_post:
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                json=lambda: {"choices": [{"message": {"content": ai_response}}]},
-            )
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value=ai_response):
 
             monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
 
@@ -598,12 +663,9 @@ class TestPhase7HardInvariants:
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ):
         """Normal mode should have NO enforcement (no validation, no contract)."""
-        with patch("backend.app.chat_routes.httpx.post") as mock_post:
-            # Return free text that would fail in strict mode
-            mock_post.return_value = MagicMock(
-                status_code=200,
-                json=lambda: {"choices": [{"message": {"content": "free text only"}}]},
-            )
+        import backend.app.chat_routes as cr
+
+        with patch.object(cr, "_call_openai_chat", return_value="free text only"):
 
             monkeypatch.setenv("OPENAI_API_KEY", "fake-key")
 
