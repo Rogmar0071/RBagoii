@@ -733,6 +733,105 @@ class TestChunkFileIdLineage:
         assert all(chunk.file_id is not None for chunk in retrieval)
 
 
+class TestChunkFileIdentityIntegrity:
+    def test_assert_chunk_file_integrity_passes_for_persisted_file_identity(self):
+        from types import SimpleNamespace
+
+        from backend.app.ingest_pipeline import _assert_chunk_file_integrity
+
+        file_id = uuid.uuid4()
+        repo_file = SimpleNamespace(id=file_id)
+        chunk = SimpleNamespace(file_id=file_id, file_path="src/main.py")
+
+        _assert_chunk_file_integrity(repo_file, chunk)
+
+    @pytest.mark.parametrize(
+        ("repo_file", "chunk", "error"),
+        [
+            (
+                None,
+                type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
+                "INTEGRITY_FAIL:NO_REPO_FILE",
+            ),
+            (
+                type("RepoFile", (), {"id": None})(),
+                type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
+                "INTEGRITY_FAIL:UNPERSISTED_FILE",
+            ),
+            (
+                type("RepoFile", (), {"id": uuid.uuid4()})(),
+                type("Chunk", (), {"file_id": uuid.uuid4(), "file_path": "a.py"})(),
+                "INTEGRITY_FAIL:FILE_ID_MISMATCH",
+            ),
+        ],
+    )
+    def test_assert_chunk_file_integrity_fails_on_identity_violations(
+        self, repo_file, chunk, error
+    ):
+        from backend.app.ingest_pipeline import _assert_chunk_file_integrity
+
+        with pytest.raises(RuntimeError, match=error):
+            _assert_chunk_file_integrity(repo_file, chunk)
+
+    def test_assert_chunk_file_integrity_fails_on_empty_path(self):
+        from types import SimpleNamespace
+
+        from backend.app.ingest_pipeline import _assert_chunk_file_integrity
+
+        file_id = uuid.uuid4()
+        repo_file = SimpleNamespace(id=file_id)
+        chunk = SimpleNamespace(file_id=file_id, file_path="   ")
+
+        with pytest.raises(RuntimeError, match="INTEGRITY_FAIL:EMPTY_FILE_PATH"):
+            _assert_chunk_file_integrity(repo_file, chunk)
+
+    @pytest.mark.parametrize(
+        ("worker_fn_name", "job"),
+        [
+            (
+                "_ingest_file",
+                type(
+                    "Job",
+                    (),
+                    {
+                        "id": uuid.uuid4(),
+                        "source": "sample.py",
+                    },
+                )(),
+            ),
+            (
+                "_ingest_url",
+                type(
+                    "Job",
+                    (),
+                    {
+                        "id": uuid.uuid4(),
+                        "source": "https://example.com",
+                    },
+                )(),
+            ),
+            (
+                "_ingest_repo",
+                type(
+                    "Job",
+                    (),
+                    {
+                        "id": uuid.uuid4(),
+                        "source": "https://github.com/o/r",
+                    },
+                )(),
+            ),
+        ],
+    )
+    def test_ingest_workers_require_active_session(self, worker_fn_name, job):
+        import backend.app.ingest_pipeline as p
+
+        worker_fn = getattr(p, worker_fn_name)
+
+        with pytest.raises(RuntimeError, match="SESSION_NOT_AVAILABLE"):
+            worker_fn(None, job)
+
+
 # ---------------------------------------------------------------------------
 # Invariant enforcement regression tests
 # ---------------------------------------------------------------------------

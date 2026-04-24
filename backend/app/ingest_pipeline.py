@@ -859,6 +859,23 @@ def _assert_chunk_write_integrity(chunk: Any) -> None:
         raise RuntimeError("INVALID_CHUNK_WRITE")
 
 
+def _assert_chunk_file_integrity(repo_file: Any, chunk: Any) -> None:
+    if repo_file is None:
+        raise RuntimeError("INTEGRITY_FAIL:NO_REPO_FILE")
+
+    if not getattr(repo_file, "id", None):
+        raise RuntimeError("INTEGRITY_FAIL:UNPERSISTED_FILE")
+
+    if getattr(chunk, "file_id", None) != repo_file.id:
+        raise RuntimeError("INTEGRITY_FAIL:FILE_ID_MISMATCH")
+
+    if not str(getattr(chunk, "file_id", "") or "").strip():
+        raise RuntimeError("INTEGRITY_FAIL:EMPTY_FILE_ID")
+
+    if not str(getattr(chunk, "file_path", "") or "").strip():
+        raise RuntimeError("INTEGRITY_FAIL:EMPTY_FILE_PATH")
+
+
 def _assert_post_ingest_chunk_integrity(session: Any, ingest_job_id: uuid.UUID) -> None:
     from sqlmodel import select
 
@@ -911,6 +928,9 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     )
     from backend.app.repo_chunk_extractor import extract_structure
 
+    if session is None:
+        raise RuntimeError("SESSION_NOT_AVAILABLE")
+
     logger.info("INGEST_START job_id=%s kind=file", job.id)
 
     # MQP-CONTRACT: DB-BACKED INGESTION - Blob must exist
@@ -959,6 +979,8 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     )
     session.add(repo_file)
     session.flush()  # materialise id before FK children
+    if not getattr(repo_file, "id", None):
+        raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
 
     # PHASE 2 — Symbol extraction
     symbols_map: dict[str, Any] = {}  # name → CodeSymbol
@@ -1025,9 +1047,16 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
             start_line=structure["start_line"],
             end_line=structure["end_line"],
         )
-        _assert_chunk_write_integrity(chunk)
+        if repo_file is None:
+            raise RuntimeError("REPO_FILE_NOT_FOUND_AT_LOOP")
+        if not getattr(repo_file, "id", None):
+            raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
+        if chunk.file_id != repo_file.id:
+            raise RuntimeError("CHUNK_FILE_ID_MISMATCH")
         if not str(chunk.file_path or "").strip():
-            raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
+            raise RuntimeError("INVALID_CHUNK_PATH")
+        _assert_chunk_write_integrity(chunk)
+        _assert_chunk_file_integrity(repo_file, chunk)
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
             chunk.file_id,
@@ -1056,6 +1085,9 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     from backend.app.graph_extractor import hash_content
     from backend.app.models import RepoChunk, RepoFile
     from backend.app.repo_chunk_extractor import extract_structure
+
+    if session is None:
+        raise RuntimeError("SESSION_NOT_AVAILABLE")
 
     url = job.source
     logger.info("INGEST_START job_id=%s kind=url source=%s", job.id, url)
@@ -1101,6 +1133,8 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     )
     session.add(repo_file)
     session.flush()
+    if not getattr(repo_file, "id", None):
+        raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
     file_id = str(repo_file.id or "").strip()
     file_path = str(repo_file.path or "").strip()
     if not file_id or not file_path:
@@ -1124,9 +1158,16 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
             start_line=structure["start_line"],
             end_line=structure["end_line"],
         )
-        _assert_chunk_write_integrity(chunk)
+        if repo_file is None:
+            raise RuntimeError("REPO_FILE_NOT_FOUND_AT_LOOP")
+        if not getattr(repo_file, "id", None):
+            raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
+        if chunk.file_id != repo_file.id:
+            raise RuntimeError("CHUNK_FILE_ID_MISMATCH")
         if not str(chunk.file_path or "").strip():
-            raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
+            raise RuntimeError("INVALID_CHUNK_PATH")
+        _assert_chunk_write_integrity(chunk)
+        _assert_chunk_file_integrity(repo_file, chunk)
         logger.info(
             "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
             chunk.file_id,
@@ -1183,6 +1224,9 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         SymbolCallEdge,
     )
     from backend.app.repo_chunk_extractor import extract_structure
+
+    if session is None:
+        raise RuntimeError("SESSION_NOT_AVAILABLE")
 
     logger.info("INGEST_START job_id=%s kind=repo", job.id)
     print(f"INGEST START: {job.id}")
@@ -1245,14 +1289,14 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             content_hash=hash_content(content_bytes),
         )
         session.add(repo_file)
+        session.flush()
+        if not getattr(repo_file, "id", None):
+            raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
 
         repo_files_by_path[file_path] = repo_file
         raw_imports_by_path[file_path] = graph["imports"]
         entry_points_by_path[file_path] = graph.get("entry_points", [])
         file_contents_by_path[file_path] = content
-
-    # Flush all RepoFile rows so their IDs are valid before CodeSymbol FKs.
-    session.flush()
 
     # -----------------------------------------------------------------------
     # PHASE 2 — Symbol extraction.
@@ -1417,6 +1461,8 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
             repo_file = repo_files_by_path.get(file_path)
             if repo_file is None:
                 raise RuntimeError("REPO_FILE_NOT_FOUND_AT_LOOP")
+            if not getattr(repo_file, "id", None):
+                raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
             file_id = str(getattr(repo_file, "id", "") or "").strip()
             persisted_file_path = str(getattr(repo_file, "path", "") or "").strip()
             if not file_id or not persisted_file_path:
@@ -1441,9 +1487,12 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 start_line=structure["start_line"],
                 end_line=structure["end_line"],
             )
-            _assert_chunk_write_integrity(chunk)
+            if chunk.file_id != repo_file.id:
+                raise RuntimeError("CHUNK_FILE_ID_MISMATCH")
             if not str(chunk.file_path or "").strip():
-                raise RuntimeError("INVALID_CHUNK_BEFORE_PERSIST")
+                raise RuntimeError("INVALID_CHUNK_PATH")
+            _assert_chunk_write_integrity(chunk)
+            _assert_chunk_file_integrity(repo_file, chunk)
             logger.info(
                 "INGEST_CHUNK: file_id=%s file_path=%s chunk_index=%s",
                 chunk.file_id,
