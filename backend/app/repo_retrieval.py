@@ -361,7 +361,9 @@ def retrieve_relevant_chunks(
     for chunk in all_chunks:
         if not isinstance(chunk, RepoChunk):
             raise RuntimeError("INVALID_CHUNK_SHAPE")
-        if getattr(chunk, "file_id", None) is None:
+        if not str(getattr(chunk, "file_id", "") or "").strip():
+            raise RuntimeError("INVALID_CHUNK_SHAPE")
+        if not str(getattr(chunk, "file_path", "") or "").strip():
             raise RuntimeError("INVALID_CHUNK_SHAPE")
 
     if not keywords:

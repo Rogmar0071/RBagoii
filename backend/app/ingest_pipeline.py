@@ -72,6 +72,8 @@ import zipfile
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import inspect as sa_inspect
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -861,22 +863,41 @@ def _assert_chunk_write_integrity(chunk: Any) -> None:
 
 def _assert_chunk_file_integrity(repo_file: Any, chunk: Any) -> None:
     if repo_file is None:
-        raise RuntimeError("INTEGRITY_FAIL:NO_REPO_FILE")
+        raise RuntimeError("INVALID_REPO_FILE_IDENTITY")
 
     if not getattr(repo_file, "id", None):
-        raise RuntimeError("INTEGRITY_FAIL:UNPERSISTED_FILE")
+        raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
 
     if getattr(chunk, "file_id", None) != repo_file.id:
-        raise RuntimeError("INTEGRITY_FAIL:FILE_ID_MISMATCH")
+        raise RuntimeError("CHUNK_FILE_ID_MISMATCH")
 
     if not str(getattr(chunk, "file_id", "") or "").strip():
-        raise RuntimeError("INTEGRITY_FAIL:EMPTY_FILE_ID")
+        raise RuntimeError("INVALID_CHUNK_IDENTITY")
 
     if not str(getattr(chunk, "file_path", "") or "").strip():
-        raise RuntimeError("INTEGRITY_FAIL:EMPTY_FILE_PATH")
+        raise RuntimeError("INVALID_CHUNK_SHAPE")
+
+    if str(getattr(chunk, "file_path", "") or "") != str(getattr(repo_file, "path", "") or ""):
+        raise RuntimeError("CHUNK_FILE_PATH_MISMATCH")
 
 
-def _assert_post_ingest_chunk_integrity(session: Any, ingest_job_id: uuid.UUID) -> None:
+def _assert_repo_file_persisted(repo_file: Any) -> None:
+    if repo_file is None:
+        raise RuntimeError("INVALID_REPO_FILE_IDENTITY")
+    try:
+        if not bool(sa_inspect(repo_file).persistent):
+            raise RuntimeError("INGESTION_ORDER_VIOLATION")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("INGESTION_ORDER_VIOLATION") from exc
+    if not getattr(repo_file, "id", None):
+        raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
+
+
+def _assert_post_ingest_chunk_integrity(
+    session: Any, ingest_job_id: uuid.UUID, repo_identity_id: uuid.UUID
+) -> None:
     from sqlmodel import select
 
     from backend.app.models import RepoChunk, RepoFile
@@ -890,11 +911,21 @@ def _assert_post_ingest_chunk_integrity(session: Any, ingest_job_id: uuid.UUID) 
     if not ingested_chunks:
         return
 
-    repo_file_ids = set(
-        session.exec(select(RepoFile.id).where(RepoFile.repo_id == ingest_job_id)).all()
-    )
+    repo_file_ids = set(session.exec(select(RepoFile.id).where(RepoFile.repo_id == repo_identity_id)).all())
     if any(chunk.file_id not in repo_file_ids for chunk in ingested_chunks):
         raise RuntimeError("INGEST_CORRUPTED")
+
+
+def _resolve_repo_identity_id(session: Any, job: Any) -> uuid.UUID:
+    from backend.app.models import Repo
+
+    repo_id = getattr(job, "repo_id", None)
+    if repo_id is None:
+        raise RuntimeError("INVALID_REPO_IDENTITY")
+    repo = session.get(Repo, repo_id)
+    if repo is None:
+        raise RuntimeError("INVALID_REPO_IDENTITY")
+    return repo.id
 
 
 def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
@@ -979,8 +1010,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
     )
     session.add(repo_file)
     session.flush()  # materialise id before FK children
-    if not getattr(repo_file, "id", None):
-        raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
+    _assert_repo_file_persisted(repo_file)
 
     # PHASE 2 — Symbol extraction
     symbols_map: dict[str, Any] = {}  # name → CodeSymbol
@@ -1065,7 +1095,7 @@ def _ingest_file(session: Any, job: Any) -> tuple[int, int]:
         )
         session.add(chunk)
 
-    _assert_post_ingest_chunk_integrity(session, job.id)
+    _assert_post_ingest_chunk_integrity(session, job.id, job.id)
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s chunks=%d", job.id, len(chunks))
@@ -1133,8 +1163,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
     )
     session.add(repo_file)
     session.flush()
-    if not getattr(repo_file, "id", None):
-        raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
+    _assert_repo_file_persisted(repo_file)
     file_id = str(repo_file.id or "").strip()
     file_path = str(repo_file.path or "").strip()
     if not file_id or not file_path:
@@ -1176,7 +1205,7 @@ def _ingest_url(session: Any, job: Any) -> tuple[int, int]:
         )
         session.add(chunk)
 
-    _assert_post_ingest_chunk_integrity(session, job.id)
+    _assert_post_ingest_chunk_integrity(session, job.id, job.id)
     # Commit chunks to database
     session.commit()
 
@@ -1271,6 +1300,8 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     file_contents_by_path: dict[str, str] = {}        # path → text content
     symbols_by_path: dict[str, list[tuple]] = {}      # path → [(name, sym_type, line, CodeSymbol)]
 
+    repo_identity_id = _resolve_repo_identity_id(session, job)
+
     for file_entry in files:
         file_path = file_entry["path"]
         content = file_entry["content"]
@@ -1282,7 +1313,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         graph = extract_graph(file_path, content_bytes)
 
         repo_file = RepoFile(
-            repo_id=job.id,
+            repo_id=repo_identity_id,
             path=file_path,
             language=graph["language"],
             size_bytes=len(content_bytes),
@@ -1290,8 +1321,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
         )
         session.add(repo_file)
         session.flush()
-        if not getattr(repo_file, "id", None):
-            raise RuntimeError("REPO_FILE_ID_NOT_ASSIGNED")
+        _assert_repo_file_persisted(repo_file)
 
         repo_files_by_path[file_path] = repo_file
         raw_imports_by_path[file_path] = graph["imports"]
@@ -1474,6 +1504,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
                 idx,
             )
             chunk = RepoChunk(
+                repo_id=repo_identity_id,
                 ingest_job_id=job.id,
                 file_id=repo_file.id,
                 file_path=persisted_file_path,
@@ -1558,7 +1589,7 @@ def _ingest_repo(session: Any, job: Any) -> tuple[int, int]:
     job.chunk_variance_delta_pct = variance_delta_pct
     session.add(job)
 
-    _assert_post_ingest_chunk_integrity(session, job.id)
+    _assert_post_ingest_chunk_integrity(session, job.id, repo_identity_id)
     session.commit()
 
     logger.info("INGEST_SUCCESS job_id=%s files=%d chunks=%d", job.id, file_count, chunk_count)

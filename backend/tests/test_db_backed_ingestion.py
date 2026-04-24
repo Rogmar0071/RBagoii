@@ -168,7 +168,7 @@ class TestBlobStorage:
         from sqlmodel import Session, select
 
         from backend.app.database import get_engine
-        from backend.app.models import IngestJob, RepoChunk
+        from backend.app.models import IngestJob, Repo, RepoChunk
 
         # Create deterministic repo manifest (simulates API fetch)
         manifest = {
@@ -204,6 +204,18 @@ class TestBlobStorage:
         job.blob_size_bytes = len(job.blob_data)
 
         with Session(get_engine()) as session:
+            repo = Repo(
+                id=uuid.uuid4(),
+                repo_url=manifest["repo_url"],
+                owner=manifest["owner"],
+                name=manifest["name"],
+                branch=manifest["branch"],
+                ingestion_status="pending",
+            )
+            session.add(repo)
+            session.commit()
+            session.refresh(repo)
+            job.repo_id = repo.id
             session.add(job)
             session.commit()
             job_id = str(job.id)
@@ -250,6 +262,14 @@ class TestBlobStorage:
         job2.blob_size_bytes = len(job2.blob_data)
 
         with Session(get_engine()) as session:
+            existing_repo = session.exec(
+                select(Repo).where(
+                    Repo.repo_url == manifest["repo_url"],
+                    Repo.branch == manifest["branch"],
+                )
+            ).first()
+            assert existing_repo is not None
+            job2.repo_id = existing_repo.id
             session.add(job2)
             session.commit()
             job2_id = str(job2.id)
@@ -271,7 +291,7 @@ class TestBlobStorage:
         from sqlmodel import Session, select
 
         from backend.app.database import get_engine
-        from backend.app.models import IngestJob
+        from backend.app.models import IngestJob, Repo
 
         baseline_manifest = {
             "repo_url": "https://github.com/test/variance-repo",
@@ -308,6 +328,25 @@ class TestBlobStorage:
                 blob_size_bytes=len(json.dumps(manifest).encode("utf-8")),
             )
             with Session(get_engine()) as session:
+                repo = session.exec(
+                    select(Repo).where(
+                        Repo.repo_url == manifest["repo_url"],
+                        Repo.branch == manifest["branch"],
+                    )
+                ).first()
+                if repo is None:
+                    repo = Repo(
+                        id=uuid.uuid4(),
+                        repo_url=manifest["repo_url"],
+                        owner=manifest["owner"],
+                        name=manifest["name"],
+                        branch=manifest["branch"],
+                        ingestion_status="pending",
+                    )
+                    session.add(repo)
+                    session.commit()
+                    session.refresh(repo)
+                job.repo_id = repo.id
                 session.add(job)
                 session.commit()
                 job_id = job.id

@@ -643,7 +643,7 @@ class TestDeleteIngestJob:
         """
         import uuid as _uuid
 
-        from sqlmodel import Session
+        from sqlmodel import Session, select
 
         from backend.app.database import get_engine
         from backend.app.models import IngestJob, RepoChunk
@@ -1515,7 +1515,7 @@ class TestDeterministicStateLayer:
         from sqlmodel import Session
 
         from backend.app.database import get_engine
-        from backend.app.models import IngestJob
+        from backend.app.models import IngestJob, Repo
 
         job = IngestJob(
             id=uuid.uuid4(),
@@ -1527,6 +1527,25 @@ class TestDeterministicStateLayer:
             conversation_id=conversation_id,
         )
         with Session(get_engine()) as s:
+            repo = s.exec(
+                select(Repo).where(
+                    Repo.repo_url == "https://github.com/example/repo",
+                    Repo.branch == "main",
+                )
+            ).first()
+            if repo is None:
+                repo = Repo(
+                    repo_url="https://github.com/example/repo",
+                    owner="example",
+                    name="repo",
+                    branch="main",
+                    ingestion_status="pending",
+                    conversation_id=conversation_id,
+                )
+                s.add(repo)
+                s.commit()
+                s.refresh(repo)
+            job.repo_id = repo.id
             s.add(job)
             s.commit()
             s.refresh(job)

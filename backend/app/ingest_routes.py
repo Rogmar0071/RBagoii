@@ -311,6 +311,7 @@ class IngestRepoRequest(BaseModel):
     conversation_id: Optional[str] = None
     workspace_id: Optional[str] = None
     force_refresh: bool = False
+    repo_id: Optional[str] = None
 
 
 @router.post("/repo", status_code=202, dependencies=[Depends(require_auth)])
@@ -333,7 +334,7 @@ def ingest_repo(
 
     from sqlmodel import select
 
-    from backend.app.models import IngestJob
+    from backend.app.models import IngestJob, Repo
 
     # Require github.com as a proper domain — reject substrings like notgithub.com
     if not re.search(r"(?<![a-zA-Z0-9])github\.com/[^/]+/[^/]+", body.repo_url):
@@ -341,6 +342,38 @@ def ingest_repo(
             status_code=400,
             detail="Invalid GitHub repository URL. Expected https://github.com/owner/repo",
         )
+
+    match = re.search(r"github\.com/([^/]+)/([^/@]+)", body.repo_url)
+    if not match:
+        raise HTTPException(status_code=400, detail=f"Invalid GitHub URL: {body.repo_url}")
+    owner, repo_name = match.groups()
+    if repo_name.endswith(".git"):
+        repo_name = repo_name[:-4]
+
+    if body.repo_id is not None:
+        try:
+            repo_uuid = uuid.UUID(body.repo_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid repo_id: must be a UUID") from exc
+        repo = session.get(Repo, repo_uuid)
+        if repo is None:
+            raise HTTPException(status_code=404, detail="INVALID_REPO_IDENTITY")
+    else:
+        repo = session.exec(
+            select(Repo).where(Repo.repo_url == body.repo_url, Repo.branch == body.branch)
+        ).first()
+        if repo is None:
+            repo = Repo(
+                repo_url=body.repo_url,
+                owner=owner,
+                name=repo_name,
+                branch=body.branch,
+                conversation_id=body.conversation_id,
+                ingestion_status="pending",
+            )
+            session.add(repo)
+            session.commit()
+            session.refresh(repo)
 
     source_key = f"{body.repo_url}@{body.branch}"
 
@@ -373,6 +406,7 @@ def ingest_repo(
         status="created",
         conversation_id=body.conversation_id,
         workspace_id=body.workspace_id,
+        repo_id=repo.id,
     )
     session.add(job)
     session.commit()
@@ -392,15 +426,6 @@ def ingest_repo(
             _fetch_raw_file,
             transition,
         )
-
-        # Parse repo URL
-        match = re.search(r"github\.com/([^/]+)/([^/@]+)", body.repo_url)
-        if not match:
-            raise ValueError(f"Invalid GitHub URL: {body.repo_url}")
-
-        owner, repo_name = match.groups()
-        if repo_name.endswith(".git"):
-            repo_name = repo_name[:-4]
 
         token = os.environ.get("GITHUB_TOKEN", "").strip() or None
 

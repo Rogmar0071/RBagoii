@@ -1089,6 +1089,7 @@ def retry_repo_ingestion(
         conversation_id=repo.conversation_id or "",
         workspace_id=None,
         force_refresh=True,
+        repo_id=str(repo.id),
     )
 
     try:
@@ -1347,7 +1348,8 @@ def add_repo(
             branch=branch,
             conversation_id=req.conversation_id,
             workspace_id=None,
-            force_refresh=False
+            force_refresh=False,
+            repo_id=repo_id_str,
         )
 
         try:

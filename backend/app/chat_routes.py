@@ -819,6 +819,8 @@ def _conversation_repo_ids(db: Session | None, conversation_id: str) -> list[uui
         return []
     if ctx.repo_id is None:
         return []
+    if db.get(Repo, ctx.repo_id) is None:
+        raise RuntimeError("INVALID_CONTEXT_REPO")
     return [ctx.repo_id]
 
 
@@ -1500,7 +1502,32 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                 )
             elif db is not None:
                 _ensure_conversation_context(db, active_conversation_id)
-            conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
+            try:
+                conversation_repo_ids = _conversation_repo_ids(db, active_conversation_id)
+            except RuntimeError as exc:
+                if str(exc) == "INVALID_CONTEXT_REPO":
+                    assistant_message = _persist_message(
+                        db,
+                        "assistant",
+                        "INVALID_CONTEXT_REPO",
+                        context,
+                        conversation_id=active_conversation_id,
+                    )
+                    return _json_response(
+                        ChatPostResponse(
+                            conversation_id=active_conversation_id,
+                            reply="INVALID_CONTEXT_REPO",
+                            error_code="INVALID_CONTEXT_REPO",
+                            retrieved_count=0,
+                            repo_count=0,
+                            total_chunks=0,
+                            retrieved_chunks=0,
+                            tools_available=_TOOLS_AVAILABLE,
+                            user_message=user_message,
+                            assistant_message=assistant_message,
+                        )
+                    )
+                raise
             has_explicit_repo_context = bool(conversation_repo_ids)
             repo_count = len(conversation_repo_ids)
             if conversation_repo_ids and db is not None:
