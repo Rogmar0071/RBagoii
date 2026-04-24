@@ -641,6 +641,8 @@ class TestChatEndpointModeEngine:
             json=_chat_payload("Hello", modes="strict_mode"),
             headers=_auth(),
         )
+        # Session-authority path now tolerates malformed legacy `modes` input and
+        # derives effective mode solely from `agent_mode`.
         assert resp.status_code == 200
 
 
