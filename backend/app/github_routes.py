@@ -708,6 +708,7 @@ async def add_github_repo(
         synthetic_repo = create_repo(
             session=session,
             repo_id=github_file.id,
+            _internal_explicit_id=True,
             repo_url=f"github:{repo.repo_url}",
             owner=owner,
             name=repo_name,

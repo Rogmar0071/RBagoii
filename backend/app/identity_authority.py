@@ -50,6 +50,7 @@ def create_repo(
     *,
     session: Session,
     repo_id: Any | None = None,
+    _internal_explicit_id: bool = False,
     repo_url: str,
     owner: str,
     name: str,
@@ -59,6 +60,8 @@ def create_repo(
     total_files: int = 0,
     total_chunks: int = 0,
 ) -> Repo:
+    if repo_id is not None and not _internal_explicit_id:
+        raise RuntimeError("IDENTITY_FORGERY")
     with _authority_scope():
         repo = Repo(
             id=repo_id,
@@ -126,9 +129,12 @@ def create_repo_chunk(
 ) -> RepoChunk:
     if repo_file is None or not repo_file.id:
         raise RuntimeError("IDENTITY_FORGERY")
+    effective_repo_id = repo_id if repo_id is not None else getattr(repo_file, "repo_id", None)
+    if repo_id is not None and getattr(repo_file, "repo_id", None) not in (None, repo_id):
+        raise RuntimeError("IDENTITY_FORGERY")
     with _authority_scope():
         chunk = RepoChunk(
-            repo_id=repo_id,
+            repo_id=effective_repo_id,
             ingest_job_id=ingest_job_id,
             chat_file_id=chat_file_id,
             file_id=repo_file.id,

@@ -1500,10 +1500,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
                     )
                 ).first()
                 if existing is None:
+                    selected_repo = db.get(Repo, selected_repo_uuid)
+                    if selected_repo is None:
+                        return _error(
+                            404,
+                            "repo_not_found",
+                            "Requested repo binding target not found.",
+                        )
                     bind_conversation_repo(
                         session=db,
                         conversation_id=active_conversation_id,
-                        repo=db.get(Repo, selected_repo_uuid),
+                        repo=selected_repo,
                     )
                 db.commit()
                 _ensure_conversation_context(
