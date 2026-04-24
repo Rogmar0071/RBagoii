@@ -1360,21 +1360,10 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
     try:
         try:
             request = ChatPostRequest.model_validate(body or {})
-        except ValidationError as exc:
-            if any(error["loc"] == ("message",) for error in exc.errors()):
-                return _error(400, "invalid_request", "message is required and must not be empty.")
-            if any(error["loc"] == ("conversation_id",) for error in exc.errors()):
-                return _error(
-                    400,
-                    "invalid_request",
-                    "conversation_id is required. Call POST /api/chat/conversation/new "
-                    "to obtain one before sending messages.",
-                )
-            return _error(
-                422,
-                "invalid_request",
-                "Request body failed validation.",
-                {"errors": exc.errors()},
+        except ValidationError:
+            return JSONResponse(
+                status_code=200,
+                content={"error": "FINALIZE_BLOCKED", "details": "INVALID_REQUEST"},
             )
 
         message = request.message
@@ -1391,16 +1380,6 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
 
         try:
             active_conversation_id = request.conversation_id
-            _ensure_conversation(db, active_conversation_id)
-
-            user_message = _persist_message(
-                db,
-                "user",
-                message,
-                context,
-                conversation_id=active_conversation_id,
-            )
-            history = _load_recent_history(db, conversation_id=active_conversation_id)
 
             session_result = ensure_active_context_session(
                 db=db,
@@ -1431,6 +1410,17 @@ async def chat(http_request: FastAPIRequest, body: dict[str, Any]) -> JSONRespon
             active_session = session_result.session
             if active_session is None:
                 raise RuntimeError("SESSION_REQUIRED")
+
+            _ensure_conversation(db, active_conversation_id)
+
+            user_message = _persist_message(
+                db,
+                "user",
+                message,
+                context,
+                conversation_id=active_conversation_id,
+            )
+            history = _load_recent_history(db, conversation_id=active_conversation_id)
 
             execution_input = active_session.final_context
             if (

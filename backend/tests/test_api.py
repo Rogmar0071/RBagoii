@@ -13,6 +13,7 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 from backend.tests.test_utils import _chat_payload
 
@@ -21,6 +22,7 @@ os.environ.setdefault("BACKEND_DISABLE_JOBS", "1")
 os.environ.setdefault("DATA_DIR", "/tmp/ui_blueprint_test_data")
 
 from backend.app.main import app  # noqa: E402  (import after env setup)
+from backend.app.models import CodeSymbol, EntryPoint, IngestJob, RepoChunk, RepoFile  # noqa: E402
 
 TOKEN = "test-secret-key"
 
@@ -85,6 +87,65 @@ def _upload(client: TestClient, token: str = TOKEN, meta: str = "") -> dict:
         headers={"Authorization": f"Bearer {token}"},
     )
     return response
+
+
+def _seed_ingest_context(conversation_id: str) -> str:
+    import backend.app.database as db_module
+
+    job_id = uuid.uuid4()
+    file_id = uuid.uuid4()
+    with Session(db_module.get_engine()) as db:
+        db.add(
+            IngestJob(
+                id=job_id,
+                kind="repo",
+                source="https://github.com/acme/context-spine@main",
+                branch="main",
+                status="success",
+                conversation_id=conversation_id,
+                file_count=1,
+                chunk_count=1,
+            )
+        )
+        db.add(
+            RepoFile(
+                id=file_id,
+                repo_id=job_id,
+                path="app.py",
+                language="python",
+                size_bytes=100,
+            )
+        )
+        db.add(
+            CodeSymbol(
+                file_id=file_id,
+                name="main",
+                symbol_type="function",
+                start_line=1,
+                end_line=3,
+            )
+        )
+        db.add(EntryPoint(file_id=file_id, entry_type="main", line=1))
+        db.add(
+            RepoChunk(
+                ingest_job_id=job_id,
+                file_id=file_id,
+                file_path="app.py",
+                content="def main():\n    return 'ok'\n",
+                chunk_index=0,
+                token_estimate=6,
+            )
+        )
+        db.commit()
+    return str(job_id)
+
+
+def _chat_payload_with_session(message: str = "test", **overrides) -> dict:
+    conversation_id = overrides.get("conversation_id") or str(uuid.uuid4())
+    _seed_ingest_context(conversation_id)
+    overrides["conversation_id"] = conversation_id
+    overrides.setdefault("alignment_confirmed", True)
+    return _chat_payload(message, **overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -300,42 +361,40 @@ class TestChat:
             json={"context": {}},
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
-        assert response.status_code == 400
-        assert response.json()["error"]["code"] == "invalid_request"
+        assert response.status_code == 200
+        assert response.json()["error"] == "FINALIZE_BLOCKED"
+        assert response.json()["details"] == "INVALID_REQUEST"
 
     def test_chat_stub_reply_when_no_openai_key(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """When OPENAI_API_KEY is absent a deterministic stub reply is returned."""
+        """When OPENAI_API_KEY is absent, chat is authority-blocked."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         response = client.post(
             "/api/chat",
-            json=_chat_payload("What is ui-blueprint?"),
+            json=_chat_payload_with_session("What is ui-blueprint?"),
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert response.status_code == 200
         body = response.json()
-        assert body["schema_version"]
-        assert "Stub" in body["reply"]
-        assert "tools_available" in body
-        assert body["user_message"]["role"] == "user"
-        assert body["assistant_message"]["role"] == "assistant"
-        assert "domains.derive" in body["tools_available"]
+        assert body["error"] == "FINALIZE_BLOCKED"
+        assert body["details"] == "LLM_PROVIDER_UNAVAILABLE"
 
     def test_chat_schema_version_present(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """All successful chat responses include top-level schema_version."""
+        """Without provider key, /api/chat is blocked through the session error surface."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        from ui_blueprint.domain.ir import SCHEMA_VERSION
 
         response = client.post(
             "/api/chat",
-            json=_chat_payload("hello"),
+            json=_chat_payload_with_session("hello"),
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
         assert response.status_code == 200
-        assert response.json()["schema_version"] == SCHEMA_VERSION
+        body = response.json()
+        assert body["error"] == "FINALIZE_BLOCKED"
+        assert body["details"] == "LLM_PROVIDER_UNAVAILABLE"
 
     def test_chat_openai_success(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         """When OPENAI_API_KEY is set and OpenAI responds, reply is returned."""
@@ -355,7 +414,7 @@ class TestChat:
 
             response = client.post(
                 "/api/chat",
-                json=_chat_payload("How does this work?"),
+                json=_chat_payload_with_session("How does this work?"),
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
@@ -383,7 +442,7 @@ class TestChat:
 
             response = client.post(
                 "/api/chat",
-                json=_chat_payload(injected),
+                json=_chat_payload_with_session(injected),
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
@@ -409,30 +468,25 @@ class TestChat:
 
             response = client.post(
                 "/api/chat",
-                json=_chat_payload("hello"),
+                json=_chat_payload_with_session("hello"),
                 headers={"Authorization": f"Bearer {TOKEN}"},
             )
 
-        # API_EXCEPTION_BOUNDARY_LOCK_V1: Now returns 200 with error in reply field
         assert response.status_code == 200
         body = response.json()
-        # The reply field contains a JSON-encoded error
-        import json
-
-        error_data = json.loads(body["reply"])
-        assert error_data["error"] == "SYSTEM_FAILURE"
-        assert error_data["message"] == "AI provider connection failed"
-        assert error_data["type"] == "HTTPError"
+        assert body["error"] == "FINALIZE_BLOCKED"
+        assert body["details"] == "CONTEXT_PIPELINE_FAILURE"
 
     def test_chat_history_returns_persisted_messages(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Provider-unavailable branch persists only the user message."""
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         cid = str(uuid.uuid4())
         post_resp = client.post(
             "/api/chat",
-            json=_chat_payload(
+            json=_chat_payload_with_session(
                 "Persist this",
                 conversation_id=cid,
                 context={"session_id": "sess-1"},
@@ -450,11 +504,9 @@ class TestChat:
         body = history_resp.json()
         assert body["schema_version"]
         assert body["tools_available"]
-        assert len(body["messages"]) == 2
-        # Messages are returned newest-first.
-        assert body["messages"][0]["role"] == "assistant"
-        assert body["messages"][1]["role"] == "user"
-        assert body["messages"][1]["context"]["session_id"] == "sess-1"
+        assert len(body["messages"]) == 1
+        assert body["messages"][0]["role"] == "user"
+        assert body["messages"][0]["context"]["session_id"] == "sess-1"
 
     def test_chat_history_requires_auth(self, client: TestClient) -> None:
         response = client.get("/api/chat")

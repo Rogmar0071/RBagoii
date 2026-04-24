@@ -247,17 +247,93 @@ def test_execution_impossible_without_session(client: TestClient, monkeypatch: p
     assert calls["llm"] == 0
 
 
+def test_no_pre_session_side_effects(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    cid = client.post("/api/chat/conversation/new", headers=_auth()).json()["conversation_id"]
+    _seed_ingest_context(cid)
+
+    import backend.app.chat_routes as cr
+
+    calls = {"persist": 0, "history": 0}
+
+    monkeypatch.setattr(
+        cr,
+        "ensure_active_context_session",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="FINALIZE_BLOCKED",
+            session=None,
+            summary=None,
+            details="NO_INGEST_CONTEXT",
+        ),
+    )
+
+    def _track_persist(*args, **kwargs):
+        calls["persist"] += 1
+        raise AssertionError("_persist_message must not run before session success")
+
+    def _track_history(*args, **kwargs):
+        calls["history"] += 1
+        raise AssertionError("_load_recent_history must not run before session success")
+
+    monkeypatch.setattr(cr, "_persist_message", _track_persist)
+    monkeypatch.setattr(cr, "_load_recent_history", _track_history)
+
+    resp = client.post(
+        "/api/chat",
+        json=_chat_payload("test message", conversation_id=cid, alignment_confirmed=True),
+        headers=_auth(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["error"] == "FINALIZE_BLOCKED"
+    assert body["details"] == "NO_INGEST_CONTEXT"
+    assert calls["persist"] == 0
+    assert calls["history"] == 0
+
+
+def test_only_session_error_surface(client: TestClient):
+    invalid_resp = client.post("/api/chat", json={}, headers=_auth())
+    assert invalid_resp.status_code == 200, invalid_resp.text
+    invalid_body = invalid_resp.json()
+    assert invalid_body["error"] == "FINALIZE_BLOCKED"
+    assert invalid_body["details"] == "INVALID_REQUEST"
+
+    cid = client.post("/api/chat/conversation/new", headers=_auth()).json()["conversation_id"]
+    _seed_ingest_context(cid)
+    alignment_resp = client.post(
+        "/api/chat",
+        json=_chat_payload(
+            "explain app flow",
+            conversation_id=cid,
+            alignment_confirmed=False,
+        ),
+        headers=_auth(),
+    )
+    assert alignment_resp.status_code == 200, alignment_resp.text
+    alignment_body = alignment_resp.json()
+    assert alignment_body["status"] == "ALIGNMENT_REQUIRED"
+
+
 def test_forbidden_patterns_not_present_in_chat_routes():
     root = Path(__file__).resolve().parents[2]
     text = (root / "backend/app/chat_routes.py").read_text(encoding="utf-8")
+    chat_start = text.index("async def chat(")
+    edit_start = text.index("def edit_chat_message(")
+    chat_text = text[chat_start:edit_start]
     assert "retrieve_relevant_chunks(" not in text
     assert "handle_structural_query(" not in text
     assert "session_result = ensure_active_context_session(" in text
     assert 'if session_result.status == "ALIGNMENT_REQUIRED":' in text
     assert 'if session_result.status == "FINALIZE_BLOCKED":' in text
+    assert "_error(400" not in chat_text
+    assert "_error(422" not in chat_text
     guard_idx = text.index("if active_session is None:")
     execution_input_idx = text.index("execution_input = active_session.final_context")
     gateway_idx = text.index("reply, _audit = mode_engine_gateway(")
     llm_call_idx = text.index("return _run_chat_llm(")
+    persist_idx = text.index("user_message = _persist_message(")
+    history_idx = text.index("history = _load_recent_history(")
     assert guard_idx < execution_input_idx < gateway_idx
     assert guard_idx < llm_call_idx
+    assert guard_idx < persist_idx
+    assert guard_idx < history_idx
