@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -201,8 +202,58 @@ def test_no_execution_without_session():
         )
 
 
+def test_execution_impossible_without_session(client: TestClient, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    cid = client.post("/api/chat/conversation/new", headers=_auth()).json()["conversation_id"]
+    _seed_ingest_context(cid)
+
+    import backend.app.chat_routes as cr
+
+    calls = {"gateway": 0, "llm": 0}
+
+    monkeypatch.setattr(
+        cr,
+        "ensure_active_context_session",
+        lambda *args, **kwargs: SimpleNamespace(
+            status="OK",
+            session=None,
+            summary=None,
+            details=None,
+        ),
+    )
+
+    def _no_gateway(*args, **kwargs):
+        calls["gateway"] += 1
+        raise AssertionError("mode_engine_gateway must not be reached without session")
+
+    def _no_llm(*args, **kwargs):
+        calls["llm"] += 1
+        raise AssertionError("_run_chat_llm must not be reached without session")
+
+    monkeypatch.setattr(cr, "mode_engine_gateway", _no_gateway)
+    monkeypatch.setattr(cr, "_run_chat_llm", _no_llm)
+
+    resp = client.post(
+        "/api/chat",
+        json=_chat_payload("test message", conversation_id=cid, alignment_confirmed=True),
+        headers=_auth(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["error"] == "FINALIZE_BLOCKED"
+    assert body["details"] == "CONTEXT_PIPELINE_FAILURE"
+    assert "reply" not in body
+    assert calls["gateway"] == 0
+    assert calls["llm"] == 0
+
+
 def test_forbidden_patterns_not_present_in_chat_routes():
     root = Path(__file__).resolve().parents[2]
     text = (root / "backend/app/chat_routes.py").read_text(encoding="utf-8")
     assert "retrieve_relevant_chunks(" not in text
     assert "handle_structural_query(" not in text
+    guard_idx = text.index("if active_session is None:")
+    execution_input_idx = text.index("execution_input = active_session.final_context")
+    gateway_idx = text.index("reply, _audit = mode_engine_gateway(")
+    llm_call_idx = text.index("return _run_chat_llm(")
+    assert guard_idx < execution_input_idx < llm_call_idx < gateway_idx
