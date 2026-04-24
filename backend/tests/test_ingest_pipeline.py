@@ -785,16 +785,51 @@ class TestChunkFileIdentityIntegrity:
         with pytest.raises(RuntimeError, match="INTEGRITY_FAIL:EMPTY_FILE_PATH"):
             _assert_chunk_file_integrity(repo_file, chunk)
 
-    def test_worker_sources_enforce_repo_file_id_as_chunk_authority(self):
-        import inspect
+    @pytest.mark.parametrize(
+        ("worker_fn_name", "job"),
+        [
+            (
+                "_ingest_file",
+                type(
+                    "Job",
+                    (),
+                    {
+                        "id": uuid.uuid4(),
+                        "source": "sample.py",
+                    },
+                )(),
+            ),
+            (
+                "_ingest_url",
+                type(
+                    "Job",
+                    (),
+                    {
+                        "id": uuid.uuid4(),
+                        "source": "https://example.com",
+                    },
+                )(),
+            ),
+            (
+                "_ingest_repo",
+                type(
+                    "Job",
+                    (),
+                    {
+                        "id": uuid.uuid4(),
+                        "source": "https://github.com/o/r",
+                    },
+                )(),
+            ),
+        ],
+    )
+    def test_ingest_workers_require_active_session(self, worker_fn_name, job):
+        import backend.app.ingest_pipeline as p
 
-        from backend.app import ingest_pipeline as p
+        worker_fn = getattr(p, worker_fn_name)
 
-        for fn in (p._ingest_file, p._ingest_url, p._ingest_repo):
-            source = inspect.getsource(fn)
-            assert "REPO_FILE_ID_NOT_ASSIGNED" in source
-            assert "CHUNK_FILE_ID_MISMATCH" in source
-            assert "_assert_chunk_file_integrity(" in source
+        with pytest.raises(RuntimeError, match="SESSION_NOT_AVAILABLE"):
+            worker_fn(None, job)
 
 
 # ---------------------------------------------------------------------------
